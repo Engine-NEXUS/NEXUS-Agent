@@ -28,6 +28,7 @@ export function SetupApp() {
   const [deviceId, setDeviceId] = useState("local-device");
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [apiKeys, setApiKeys] = useState<string[]>([]);
+  const [configCheck, setConfigCheck] = useState<Record<string, { configured: boolean; scopes: string }>>({});
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -39,12 +40,14 @@ export function SetupApp() {
     if (!serverUrl) return;
     setSidecarBaseUrl(serverUrl);
     try {
-      const [status, keys] = await Promise.all([
+      const [status, keys, config] = await Promise.all([
         getOAuthStatus(userId),
         listApiKeys(userId),
+        fetch(`${serverUrl.replace(/\/+$/, "")}/config/check`).then((r) => r.json()),
       ]);
       setOauthStatus(status);
       setApiKeys(keys);
+      setConfigCheck(config);
       setError(null);
     } catch (err) {
       setError(`Can't reach server: ${err instanceof Error ? err.message : String(err)}`);
@@ -176,6 +179,8 @@ export function SetupApp() {
                 Disconnect
               </button>
             </div>
+          ) : configCheck.google && !configCheck.google.configured ? (
+            <span className="setup-badge setup-badge--warn">Not configured on server</span>
           ) : (
             <button
               className="setup-btn"
@@ -202,6 +207,8 @@ export function SetupApp() {
                 Disconnect
               </button>
             </div>
+          ) : configCheck.github && !configCheck.github.configured ? (
+            <span className="setup-badge setup-badge--warn">Not configured on server</span>
           ) : (
             <button
               className="setup-btn"
