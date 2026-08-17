@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { Avatar } from "./avatar/Avatar";
 import { useAssistant } from "./store/assistant";
@@ -15,9 +15,16 @@ const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";
 export default function App() {
   const state = useAssistant((s) => s.state);
   const visible = useAssistant((s) => s.visible);
+  const transcript = useAssistant((s) => s.transcript);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Click-through hook lives for the app lifetime.
   useEffect(() => attachClickThrough(), []);
+
+  // Auto-scroll transcript to bottom on new entries.
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [transcript]);
 
   // React to wake events from Rust (hotkey / Porcupine).
   useEffect(() => {
@@ -25,7 +32,6 @@ export default function App() {
       const s = useAssistant.getState();
       if (s.state !== "idle" && s.state !== "speaking") return; // already active
 
-      // Acquire the mic ONCE and share it between the recorder and VAD.
       let stream: MediaStream;
       try {
         s.setVisible(true);
@@ -45,20 +51,41 @@ export default function App() {
     return () => { off.then((f) => f()); };
   }, []);
 
-  // Auto-hide to a subtle state after 4s idle.
+  // Auto-hide after 5s idle (longer than old 4s to let user read transcript).
   useEffect(() => {
     if (state !== "idle") return;
-    const t = setTimeout(() => useAssistant.getState().setVisible(false), 4000);
+    const t = setTimeout(() => useAssistant.getState().setVisible(false), 5000);
     return () => clearTimeout(t);
   }, [state]);
 
+  const captionText = {
+    listening: "Listening...",
+    thinking: "Thinking...",
+    speaking: "",
+    idle: "",
+  }[state];
+
   return (
     <div id="app" className={visible ? "app--visible" : "app--hidden"}>
-      <Avatar />
-      <div className="caption">
-        {state === "listening" && "Listening…"}
-        {state === "thinking" && "Thinking…"}
-        {state === "speaking" && "…"}
+      {/* Avatar section (top) */}
+      <div className="avatar-section">
+        <Avatar />
+      </div>
+
+      {/* Status caption */}
+      {captionText && <div className="caption">{captionText}</div>}
+
+      {/* Transcript (scrollable conversation) */}
+      <div className="transcript">
+        {transcript.map((entry, i) => (
+          <div
+            key={i}
+            className={`transcript-entry transcript-entry--${entry.role}`}
+          >
+            {entry.text}
+          </div>
+        ))}
+        <div ref={transcriptEndRef} />
       </div>
     </div>
   );

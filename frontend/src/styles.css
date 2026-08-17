@@ -10,41 +10,134 @@ html, body, #root {
   font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* ---- Floating sidebar container ----
+   The window is 420x600, positioned at bottom-center by the positioner plugin.
+   The content slides up from the bottom on wake (Siri-style entrance).
+*/
 #app {
   width: 100vw;
   height: 100vh;
   display: flex;
+  flex-direction: column;
+  /* Start hidden below the viewport (will slide up via .app--visible) */
+  transform: translateY(100%);
+  opacity: 0;
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+  background: rgba(18, 20, 28, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.app--visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.app--hidden {
+  transform: translateY(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---- Avatar section (top) ---- */
+.avatar-section {
+  flex-shrink: 0;
+  display: flex;
   align-items: center;
   justify-content: center;
-  flex-direction: column;
-  transition: opacity 400ms ease;
-  background: radial-gradient(circle at center, rgba(20, 22, 30, 0.42) 0%, rgba(0,0,0,0) 70%);
+  padding: 24px 0 12px;
+  position: relative;
 }
-.app--hidden { opacity: 0.08; }
-.app--visible { opacity: 1; }
 
-.avatar-wrap { filter: drop-shadow(0 6px 24px rgba(60, 120, 255, 0.35)); }
+.avatar-wrap {
+  filter: drop-shadow(0 6px 24px rgba(60, 120, 255, 0.35));
+  position: relative;
+}
 
+/* ---- Status caption ---- */
 .caption {
-  margin-top: 14px;
+  text-align: center;
   color: #e7ecff;
   font-size: 13px;
   letter-spacing: 0.02em;
-  text-shadow: 0 1px 8px rgba(0,0,0,0.6);
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
   opacity: 0.85;
+  padding: 0 0 12px;
+  flex-shrink: 0;
 }
 
-/* CSS fallback orb */
+/* ---- Transcript section (scrollable) ---- */
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Custom scrollbar */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(106, 168, 255, 0.3) transparent;
+}
+
+.transcript::-webkit-scrollbar {
+  width: 4px;
+}
+.transcript::-webkit-scrollbar-track {
+  background: transparent;
+}
+.transcript::-webkit-scrollbar-thumb {
+  background: rgba(106, 168, 255, 0.3);
+  border-radius: 2px;
+}
+
+.transcript-entry {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-wrap: break-word;
+  animation: fade-in 0.3s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.transcript-entry--user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #6aa8ff, #5b8def);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.transcript-entry--assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: #e7ecff;
+  border-bottom-left-radius: 4px;
+}
+
+/* ---- CSS fallback orb (when Rive .riv is missing) ---- */
 .orb {
-  width: 200px; height: 200px; border-radius: 50%;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #6aa8ff, #1d3b8f 60%, #0a1330);
-  box-shadow: 0 0 60px rgba(70,130,255,0.45) inset;
+  box-shadow: 0 0 60px rgba(70, 130, 255, 0.45) inset;
   animation: breathe 4s ease-in-out infinite;
 }
 .orb--listening { animation: pulse-listen 1.1s ease-in-out infinite; }
 .orb--thinking  { animation: spin 1.6s linear infinite; }
-.orb--speaking { animation: pulse-speak 0.4s ease-in-out infinite; }
-@keyframes breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.04)} }
-@keyframes pulse-listen { 0%,100%{transform:scale(1)} 50%{transform:scale(1.10)} }
-@keyframes pulse-speak { 0%,100%{transform:scale(1)} 50%{transform:scale(1.07)} }
-@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
+.orb--speaking  { animation: pulse-speak 0.4s ease-in-out infinite; }
+
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+@keyframes pulse-listen { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.10); } }
+@keyframes pulse-speak { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
