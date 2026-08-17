@@ -11,7 +11,7 @@ import { playTtsChunk, stopTts } from "../audio/ttsPlayer";
  * open/close and reacts to `assistant:server` events forwarded by Rust.
  */
 
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.ultron.internal/ws";
+const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.nexus.internal/ws";
 const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
 const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
 const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";

@@ -31,7 +31,7 @@ from typing import AsyncIterator, Optional
 
 import websockets
 
-log = logging.getLogger("ultron.sidecar.tts")
+log = logging.getLogger("NEXUS.sidecar.tts")
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")

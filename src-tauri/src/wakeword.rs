@@ -175,9 +175,9 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let res = app.path().resource_dir().map_err(|e| format!("resource dir: {e}"))?;
     let lib = res.join("porcupine").join(native_lib_name());
     let model = res.join("porcupine").join("porcupine_params.pv");
-    let keyword = res.join("porcupine").join("ultron.ppn");
+    let keyword = res.join("porcupine").join("NEXUS.ppn");
 
-    let key = keyring::Entry::new("ultron", "porcupine-access-key")
+    let key = keyring::Entry::new("NEXUS", "porcupine-access-key")
         .map_err(|e| format!("keyring: {e}"))?
         .get_password()
         .map_err(|e| format!("keyring get_password: {e}"))?;

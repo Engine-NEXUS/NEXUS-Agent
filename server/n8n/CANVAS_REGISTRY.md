@@ -1,4 +1,4 @@
-# ULTRON Canvas Registry
+# NEXUS Canvas Registry
 
 Each n8n sub-canvas is an isolated domain worker with a deterministic input/output contract.
 The master supervisor routes to these based on intent classification.

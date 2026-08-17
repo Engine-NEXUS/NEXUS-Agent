@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ultron",
+  "productName": "NEXUS",
   "version": "0.1.0",
-  "identifier": "com.ultron.assistant",
+  "identifier": "com.nexus.assistant",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ultron",
+        "title": "NEXUS",
         "width": 420,
         "height": 600,
         "minWidth": 420,
@@ -35,7 +35,7 @@
       },
       {
         "label": "setup",
-        "title": "Ultron Setup",
+        "title": "NEXUS Setup",
         "width": 520,
         "height": 680,
         "resizable": false,
@@ -55,7 +55,7 @@
       "iconPath": "icons/tray.png",
       "iconAsTemplate": true,
       "menuOnLeftClick": false,
-      "id": "ultron-tray"
+      "id": "NEXUS-tray"
     },
     "security": {
       "csp": "default-src 'self'; connect-src 'self' wss: https: ipc: http://ipc.localhost; media-src 'self' blob: data:; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
@@ -88,14 +88,14 @@
     },
     "macOS": {
       "signingIdentity": "Developer ID Application: YOUR_TEAM",
-      "providerShortName": "Ultron",
+      "providerShortName": "NEXUS",
       "entitlements": "entitlements.plist",
       "infoPlist": "Info.plist"
     },
     "linux": {
       "appimage": { "bundleMediaFramework": true }
     },
-    "copyright": "© 2026 Ultron",
+    "copyright": "© 2026 NEXUS",
     "category": "Productivity",
     "shortDescription": "Floating desktop AI assistant (thin client)",
     "longDescription": "A cross-platform floating AI assistant that bridges to a remote n8n/Ollama backend."
@@ -105,7 +105,7 @@
     "autostart": { "macosExtra": { "application": false, "service": true } },
     "deep-link": {
       "desktop": {
-        "schemes": ["ultron"]
+        "schemes": ["nexus"]
       }
     }
   }

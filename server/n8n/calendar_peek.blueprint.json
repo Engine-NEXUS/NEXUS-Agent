@@ -77,7 +77,7 @@
           "model": "llama3.1:8b-instruct-q4_k_m",
           "stream": false,
           "messages": [
-            { "role": "system", "content": "You are Ultron. Summarize the user's upcoming calendar events. List each event with its time, attendees, and location. Note any conflicts or back-to-back meetings. Be concise." },
+            { "role": "system", "content": "You are NEXUS. Summarize the user's upcoming calendar events. List each event with its time, attendees, and location. Note any conflicts or back-to-back meetings. Be concise." },
             { "role": "user", "content": "={{ $json.events_text }}" }
           ]
         }

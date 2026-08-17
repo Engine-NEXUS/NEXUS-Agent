@@ -1,4 +1,4 @@
-# ULTRON — Floating Desktop AI Assistant (Thin Client)
+# NEXUS — Floating Desktop AI Assistant (Thin Client)
 
 A cross-platform, Siri-like floating overlay assistant. The **client** (Tauri v2 + Rust + React/TS) is a thin audio/visual IO bridge; all LLM/TTS/NLP runs on a remote **Fat Server** (n8n supervisor + Ollama).
 
@@ -34,7 +34,7 @@ Set signing env vars (see `scripts/build.ps1` and `.github/workflows/release.yml
 
 ## Configuration points
 - **Backend WSS URL / device token:** `frontend/src/App.tsx` (`SERVER_URL`, `DEVICE_TOKEN`) — replace `REPLACE_FROM_KEYCHAIN` with a keychain read in production.
-- **Porcupine assets:** drop `libpv_porcupine.*`, `porcupine_params.pv`, `ultron.ppn` into `src-tauri/resources/porcupine/` (bundled via `tauri.conf.json` resources). AccessKey goes in the OS keychain under `ultron`/`porcupine-access-key`.
+- **Porcupine assets:** drop `libpv_porcupine.*`, `porcupine_params.pv`, `NEXUS.ppn` into `src-tauri/resources/porcupine/` (bundled via `tauri.conf.json` resources). AccessKey goes in the OS keychain under `NEXUS`/`porcupine-access-key`.
 - **n8n server:** import `server/n8n/master_supervisor.blueprint.json` and point it at your Ollama (`http://localhost:11434`) and piper (`http://localhost:5000`) instances.
 
 ## Platforms
@@ -45,4 +45,4 @@ Set signing env vars (see `scripts/build.ps1` and `.github/workflows/release.yml
 | Linux (X11/Wayland) | AppImage + `.deb`; compositor required for true transparency. |
 
 ## License
-Proprietary — © 2026 Ultron.
+Proprietary — © 2026 NEXUS.

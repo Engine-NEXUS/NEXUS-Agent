@@ -20,12 +20,12 @@ from typing import Optional
 
 from cryptography.fernet import Fernet
 
-log = logging.getLogger("ultron.sidecar.db")
+log = logging.getLogger("NEXUS.sidecar.db")
 
-DB_PATH = os.getenv("ULTRON_DB_PATH", "ultron_credentials.db")
+DB_PATH = os.getenv("NEXUS_DB_PATH", "NEXUS_credentials.db")
 # Encryption key for API keys at rest. Generate once: Fernet.generate_key()
 # Store in env var. If not set, we generate one (tokens won't survive restart).
-ENCRYPTION_KEY = os.getenv("ULTRON_ENCRYPTION_KEY", "")
+ENCRYPTION_KEY = os.getenv("NEXUS_ENCRYPTION_KEY", "")
 _fernet: Optional[Fernet] = None
 
 
@@ -37,7 +37,7 @@ def _get_fernet() -> Fernet:
         else:
             key = Fernet.generate_key()
             _fernet = Fernet(key)
-            log.warning("ULTRON_ENCRYPTION_KEY not set — generated ephemeral key; API keys won't survive restart")
+            log.warning("NEXUS_ENCRYPTION_KEY not set — generated ephemeral key; API keys won't survive restart")
     return _fernet
 
 

@@ -3,7 +3,7 @@ OAuth2 token exchange and management for Google and GitHub.
 
 The desktop client performs the OAuth authorization in the system browser
 using PKCE (no client secret in the app). The browser redirects back to
-`ultron://oauth/{provider}` with an authorization code. The client forwards
+`NEXUS://oauth/{provider}` with an authorization code. The client forwards
 the code + PKCE verifier to this sidecar, which exchanges it for tokens
 using the client secret stored server-side.
 
@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 
 from . import db
 
-log = logging.getLogger("ultron.sidecar.oauth")
+log = logging.getLogger("NEXUS.sidecar.oauth")
 router = APIRouter()
 
 # ---- Configuration (env-driven, secrets stay server-side) ----
@@ -47,7 +47,7 @@ GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 # The redirect URI that the browser uses. The client catches this via deep-link
 # and sends the code to the sidecar. This must match what's registered in
 # Google Cloud Console / GitHub OAuth App.
-OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "ultron://oauth/callback")
+OAUTH_REDIRECT_URI = os.getenv("OAUTH_REDIRECT_URI", "NEXUS://oauth/callback")
 
 # Default scopes per provider.
 GOOGLE_SCOPES = " ".join([
@@ -164,7 +164,7 @@ async def oauth_exchange(request: Request) -> JSONResponse:
       "provider": "google" | "github",
       "code": "auth_code_from_browser",
       "code_verifier": "pkce_verifier",
-      "redirect_uri": "ultron://oauth/callback",
+      "redirect_uri": "NEXUS://oauth/callback",
       "user_id": "lakshya",
       "state": "optional_csrf_state"
     }

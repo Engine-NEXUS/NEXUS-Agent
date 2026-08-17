@@ -1,5 +1,5 @@
 """
-Minimal faster-whisper STT server for ULTRON.
+Minimal faster-whisper STT server for NEXUS.
 
 Deploy on the GPU server alongside n8n and Ollama.
 
@@ -28,14 +28,14 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from faster_whisper import WhisperModel
 
-log = logging.getLogger("ultron.stt")
+log = logging.getLogger("NEXUS.stt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 MODEL_NAME = os.getenv("WHISPER_MODEL", "large-v3")
 DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8_float16")
 
-app = FastAPI(title="Ultron STT", version="0.1.0")
+app = FastAPI(title="NEXUS STT", version="0.1.0")
 
 # Load model once on startup.
 log.info("loading whisper model=%s device=%s compute=%s", MODEL_NAME, DEVICE, COMPUTE_TYPE)

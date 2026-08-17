@@ -1,4 +1,4 @@
-# ULTRON — Floating Desktop Assistant
+# NEXUS — Floating Desktop Assistant
 ## Principal Architecture & Implementation Specification
 
 > Thin Client (Tauri v2 + Rust + React/TS) ⇄ Fat Server (n8n Supervisor + Ollama)
@@ -165,7 +165,7 @@ Porcupine is designed for ≤ 1% CPU on a Raspberry Pi 3; on x86 desktop ~0.1–
 A Worklet runs *inside the webview audio graph*, forcing the webview/V8 loop to tick every audio quantum → defeats the idle budget and keeps WebView2 memory resident. Porcupine in Rust keeps the webview free to be torn down between interactions. **Recommendation: Porcupine C-FFI in Rust.**
 
 ### 6.4 License
-Porcupine custom wake words require a Picovoice account (free dev tier). Place the `.ppn` + AccessKey in the OS keychain (`keyring` crate: `Entry::new("ultron","porcupine-access-key")`). A `mock-wake` cargo feature disables the native lib for CI.
+Porcupine custom wake words require a Picovoice account (free dev tier). Place the `.ppn` + AccessKey in the OS keychain (`keyring` crate: `Entry::new("NEXUS","porcupine-access-key")`). A `mock-wake` cargo feature disables the native lib for CI.
 
 ---
 
@@ -220,7 +220,7 @@ Porcupine custom wake words require a Picovoice account (free dev tier). Place t
 ## 11. File Manifest
 
 ```
-ultron/
+NEXUS/
 ├─ docs/ARCHITECTURE.md                 # this spec
 ├─ README.md
 ├─ scripts/build.ps1                    # build helper (per-OS)
@@ -268,7 +268,7 @@ ultron/
 - **Streaming TTS over WebSocket** is implemented client-side; the n8n blueprint uses `respondToWebhook` for the simple case — a custom n8n node (or a small FastAPI sidecar holding the session map keyed by `sessionId`) is recommended for true chunked streaming. See `_meta` note in the blueprint.
 - **Ollama single-GPU** enforces sequential micro-tasks; for 5 concurrent users with heavy summarization, consider a second small model slot or GPU offload scheduling — out of scope for v1.
 
-1. `pnpm create tauri-app@latest ultron` → Rust + React-TS template.
+1. `pnpm create tauri-app@latest NEXUS` → Rust + React-TS template.
 2. Add plugins: `pnpm --dir frontend add @tauri-apps/plugin-global-shortcut @tauri-apps/plugin-autostart @tauri-apps/plugin-single-instance @tauri-apps/plugin-shell @tauri-apps/plugin-store zustand @rive-app/react-canvas`.
 3. Add Rust crates per `src-tauri/Cargo.toml`.
 4. **Windows (NSIS .exe):** install NSIS; set `TAURI_SIGNING_PRIVATE_KEY` + `..._PASSWORD` (EV cert pfx, base64) → `tauri build` auto-signs. WebView2 bootstrapper bundled.

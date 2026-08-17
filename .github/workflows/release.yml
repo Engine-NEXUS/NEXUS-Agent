@@ -54,7 +54,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ultron-${{ matrix.os }}-${{ matrix.target || 'native' }}
+          name: NEXUS-${{ matrix.os }}-${{ matrix.target || 'native' }}
           path: |
             src-tauri/target/**/bundle/**
             src-tauri/target/release/bundle/**
