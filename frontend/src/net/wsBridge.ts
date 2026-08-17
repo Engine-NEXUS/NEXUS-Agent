@@ -40,11 +40,6 @@ export async function sendTranscript(text: string): Promise<void> {
   await invoke("send_transcript", { text });
 }
 
-/** Signal end-of-audio (legacy — kept for backward compat with recorder.ts). */
-export async function endAudio(): Promise<void> {
-  await invoke("end_audio", {});
-}
-
 /** Cancel the current turn. */
 export async function cancelSession(): Promise<void> {
   await invoke("cancel_session", {});
