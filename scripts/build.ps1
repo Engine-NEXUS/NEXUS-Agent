@@ -1,11 +1,10 @@
 # scripts/build.ps1 — cross-platform build helper (run on each OS).
 # Usage:
-#   pwsh ./scripts/build.ps1              # debug build of frontend + rust (tauri build = release)
-#   pwsh ./scripts/build.ps1 -Release      # produce signed installers (same as default; kept for compat)
+#   pwsh ./scripts/build.ps1              # build frontend + tauri (release)
 #   pwsh ./scripts/build.ps1 -Target aarch64-apple-darwin
+#   pwsh ./scripts/build.ps1 -Bundles "nsis,msi"
 
 param(
-  [switch]$Release,
   [string]$Target = "",
   [string]$Bundles = ""
 )
@@ -15,22 +14,22 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host "==> Installing frontend deps" -ForegroundColor Cyan
-pnpm --dir frontend install --frozen-lockfile
+npm --prefix frontend install
 
 Write-Host "==> Building frontend" -ForegroundColor Cyan
-pnpm --dir frontend run build
+npm --prefix frontend run build
 
 Write-Host "==> Building Tauri app" -ForegroundColor Cyan
-# `cargo tauri build` is ALWAYS a release build — there is no `--release` flag for it.
+# `cargo tauri build` is ALWAYS a release build.
 # Optional flags: --target <triple> and --bundles <b1,b2>.
 $cargoArgs = @("tauri", "build")
 if ($Target)  { $cargoArgs += "--target"; $cargoArgs += $Target }
 if ($Bundles) { $cargoArgs += "--bundles"; $cargoArgs += $Bundles }
 
 Push-Location src-tauri
-  # Ensure the Tauri CLI is available (cargo-installed or via pnpm).
+  # Ensure the Tauri CLI is available (cargo-installed or via npm).
   if (-not (Get-Command "cargo-tauri" -ErrorAction SilentlyContinue) -and
-      -not (pnpm --dir frontend exec tauri --version 2>$null)) {
+      -not (npm --prefix ../frontend exec tauri --version 2>$null)) {
     Write-Host "==> Installing tauri-cli" -ForegroundColor Yellow
     cargo install tauri-cli --version "^2" --locked
   }
