@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAssistant, transition } from "../store/assistant";
-import { playTtsChunk, stopTts } from "../audio/ttsPlayer";
+import { speak, stopTts } from "../audio/ttsPlayer";
 
 /**
  * WebSocket bridge facade.
@@ -9,6 +9,10 @@ import { playTtsChunk, stopTts } from "../audio/ttsPlayer";
  * The Rust main process owns the actual WSS connection (so the webview can be torn down
  * between interactions without dropping the socket). The frontend only instructs
  * open/close and reacts to `assistant:server` events forwarded by Rust.
+ *
+ * Protocol (text-only — no audio bytes cross the network):
+ *   Client → Server: start, transcript, cancel
+ *   Server → Client: state, ack, result, done, error
  */
 
 const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.nexus.internal/ws";
@@ -31,7 +35,12 @@ export async function openSession(
   return sessionId;
 }
 
-/** Signal end-of-audio (VAD silence) so the sidecar flushes to STT + n8n. */
+/** Send the transcribed text to the server for processing. */
+export async function sendTranscript(text: string): Promise<void> {
+  await invoke("send_transcript", { text });
+}
+
+/** Signal end-of-audio (legacy — kept for backward compat with recorder.ts). */
 export async function endAudio(): Promise<void> {
   await invoke("end_audio", {});
 }
@@ -62,23 +71,28 @@ function handle(ev: ServerEvent): void {
       else if (s) store.setState(s); // allow explicit server override
       break;
     }
-    case "transcript":
-      // User's transcribed speech — add to transcript display.
-      if (ev.data) store.addUserMessage(ev.data);
-      break;
-    case "tts_chunk":
-      if (store.state !== "speaking") store.setState("speaking");
+    case "ack":
+      // Acknowledgement text (e.g. "On it, sir.") — speak it locally and add to transcript.
       if (ev.data) {
-        void playTtsChunk(ev.seq ?? 0, ev.data);
+        store.addAssistantMessage(ev.data);
+        store.setState("speaking");
+        void speak(ev.data, () => {
+          // After ack finishes, go back to thinking while server processes.
+          if (useAssistant.getState().state === "speaking") {
+            useAssistant.getState().setState("thinking");
+          }
+        });
       }
       break;
-    case "ack":
-      // Acknowledgement text (e.g. "On it, sir.") — add to transcript.
-      if (ev.data) store.addAssistantMessage(ev.data);
-      break;
     case "result":
-      // Final result text from n8n — add to transcript.
-      if (ev.data) store.addAssistantMessage(ev.data);
+      // Final result text from n8n — speak it locally and add to transcript.
+      if (ev.data) {
+        store.addAssistantMessage(ev.data);
+        store.setState("speaking");
+        void speak(ev.data, () => {
+          // After result finishes, the done event will reset to idle.
+        });
+      }
       break;
     case "done":
       stopTts();
@@ -87,6 +101,7 @@ function handle(ev: ServerEvent): void {
     case "error":
       console.error("server error:", ev.message);
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
+      stopTts();
       store.reset();
       break;
   }

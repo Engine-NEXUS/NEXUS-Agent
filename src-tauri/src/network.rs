@@ -178,6 +178,17 @@ pub async fn end_audio() -> Result<(), String> {
     Ok(())
 }
 
+/// IPC: send transcribed text to the server (replaces audio streaming).
+/// The client does STT locally and sends only text over the WebSocket.
+#[tauri::command]
+pub async fn send_transcript(text: String) -> Result<(), String> {
+    if let Some(s) = SESSION.lock().as_ref() {
+        let frame = serde_json::json!({ "type": "transcript", "data": text }).to_string();
+        let _ = s.tx.send(Message::Text(frame));
+    }
+    Ok(())
+}
+
 /// IPC: cancel the current turn and tear down.
 #[tauri::command]
 pub async fn cancel_session() -> Result<(), String> {
