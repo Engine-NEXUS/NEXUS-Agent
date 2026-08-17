@@ -10,9 +10,10 @@
 
 | Principle | Enforcement |
 |---|---|
-| **Thin Client** | No local LLM. Audio capture → stream → server. Idle RAM < 90 MB, hard ceiling 500 MB. |
-| **Fat Server** | All NLP/LLM/TTS runs on the dedicated GPU host (Ollama 11 GB VRAM). n8n is the intent router/supervisor. |
-| **Streaming-first** | WebSockets for bi-directional audio+events; SSE/HTTP fallback for micro-tasks. |
+| **Thin Client** | Local STT + local TTS. Only text crosses the network. Idle RAM < 200 MB (with whisper model). |
+| **Fat Server** | n8n intent routing + Ollama LLM. No audio processing on the server. |
+| **Text-only protocol** | WebSocket carries only JSON text frames. No binary audio frames in either direction. |
+| **Privacy** | Microphone audio never leaves the device. STT runs locally via faster-whisper on localhost. |
 | **Overlay correctness** | Transparent, frameless, always-on-top, with *region-aware* click-through. |
 | **Zero idle CPU** | Wake-word via native Porcupine C bindings (Rust), not a JS AudioWorklet loop. |
 
@@ -39,7 +40,7 @@
                        │         │             │        └──────────┘ └───┬────┘ │
                        │         │             └──── aggregated JSON ───┘      │
                        └─────────┼──────────────────────────────────────────────┘
-                                 │ WSS (TLS) — audio up / text+audio down
+                                 │ WSS (TLS) — TEXT ONLY (transcript up, result down)
                                  │
    ┌─────────────────────────────┼─────────────────────────────────────────────┐
    │              THIN CLIENT (per device)                                      │
@@ -59,7 +60,7 @@
 ## 2. End-to-End Sequence Diagram (ASCII)
 
 ```
- User           Tauri/Rust            Frontend (React)        Server (n8n)         Ollama/TTS
+ User           Tauri/Rust            Frontend (React)        Local STT       Server (sidecar+n8n)
   │                 │                       │                    │                    │
   │ wake phrase ─┐  │                       │                    │                    │
   │ (or hotkey) │  │                       │                    │                    │
@@ -73,27 +74,32 @@
   │  my email" ◀──┘                         │                    │                    │
   │               │                         │ VAD: silence─┐      │                    │
   │               │                         │   stop mic   │      │                    │
-  │               │                         │ blob ready   │      │                    │
-  │               │  invoke stream_audio ◀──┘               │    │                    │
-  │               │  ─── WSS CONNECT ──────────────────────────▶ │                    │
-  │               │  ─── audio chunks (base64/opus) ─────────────▶ │                    │
-  │               │                         │                    │ STT (faster-whisper)
-  │               │                         │                    │ transcript: "summarize email"
+  │               │                         │ PCM buffered │      │                    │
+  │               │                         │   LOCAL STT  │      │                    │
+  │               │                         │ ── PCM to localhost:8000 ──▶             │
+  │               │                         │ ◀── transcript: "summarize email" ─────  │
+  │               │                         │   WSS CONNECT     │                    │
+  │               │  ─── ws: {type:"start"} ──────────────────────────────────────▶ │
+  │               │  ─── ws: {type:"transcript", data:"summarize email"} ────────▶ │
   │               │                         │                    │ Master Supervisor  │
   │               │                         │                    │  classify intent ──┐
   │               │                         │                    │                   │ sub-canvas:
   │               │                         │                    │ ◀─── email.fetch ──┘
   │               │                         │                    │ ───── prompt ────────────▶ Ollama
-  │               │                         │                    │ ◀──── summary tokens ──── (stream)
-  │               │                         │                    │ ───── TTS request ────────────▶ piper
-  │               │                         │  event("think→speak")│ ◀──── audio chunks ───────── (stream)
-  │               │ ◀──── ws: {type:"state",s:"thinking"} ─────── │                    │
-  │               │ emit("assistant:think") │                    │                    │
-  │               │ ───────────────────────▶│ state=Thinking     │                    │
-  │               │ ◀──── ws: {type:"tts_chunk"} ─────────────── │                    │
-  │               │ emit("assistant:speak_chunk") ─────────────▶│ state=Speaking     │
-  │               │                         │ WebAudio playback  │                    │
-  │               │ ◀──── ws: {type:"done"} ─────────────────── │                    │
+  │               │                         │                    │ ◀──── summary text ────── │
+  │               │ ◀──── ws: {type:"ack", data:"On it, sir."} ─────────────────── │
+  │               │                         │ LOCAL TTS speaks   │                    │
+  │               │                         │ "On it, sir."      │                    │
+  │               │ ◀──── ws: {type:"result", data:"You have 3 emails..."} ─────── │
+  │               │                         │ LOCAL TTS speaks   │                    │
+  │               │                         │ the result         │                    │
+  │               │ ◀──── ws: {type:"done"} ───────────────────────────────────── │
+  │               │                         │ state=Idle         │                    │
+```
+
+**Key difference from old architecture:** Audio goes to localhost STT only.
+The server never receives audio. TTS is done locally via Web Speech API.
+Only text crosses the network (transcript up, ack + result down).
   │               │ emit("assistant:idle")  │                    │                    │
   │               │ ───────────────────────▶│ state=Idle        │                    │
   │ ◀──────── spoken answer ─────────────────                    │                    │
