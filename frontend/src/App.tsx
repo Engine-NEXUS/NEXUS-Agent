@@ -3,9 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { Avatar } from "./avatar/Avatar";
 import { useAssistant } from "./store/assistant";
 import { attachClickThrough } from "./overlay/clickThrough";
-import { startRecording, abortCapture } from "./audio/recorder";
-import { startVad } from "./audio/vad";
-import { openSession } from "./net/wsBridge";
+import { startRecording, abortCapture, stopRecording } from "./audio/recorder";
+import { startVad, stopVad } from "./audio/vad";
+import { openSession, cancelSession } from "./net/wsBridge";
+import { stopTts } from "./audio/ttsPlayer";
 
 const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.ultron.internal/ws";
 const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
@@ -30,7 +31,18 @@ export default function App() {
   useEffect(() => {
     const off = listen("assistant:wake", async () => {
       const s = useAssistant.getState();
-      if (s.state !== "idle" && s.state !== "speaking") return; // already active
+
+      // Barge-in: if ULTRON is speaking, stop TTS and cancel the current session
+      // before starting a new capture. This lets the user interrupt mid-speech.
+      if (s.state === "speaking") {
+        stopTts();
+        await cancelSession();
+        await stopRecording();
+        stopVad();
+      } else if (s.state !== "idle") {
+        // Already listening or thinking — ignore subsequent wake events.
+        return;
+      }
 
       let stream: MediaStream;
       try {
@@ -57,6 +69,18 @@ export default function App() {
     const t = setTimeout(() => useAssistant.getState().setVisible(false), 5000);
     return () => clearTimeout(t);
   }, [state]);
+
+  // Cancel event from Rust (e.g. tray "Stop" or escape key) — abort everything.
+  useEffect(() => {
+    const off = listen("assistant:cancel", async () => {
+      stopTts();
+      stopVad();
+      await stopRecording();
+      await cancelSession();
+      useAssistant.getState().reset();
+    });
+    return () => { off.then((f) => f()); };
+  }, []);
 
   const captionText = {
     listening: "Listening...",
