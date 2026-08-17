@@ -7,7 +7,7 @@ import { useAssistant } from "../store/assistant";
  * Primary: `@ricky0123/vad-web` (Silero ONNX model, runs in a Web Worker → near-zero main-thread cost).
  * Fallback: a lightweight RMS AudioWorklet energy gate (used if the ONNX model fails to load).
  *
- * On speech-end → `finishCapture()` → server processes the stream → state moves to `thinking`.
+ * On speech-end → `finishCapture()` → local STT → transcript text sent to server → state moves to `thinking`.
  */
 
 // ---- Configuration ----
