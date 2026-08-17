@@ -79,6 +79,8 @@ Client → sidecar:
 Sidecar → client:
 - `{type:"state", state:"listening"|"thinking"|"speaking"|"idle"}`
 - `{type:"transcript", data:"..."}` — the transcribed user speech
+- `{type:"ack", data:"On it, sir."}` — acknowledgement text (for transcript display)
+- `{type:"result", data:"..."}` — final result text from n8n (for transcript display)
 - `{type:"tts_chunk", data:"<base64 PCM>"}` — 16-bit 16kHz mono PCM audio
 - `{type:"done"}` — turn complete
 - `{type:"error", message:"..."}`
