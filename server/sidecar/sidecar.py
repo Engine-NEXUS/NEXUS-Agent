@@ -1,24 +1,25 @@
 """
-NEXUS WSS Bridge — FastAPI WebSocket sidecar.
+NEXUS WSS Bridge — FastAPI WebSocket sidecar (TEXT-ONLY protocol).
 
-Bridges the thin client's persistent WebSocket to:
-  - STT (faster-whisper) for speech-to-text
-  - n8n supervisor webhook for intent routing + canvas execution
-  - ElevenLabs multi-context TTS for voice output (ack + final result)
+Bridges the thin client's persistent WebSocket to n8n supervisor for
+intent routing + canvas execution.
+
+TEXT-ONLY: The client performs STT and TTS locally. Audio never crosses
+the network. The client sends only transcribed text, and the server
+returns only text responses.
 
 Flow:
   1. Client connects to /ws.
   2. Client sends {type:"start", sessionId, userId, deviceId}.
-  3. Client streams binary PCM audio frames upstream.
-  4. On VAD silence, client sends {type:"end_audio"}.
-  5. This sidecar:
-       a. Transcribes audio via STT.
-       b. Immediately speaks an acknowledgement ("On it, sir.") via ElevenLabs.
-       c. In parallel, calls n8n supervisor with transcript + user credentials.
-       d. When n8n returns, speaks the final result via ElevenLabs.
-       e. Streams PCM chunks back to the client as {type:"tts_chunk"} frames.
-       f. Sends {type:"done"} when complete.
-  6. Client may send {type:"cancel"} at any time for barge-in.
+  3. Client sends {type:"transcript", data:"check the 76 PR"}.
+  4. This sidecar:
+       a. Sends {type:"ack", data:"On it, sir."} immediately.
+       b. Calls n8n supervisor with transcript + user credentials.
+       c. Sends {type:"result", data:"PR #76 is approved..."}.
+       d. Sends {type:"done"}.
+  5. Client may send {type:"cancel"} at any time for barge-in.
+
+Binary frames are REJECTED — no audio is accepted on this endpoint.
 
 OAuth endpoints (/oauth/*, /apikeys/*) let the client exchange authorization
 codes for tokens, which are stored per-user and injected into n8n calls.
@@ -31,22 +32,19 @@ Run:
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
 import random
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional
 
-import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 
 from . import db
-from .tts import get_tts, shutdown_tts
 from .n8n_client import call_supervisor
 from .oauth import router as oauth_router, get_valid_credentials
 
@@ -54,12 +52,11 @@ log = logging.getLogger("NEXUS.sidecar")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 # ---- Configuration (env-driven) ----
-STT_URL = os.getenv("STT_URL", "http://localhost:8000/transcribe")
 SIDECAR_TOKEN = os.getenv("NEXUS_SIDECAR_TOKEN", "")
-MAX_AUDIO_BYTES = 8 * 1024 * 1024  # 8 MB safety cap
+MAX_TEXT_FRAME_BYTES = 64 * 1024  # 64 KB safety cap on text frames
 
 # Acknowledgement phrases. The sidecar picks one randomly to avoid repetition.
-# These are spoken immediately after STT, before n8n processes the request.
+# These are sent as text to the client, which speaks them locally via TTS.
 _ACK_PHRASES = [
     "On it, sir.",
     "Right away, sir.",
@@ -68,19 +65,14 @@ _ACK_PHRASES = [
     "Let me look into that, sir.",
 ]
 
-app = FastAPI(title="NEXUS WSS Bridge", version="0.2.0")
+app = FastAPI(title="NEXUS WSS Bridge", version="0.3.0")
 app.include_router(oauth_router)
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     db.init_db()
-    log.info("sidecar started — STT=%s", STT_URL)
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await shutdown_tts()
+    log.info("sidecar started (text-only protocol)")
 
 
 # ---- Session registry ----
@@ -90,8 +82,8 @@ class Session:
     session_id: str
     user_id: str
     device_id: str
-    audio_buf: bytearray = field(default_factory=bytearray)
     cancelled: bool = False
+    n8n_task: Optional[asyncio.Task] = None
 
 
 SESSIONS: Dict[str, Session] = {}
@@ -100,12 +92,10 @@ SESSIONS: Dict[str, Session] = {}
 # ---- Health ----
 @app.get("/health")
 async def health() -> JSONResponse:
-    from .tts import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
     return JSONResponse({
         "ok": True,
         "sessions": len(SESSIONS),
-        "tts_configured": bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID),
-        "stt_url": STT_URL,
+        "protocol": "text-only",
     })
 
 
@@ -131,21 +121,37 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
             text = msg.get("text")
             if text is not None:
+                # Reject oversized text frames.
+                if len(text) > MAX_TEXT_FRAME_BYTES:
+                    log.warning(
+                        "session %s sent oversized text frame (%d bytes), rejecting",
+                        session.session_id if session else "?",
+                        len(text),
+                    )
+                    await _send_error(ws, "text frame too large")
+                    continue
                 session = await _handle_text(ws, text, session)
                 continue
 
+            # BINARY FRAMES ARE REJECTED — no audio is accepted.
             data = msg.get("bytes")
-            if data is not None and session is not None and not session.cancelled:
-                session.audio_buf.extend(data)
-                if len(session.audio_buf) > MAX_AUDIO_BYTES:
-                    log.warning("session %s exceeded audio cap, flushing", session.session_id)
-                    await _flush_and_run(session)
+            if data is not None:
+                log.warning(
+                    "session %s sent binary frame (%d bytes) — REJECTED (text-only protocol)",
+                    session.session_id if session else "?",
+                    len(data),
+                )
+                await _send_error(ws, "binary frames not supported — text only")
+                # Do NOT buffer or process the binary data.
+                continue
     except WebSocketDisconnect:
         log.info("ws disconnected")
     except Exception:
         log.exception("ws loop error")
     finally:
         if session is not None:
+            if session.n8n_task is not None and not session.n8n_task.done():
+                session.n8n_task.cancel()
             SESSIONS.pop(session.session_id, None)
 
 
@@ -171,65 +177,58 @@ async def _handle_text(ws: WebSocket, raw: str, session: Optional[Session]) -> O
         await _send_state(ws, "listening")
         return sess
 
-    if ftype == "end_audio":
+    if ftype == "transcript":
+        # Client has done STT locally and is sending the transcript TEXT.
+        # No audio is involved — this is the only request payload.
         if session is not None and not session.cancelled:
-            await _flush_and_run(session)
+            transcript_text = str(frame.get("data", "")).strip()
+            if transcript_text:
+                await _process_transcript(session, transcript_text)
+            else:
+                await _send_error(ws, "empty transcript")
         return session
 
     if ftype == "cancel":
         if session is not None:
             session.cancelled = True
-            # Barge-in: stop any ongoing TTS.
-            tts = get_tts()
-            await tts.stop_current()
+            # Cancel any ongoing n8n task.
+            if session.n8n_task is not None and not session.n8n_task.done():
+                session.n8n_task.cancel()
             await _send_state(ws, "idle")
-        return session
-
-    if ftype == "oauth_exchange":
-        # Client is sending an OAuth code to exchange (via WSS, not HTTP).
-        # Forward to the oauth module's logic.
         return session
 
     log.debug("unknown control frame: %s", ftype)
     return session
 
 
-async def _flush_and_run(sess: Session) -> None:
+async def _process_transcript(sess: Session, transcript: str) -> None:
     """
-    Transcribe audio, speak acknowledgement, call n8n, speak result.
+    Process a transcript: send ack, call n8n, send result, send done.
 
-    The ack and n8n call run concurrently so the user hears "On it, sir."
-    while the workflow is executing.
+    The ack is sent immediately so the client can speak it locally while
+    n8n processes the request. No TTS is done server-side — the client
+    speaks all text locally via the Web Speech API.
     """
     if sess.cancelled:
         return
-    audio = bytes(sess.audio_buf)
-    sess.audio_buf.clear()
-
-    # 1. STT
-    transcript = await _transcribe(audio) if audio else ""
-    if sess.cancelled:
-        return
-
-    if transcript:
-        # Send the transcript to the client for display.
-        with suppress(Exception):
-            await sess.ws.send_text(json.dumps({"type": "transcript", "data": transcript}))
 
     await _send_state(sess.ws, "thinking")
 
-    # 2. Get the user's credentials (OAuth tokens + API keys), refreshing if needed.
+    # 1. Get the user's credentials (OAuth tokens + API keys), refreshing if needed.
     try:
         credentials = await get_valid_credentials(sess.user_id)
     except Exception:
         log.exception("failed to load credentials for user %s", sess.user_id)
         credentials = {}
 
-    # 3. Speak acknowledgement AND call n8n concurrently.
+    # 2. Send acknowledgement text immediately.
+    #    The client speaks this locally via Web Speech API.
     ack_text = random.choice(_ACK_PHRASES)
-    tts = get_tts()
+    if not sess.cancelled:
+        with suppress(Exception):
+            await sess.ws.send_text(json.dumps({"type": "ack", "data": ack_text}))
 
-    # Start n8n call as a background task.
+    # 3. Call n8n supervisor with the transcript text.
     n8n_task = asyncio.create_task(
         call_supervisor(
             session_id=sess.session_id,
@@ -239,22 +238,7 @@ async def _flush_and_run(sess: Session) -> None:
             credentials=credentials,
         )
     )
-
-    # Send the ack text to the client for transcript display.
-    if not sess.cancelled:
-        with suppress(Exception):
-            await sess.ws.send_text(json.dumps({"type": "ack", "data": ack_text}))
-
-    # Speak the ack phrase immediately (this blocks until ack audio finishes).
-    if not sess.cancelled:
-        await _send_state(sess.ws, "speaking")
-        try:
-            async for chunk in tts.speak(ack_text):
-                if sess.cancelled:
-                    break
-                await _send_tts_chunk(sess.ws, chunk)
-        except Exception:
-            log.exception("ack TTS failed")
+    sess.n8n_task = n8n_task
 
     # 4. Wait for n8n result.
     if sess.cancelled:
@@ -263,59 +247,24 @@ async def _flush_and_run(sess: Session) -> None:
 
     try:
         result_text = await n8n_task
+    except asyncio.CancelledError:
+        return
     except Exception:
         log.exception("n8n task failed")
         result_text = "Sorry, I couldn't complete that request."
+    finally:
+        sess.n8n_task = None
 
-    if sess.cancelled or not result_text:
-        if not sess.cancelled:
-            await _send_done(sess.ws)
+    if sess.cancelled:
         return
 
-    # Send the result text to the client for transcript display.
-    if not sess.cancelled:
+    # 5. Send the result text to the client.
+    #    The client speaks this locally via Web Speech API.
+    if result_text:
         with suppress(Exception):
             await sess.ws.send_text(json.dumps({"type": "result", "data": result_text}))
 
-    # 5. Speak the final result (streamed at sentence boundaries for low latency).
-    if not sess.cancelled:
-        await _send_state(sess.ws, "speaking")
-        try:
-            async for chunk in tts.speak(result_text, flush_sentences=True):
-                if sess.cancelled:
-                    break
-                await _send_tts_chunk(sess.ws, chunk)
-        except Exception:
-            log.exception("final TTS failed")
-            await _send_error(sess.ws, "voice synthesis failed")
-
     await _send_done(sess.ws)
-
-
-async def _transcribe(audio: bytes) -> str:
-    """POST raw PCM to the STT service; return transcript text."""
-    if not STT_URL or not audio:
-        return ""
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            files = {"audio": ("audio.bin", audio, "application/octet-stream")}
-            resp = await client.post(STT_URL, files=files)
-            resp.raise_for_status()
-            data = resp.json()
-            return str(data.get("text", data.get("transcript", "")))
-    except Exception:
-        log.exception("STT failed")
-        return ""
-
-
-async def _send_tts_chunk(ws: WebSocket, pcm: bytes) -> None:
-    """Send a PCM chunk as a tts_chunk frame (base64-encoded)."""
-    frame = json.dumps({
-        "type": "tts_chunk",
-        "data": base64.b64encode(pcm).decode(),
-    })
-    with suppress(Exception):
-        await ws.send_text(frame)
 
 
 async def _send_state(ws: WebSocket, state: str) -> None:
