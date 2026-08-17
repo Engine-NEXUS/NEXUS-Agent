@@ -1,22 +1,35 @@
 """
 Minimal faster-whisper STT server for NEXUS.
 
-Deploy on the GPU server alongside n8n and Ollama.
+This server runs LOCALLY on the user's device (localhost:8000).
+Audio is sent from the NEXUS client to this local server, transcribed,
+and only the resulting TEXT is sent to the remote NEXUS server.
+Audio NEVER leaves the device.
+
+For devices without a GPU, use:
+  WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8
+  WHISPER_MODEL=base   (or "tiny" for fastest, "small" for better accuracy)
 
 Requirements:
   pip install faster-whisper fastapi uvicorn python-multipart
 
-Run:
-  uvicorn stt_server:app --host 0.0.0.0 --port 8000
+Run locally on the device:
+  uvicorn stt_server:app --host 127.0.0.1 --port 8000
 
 Environment:
-  WHISPER_MODEL    — model name (default: large-v3)
-  WHISPER_DEVICE   — "cuda" or "cpu" (default: cuda)
-  WHISPER_COMPUTE  — compute type (default: int8_float16)
+  WHISPER_MODEL    — model name (default: base)
+  WHISPER_DEVICE   — "cuda" or "cpu" (default: cpu)
+  WHISPER_COMPUTE  — compute type (default: int8)
 
-With 11GB VRAM:
-  - large-v3 + int8_float16: ~3.1GB VRAM (leaves ~8GB for Ollama)
-  - distil-large-v3 + int8_float16: ~1.5GB VRAM (more room for Ollama)
+Models (CPU):
+  - tiny:    ~40MB, fastest, lower accuracy
+  - base:    ~75MB, good balance (recommended for CPU)
+  - small:   ~250MB, better accuracy
+  - medium:  ~750MB, high accuracy (slow on CPU)
+
+Models (GPU):
+  - large-v3:           ~1.5GB VRAM with int8_float16
+  - distil-large-v3:    ~750MB VRAM, faster, slightly lower accuracy
 """
 
 from __future__ import annotations
@@ -31,9 +44,9 @@ from faster_whisper import WhisperModel
 log = logging.getLogger("NEXUS.stt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-MODEL_NAME = os.getenv("WHISPER_MODEL", "large-v3")
-DEVICE = os.getenv("WHISPER_DEVICE", "cuda")
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8_float16")
+MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
+DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
+COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8")
 
 app = FastAPI(title="NEXUS STT", version="0.1.0")
 

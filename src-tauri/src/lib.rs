@@ -12,6 +12,7 @@ mod wakeword;
 mod network;
 mod tray;
 mod commands;
+mod stt;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -135,6 +136,8 @@ pub fn run() {
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,
+            stt::transcribe_audio,
+            stt::stt_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS application");

@@ -13,6 +13,15 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+# Ensure LIBCLANG_PATH is set (needed for bindgen-based crates on Windows).
+if (-not $env:LIBCLANG_PATH) {
+  $llvmPath = "C:\Program Files\LLVM\bin"
+  if (Test-Path "$llvmPath\libclang.dll") {
+    $env:LIBCLANG_PATH = $llvmPath
+    Write-Host "==> Set LIBCLANG_PATH=$llvmPath" -ForegroundColor DarkGray
+  }
+}
+
 Write-Host "==> Installing frontend deps" -ForegroundColor Cyan
 npm --prefix frontend install
 
