@@ -51,5 +51,8 @@ src-tauri/resources/porcupine/*.so
 src-tauri/resources/porcupine/*.ppn
 src-tauri/resources/porcupine/*.pv
 
+# Whisper model files (too large for git, download separately)
+src-tauri/resources/whisper/*.bin
+
 # Lock files (cargo generates Cargo.lock; npm uses package-lock.json)
 frontend/yarn.lock

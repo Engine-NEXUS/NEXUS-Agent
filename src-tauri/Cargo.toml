@@ -49,6 +49,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 # WebSocket framing helpers
 base64 = "0.22"
 
+# HTTP client for local STT (faster-whisper on localhost)
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
 [features]
 default = ["wakeword-porcupine"]
 wakeword-porcupine = []   # bundle libpv_porcupine + .ppn at runtime
