@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-cap",
-  "description": "Capabilities for the Ultron app (main + setup windows)",
+  "description": "Capabilities for the NEXUS app (main + setup windows)",
   "windows": ["main", "setup"],
   "permissions": [
     "core:default",

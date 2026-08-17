@@ -1,4 +1,4 @@
-# Ultron WSS Bridge (sidecar)
+# NEXUS WSS Bridge (sidecar)
 
 Bridges the thin client's persistent WebSocket to:
 - **STT** (faster-whisper) for speech-to-text
@@ -32,7 +32,7 @@ Thin Client ──WSS──▶ sidecar (/ws)
 Client setup page → "Connect Google"
   → sidecar /oauth/auth-url returns Google OAuth URL (with PKCE challenge)
   → client opens system browser → user logs into Google
-  → Google redirects to ultron://oauth/callback?code=XXX
+  → Google redirects to NEXUS://oauth/callback?code=XXX
   → client catches deep link, sends code + verifier to sidecar /oauth/exchange
   → sidecar exchanges code for tokens (using client secret)
   → tokens stored in SQLite, keyed by user_id
@@ -62,10 +62,10 @@ uvicorn sidecar:app --host 0.0.0.0 --port 8443
 | `GOOGLE_CLIENT_SECRET` | (empty) | Google OAuth client secret (server-side only) |
 | `GITHUB_CLIENT_ID` | (empty) | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | (empty) | GitHub OAuth client secret (server-side only) |
-| `OAUTH_REDIRECT_URI` | `ultron://oauth/callback` | OAuth redirect URI (deep link) |
-| `ULTRON_SIDECAR_TOKEN` | (empty = no gate) | optional bearer gate on /ws |
-| `ULTRON_DB_PATH` | `ultron_credentials.db` | SQLite database path |
-| `ULTRON_ENCRYPTION_KEY` | (empty = ephemeral) | Fernet key for encrypting API keys at rest |
+| `OAUTH_REDIRECT_URI` | `NEXUS://oauth/callback` | OAuth redirect URI (deep link) |
+| `NEXUS_SIDECAR_TOKEN` | (empty = no gate) | optional bearer gate on /ws |
+| `NEXUS_DB_PATH` | `NEXUS_credentials.db` | SQLite database path |
+| `NEXUS_ENCRYPTION_KEY` | (empty = ephemeral) | Fernet key for encrypting API keys at rest |
 | `SIDECAR_HOST` / `SIDECAR_PORT` | `0.0.0.0` / `8443` | bind address |
 
 ## Protocol (client ↔ sidecar)

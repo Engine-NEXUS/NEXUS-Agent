@@ -1,5 +1,5 @@
 {
-  "name": "Ultron Master Supervisor",
+  "name": "NEXUS Master Supervisor",
   "active": true,
   "settings": { "executionOrder": "v1" },
   "_meta": {
@@ -70,7 +70,7 @@
             "required": ["intent"]
           },
           "messages": [
-            { "role": "system", "content": "You are the Ultron intent router. Output ONLY JSON matching the schema. Pick the single best intent. 'args' carries parsed entities (e.g. {since:'24h', repo:'ultron'}). Available intents: email.summarize (Gmail), github.pr_check (GitHub PRs), calendar.peek (Google Calendar), general.chat (anything else)." },
+            { "role": "system", "content": "You are the NEXUS intent router. Output ONLY JSON matching the schema. Pick the single best intent. 'args' carries parsed entities (e.g. {since:'24h', repo:'NEXUS'}). Available intents: email.summarize (Gmail), github.pr_check (GitHub PRs), calendar.peek (Google Calendar), general.chat (anything else)." },
             { "role": "user", "content": "={{ $json.transcript }}" }
           ]
         }

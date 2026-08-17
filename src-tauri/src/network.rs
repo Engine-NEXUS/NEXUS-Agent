@@ -92,8 +92,8 @@ pub async fn open_session<R: Runtime>(
     let req = tokio_tungstenite::tungstenite::http::Request::builder()
         .uri(&url)
         .header("Authorization", format!("Bearer {token}"))
-        .header("Sec-WebSocket-Protocol", "ultron.v1")
-        .header("User-Agent", "Ultron/0.1");
+        .header("Sec-WebSocket-Protocol", "NEXUS.v1")
+        .header("User-Agent", "NEXUS/0.1");
     let request = req
         .body(())
         .map_err(|e| format!("build request: {e}"))?;

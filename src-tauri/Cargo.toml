@@ -1,13 +1,13 @@
 [package]
-name = "ultron"
+name = "nexus"
 version = "0.1.0"
 description = "Floating desktop AI assistant (thin client)"
-authors = ["Ultron"]
+authors = ["NEXUS"]
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "ultron_lib"
+name = "nexus_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

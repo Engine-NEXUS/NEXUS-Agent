@@ -101,7 +101,7 @@
           "model": "llama3.1:8b-instruct-q4_k_m",
           "stream": false,
           "messages": [
-            { "role": "system", "content": "You are Ultron. Summarize the user's recent emails concisely. Highlight important items, action items, and anything urgent. Be brief but complete." },
+            { "role": "system", "content": "You are NEXUS. Summarize the user's recent emails concisely. Highlight important items, action items, and anything urgent. Be brief but complete." },
             { "role": "user", "content": "={{ $json.emails_text }}" }
           ]
         }

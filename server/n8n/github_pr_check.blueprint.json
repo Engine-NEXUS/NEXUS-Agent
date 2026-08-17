@@ -78,7 +78,7 @@
           "model": "llama3.1:8b-instruct-q4_k_m",
           "stream": false,
           "messages": [
-            { "role": "system", "content": "You are Ultron. Analyze the open GitHub PRs. For each PR, note: title, author, whether it's a draft, and any concerning labels. Highlight PRs that may need attention. Be concise." },
+            { "role": "system", "content": "You are NEXUS. Analyze the open GitHub PRs. For each PR, note: title, author, whether it's a draft, and any concerning labels. Highlight PRs that may need attention. Be concise." },
             { "role": "user", "content": "={{ $json.prs_text }}" }
           ]
         }

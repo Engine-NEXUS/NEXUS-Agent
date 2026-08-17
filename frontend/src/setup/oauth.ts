@@ -1,11 +1,11 @@
 /**
- * OAuth2 PKCE client for ULTRON desktop app.
+ * OAuth2 PKCE client for NEXUS desktop app.
  *
  * Flow:
  *  1. Generate PKCE verifier + challenge (SHA-256, base64url).
  *  2. Ask sidecar for the provider's authorization URL (includes our challenge).
  *  3. Open the system browser to that URL.
- *  4. User logs in → provider redirects to ultron://oauth/callback?code=XXX.
+ *  4. User logs in → provider redirects to nexus://oauth/callback?code=XXX.
  *  5. Tauri deep-link plugin catches the redirect and emits an event.
  *  6. We extract the code + state, send code + verifier to sidecar /oauth/exchange.
  *  7. Sidecar exchanges code for tokens (using client secret stored server-side).
@@ -107,7 +107,7 @@ export async function connectOAuth(
   const result = await new Promise<boolean>((resolve, reject) => {
     pending = { provider, codeVerifier, userId, resolve, reject };
 
-    // Listen for the ultron://oauth/callback redirect.
+    // Listen for the nexus://oauth/callback redirect.
     if (!unlistenDeepLink) {
       listen<string>("deep-link://oauth-callback", (event) => {
         handleOAuthRedirect(event.payload).catch((err) => {
@@ -120,7 +120,7 @@ export async function connectOAuth(
 
     // Also check if the app was started via a deep link (Windows/Linux single-instance).
     invoke<string | null>("deep_link_get_current").then((url) => {
-      if (url && url.startsWith("ultron://oauth/")) {
+      if (url && url.startsWith("nexus://oauth/")) {
         handleOAuthRedirect(url).catch(console.error);
       }
     }).catch(() => {/* not available on this platform */});
@@ -137,7 +137,7 @@ export async function connectOAuth(
   return result;
 }
 
-/** Handle the OAuth redirect URL (ultron://oauth/callback?code=XXX&state=YYY). */
+/** Handle the OAuth redirect URL (nexus://oauth/callback?code=XXX&state=YYY). */
 async function handleOAuthRedirect(rawUrl: string): Promise<void> {
   if (!pending) return;
 
@@ -167,7 +167,7 @@ async function handleOAuthRedirect(rawUrl: string): Promise<void> {
         provider: pending.provider,
         code,
         code_verifier: pending.codeVerifier,
-        redirect_uri: "ultron://oauth/callback",
+        redirect_uri: "nexus://oauth/callback",
         user_id: pending.userId,
         state,
       }),

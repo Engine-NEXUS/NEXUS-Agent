@@ -12,7 +12,7 @@ import {
 } from "./oauth";
 
 /**
- * ULTRON Setup page.
+ * NEXUS Setup page.
  *
  * Shown on first launch (no config saved) or via tray → Settings.
  * Lets the user:
@@ -132,8 +132,8 @@ export function SetupApp() {
   return (
     <div className="setup-root">
       <div className="setup-header">
-        <h1>ULTRON Setup</h1>
-        <p>Connect your accounts to give ULTRON access to your tools.</p>
+        <h1>NEXUS Setup</h1>
+        <p>Connect your accounts to give NEXUS access to your tools.</p>
       </div>
 
       {error && <div className="setup-error">{error}</div>}
