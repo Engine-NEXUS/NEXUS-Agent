@@ -1,0 +1,12 @@
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_SERVER_URL?: string;
+  readonly VITE_DEVICE_TOKEN?: string;
+  readonly VITE_USER_ID?: string;
+  readonly VITE_DEVICE_ID?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}

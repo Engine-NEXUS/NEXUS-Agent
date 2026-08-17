@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build outputs
+frontend/dist/
+src-tauri/gen/
+src-tauri/target/
+target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Credentials / secrets (never commit these)
+*.db
+*.db-journal
+.env
+.env.*
+!env.example
+secrets.json
+credentials.json
+
+# Tauri
+src-tauri/WixTools/
+
+# Logs
+*.log
+logs/
+
+# Porcupine native libraries (platform-specific, downloaded per-machine)
+src-tauri/resources/porcupine/*.dll
+src-tauri/resources/porcupine/*.dylib
+src-tauri/resources/porcupine/*.so
+src-tauri/resources/porcupine/*.ppn
+src-tauri/resources/porcupine/*.pv
+
+# Lock files (we use pnpm for frontend, cargo generates Cargo.lock)
+frontend/package-lock.json
+frontend/yarn.lock

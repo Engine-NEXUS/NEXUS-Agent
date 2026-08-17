@@ -1,0 +1,50 @@
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent;        /* the window itself is transparent */
+  -webkit-user-select: none;
+  user-select: none;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  transition: opacity 400ms ease;
+  background: radial-gradient(circle at center, rgba(20, 22, 30, 0.42) 0%, rgba(0,0,0,0) 70%);
+}
+.app--hidden { opacity: 0.08; }
+.app--visible { opacity: 1; }
+
+.avatar-wrap { filter: drop-shadow(0 6px 24px rgba(60, 120, 255, 0.35)); }
+
+.caption {
+  margin-top: 14px;
+  color: #e7ecff;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 8px rgba(0,0,0,0.6);
+  opacity: 0.85;
+}
+
+/* CSS fallback orb */
+.orb {
+  width: 200px; height: 200px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #6aa8ff, #1d3b8f 60%, #0a1330);
+  box-shadow: 0 0 60px rgba(70,130,255,0.45) inset;
+  animation: breathe 4s ease-in-out infinite;
+}
+.orb--listening { animation: pulse-listen 1.1s ease-in-out infinite; }
+.orb--thinking  { animation: spin 1.6s linear infinite; }
+.orb--speaking { animation: pulse-speak 0.4s ease-in-out infinite; }
+@keyframes breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.04)} }
+@keyframes pulse-listen { 0%,100%{transform:scale(1)} 50%{transform:scale(1.10)} }
+@keyframes pulse-speak { 0%,100%{transform:scale(1)} 50%{transform:scale(1.07)} }
+@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
