@@ -3,74 +3,182 @@
   "active": true,
   "settings": { "executionOrder": "v1" },
   "_meta": {
-    "description": "Master intent router. Receives transcript (or audio) from the thin client, classifies intent with a fast LLM, dispatches to a sub-canvas, aggregates, runs TTS, streams response back over the originating WebSocket session.",
+    "description": "Master intent router. Receives transcript + credentials from the sidecar, classifies intent with a fast LLM, dispatches to a sub-canvas, returns result text. The sidecar handles TTS (ElevenLabs) and streaming — n8n only does intent routing + domain work.",
     "webhook": "POST /supervisor",
-    "input": { "transcript": "string", "userId": "string", "deviceId": "string", "sessionId": "string", "audio?": "base64" },
-    "output": "JSON stream over WebSocket: {type:state} / {type:tts_chunk,seq,data} / {type:done}",
+    "input": {
+      "transcript": "string",
+      "userId": "string",
+      "deviceId": "string",
+      "sessionId": "string",
+      "credentials": {
+        "google": { "access_token": "string", "scopes": "string" },
+        "github": { "access_token": "string" },
+        "api_keys": { "claude": "string", "devin": "string" }
+      }
+    },
+    "output": "JSON: { reply_text: string, intent: string, context: object }",
     "concurrency": "OLLAMA_NUM_PARALLEL=1; sub-canvases guarded by Redis mutex for <=5 users",
-    "models": { "router": "qwen2.5:1.5b-instruct-q4_k_m", "heavy": "llama3.1:8b-instruct-q4_k_m" },
-    "auth": "Per-device tokens. The Auth Check node calls the device-token service (DEVICE_TOKENS_URL, e.g. a small Postgres-backed HTTP endpoint or a Redis GET) with the deviceId from the body and compares the returned hash to the SHA-256 of the bearer token. Set DEVICE_TOKENS_URL in n8n env. Fallback: set ULTRON_DEVICE_TOKEN for single-user dev."
+    "models": {
+      "router": "qwen2.5:1.5b-instruct-q4_k_m",
+      "heavy": "llama3.1:8b-instruct-q4_k_m"
+    },
+    "auth": "Per-device tokens validated by the sidecar before calling this webhook. The sidecar forwards the bearer token in the Authorization header.",
+    "tts": "Handled by the sidecar (ElevenLabs multi-context). n8n returns text only."
   },
   "nodes": [
-    { "name": "Webhook In", "type": "n8n-nodes-base.webhook", "typeVersion": 2,
-      "parameters": { "httpMethod": "POST", "path": "supervisor", "responseMode": "responseNode", "options": { "rawBody": true } }, "position": [0, 0] },
-    { "name": "Auth Check", "type": "n8n-nodes-base.function", "typeVersion": 2,
-      "parameters": { "jsCode": "const crypto = require('crypto');\nconst body = $input.first().json.body || {};\nconst auth = $input.first().json.headers?.authorization || '';\nconst token = auth.startsWith('Bearer ') ? auth.slice(7) : '';\nconst deviceId = body.deviceId || '';\nif (!token || !deviceId) throw new Error('missing credentials');\n// Per-device token validation: hash the presented token and compare against the\n// stored hash for this deviceId. The store is a small HTTP endpoint (DEVICE_TOKENS_URL)\n// backed by Postgres/Redis. Falls back to a single shared env token for dev.\nconst sha = crypto.createHash('sha256').update(token).digest('hex');\nlet expected;\nif ($env.DEVICE_TOKENS_URL) {\n  // Synchronous fetch is not available in n8n function nodes; in production use an\n  // HTTP Request node before this one to fetch the hash, then compare here.\n  // For now we expect the hash to have been injected by a prior 'Fetch Token Hash' node.\n  expected = $('Fetch Token Hash').item.json.hash;\n} else {\n  expected = crypto.createHash('sha256').update($env.ULTRON_DEVICE_TOKEN).digest('hex');\n}\nif (expected !== sha) throw new Error('unauthorized: device token mismatch');\nreturn $input.all();" }, "position": [220, 0] },
-    { "name": "Fetch Token Hash", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "parameters": { "method": "GET", "url": "={{ $env.DEVICE_TOKENS_URL }}/{{ encodeURIComponent($json.body.deviceId) }}", "sendHeaders": true, "headerParameters": { "parameters": [ { "name": "Authorization", "value": "Bearer {{ $env.DEVICE_TOKENS_SERVICE_TOKEN }}" } ] }, "_note": "Looks up the stored SHA-256 hash for this deviceId. Returns {hash: '...'}. Skip this node (and set ULTRON_DEVICE_TOKEN) for single-user dev." }, "position": [220, -220] },
-    { "name": "STT (optional)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "parameters": { "method": "POST", "url": "http://localhost:8000/transcribe", "sendBody": true, "bodyContentType": "multipart-form-data",
-        "_note": "Used only when client sent audio instead of pre-transcribed text." }, "position": [440, 0] },
-    { "name": "Classify Intent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "parameters": { "method": "POST", "url": "http://localhost:11434/api/chat", "sendBody": true, "specifyBody": "json",
-        "jsonBody": { "model": "qwen2.5:1.5b-instruct-q4_k_m", "stream": false, "options": { "temperature": 0.0, "num_predict": 96 },
-          "format": { "type": "object", "properties": { "intent": { "type": "string", "enum": ["email.summarize","github.pr_check","calendar.peek","general.chat"] }, "confidence": { "type": "number" }, "args": { "type": "object" } }, "required": ["intent"] },
-          "messages": [ { "role": "system", "content": "You are the Ultron intent router. Output ONLY JSON matching the schema. Pick the single best intent. 'args' carries parsed entities (e.g. {since:'24h})." },
-            { "role": "user", "content": "={{ $json.transcript || $json.text }}" } ] } }, "position": [660, 0] },
-    { "name": "Parse Intent", "type": "n8n-nodes-base.function", "typeVersion": 2,
-      "parameters": { "jsCode": "const raw = $input.first().json.message?.content ?? $input.first().json;\nlet p; try { p = JSON.parse(raw); } catch { p = { intent: 'general.chat', confidence: 0.5, args: {} }; }\nif (p.confidence < 0.5) p.intent = 'general.chat';\nreturn [{ json: p }];" }, "position": [880, 0] },
-    { "name": "Route", "type": "n8n-nodes-base.switch", "typeVersion": 3.1,
-      "parameters": { "dataType": "string", "fallbackOutput": 3,
-        "rules": { "rules": [ { "value2": { "string": { "value": "email.summarize" } } }, { "value2": { "string": { "value": "github.pr_check" } } }, { "value2": { "string": { "value": "calendar.peek" } } } ] } }, "position": [1100, 0] },
-    { "name": "email.summarize", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
-      "parameters": { "workflowId": "EMAIL_SUMMARY_WF_ID" }, "position": [1340, -200] },
-    { "name": "github.pr_check", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
-      "parameters": { "workflowId": "GITHUB_PR_WF_ID" }, "position": [1340, 0] },
-    { "name": "calendar.peek", "type": "n8n-nodes-base.executeWorkflowTrigger", "typeVersion": 1.1,
-      "parameters": { "workflowId": "CALENDAR_WF_ID" }, "position": [1340, 200] },
-    { "name": "general.chat", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "parameters": { "method": "POST", "url": "http://localhost:11434/api/chat", "sendBody": true, "specifyBody": "json",
-        "jsonBody": { "model": "llama3.1:8b-instruct-q4_k_m", "stream": false,
-          "messages": [ { "role": "user", "content": "={{ $('Parse Intent').item.json.args || $json.transcript }}" } ] } }, "position": [1340, 400] },
-    { "name": "Aggregate", "type": "n8n-nodes-base.function", "typeVersion": 2,
-      "parameters": { "jsCode": "const reply = $input.first().json.message?.content || $input.first().json.reply_text || '';\nreturn [{ json: { reply_text: reply, context: $input.first().json } }];" }, "position": [1600, 100] },
-    { "name": "TTS (piper)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2,
-      "parameters": { "method": "POST", "url": "http://localhost:5000/synthesize", "sendBody": true, "specifyBody": "json",
-        "jsonBody": { "text": "={{ $json.reply_text }}", "voice": "en_US-amy-medium", "stream": true }, "responseFormat": "file",
-        "_note": "piper returns 16k mono PCM; chunked over the WS session by the Response node." }, "position": [1820, 100] },
-    { "name": "Stream Back", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1,
-      "parameters": { "respondWith": "json", "responseBody": "={{ $json }}",
-        "options": { "responseHeaders": { "Content-Type": "application/octet-stream" } },
-        "_note": "For true chunked streaming over the persistent WebSocket, replace with a custom node writing to the session map keyed by sessionId." }, "position": [2040, 100] }
+    {
+      "name": "Webhook In",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "supervisor",
+        "responseMode": "responseNode",
+        "options": { "rawBody": true }
+      },
+      "position": [0, 0]
+    },
+    {
+      "name": "Parse Body",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nreturn [{ json: {\n  transcript: body.transcript || '',\n  userId: body.userId || '',\n  deviceId: body.deviceId || '',\n  sessionId: body.sessionId || '',\n  credentials: body.credentials || {}\n} }];"
+      },
+      "position": [220, 0]
+    },
+    {
+      "name": "Classify Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": {
+          "model": "qwen2.5:1.5b-instruct-q4_k_m",
+          "stream": false,
+          "options": { "temperature": 0.0, "num_predict": 96 },
+          "format": {
+            "type": "object",
+            "properties": {
+              "intent": { "type": "string", "enum": ["email.summarize", "github.pr_check", "calendar.peek", "general.chat"] },
+              "confidence": { "type": "number" },
+              "args": { "type": "object" }
+            },
+            "required": ["intent"]
+          },
+          "messages": [
+            { "role": "system", "content": "You are the Ultron intent router. Output ONLY JSON matching the schema. Pick the single best intent. 'args' carries parsed entities (e.g. {since:'24h', repo:'ultron'}). Available intents: email.summarize (Gmail), github.pr_check (GitHub PRs), calendar.peek (Google Calendar), general.chat (anything else)." },
+            { "role": "user", "content": "={{ $json.transcript }}" }
+          ]
+        }
+      },
+      "position": [440, 0]
+    },
+    {
+      "name": "Parse Intent",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.message?.content ?? $input.first().json;\nlet p;\ntry { p = JSON.parse(raw); } catch { p = { intent: 'general.chat', confidence: 0.5, args: {} }; }\nif (p.confidence < 0.5) p.intent = 'general.chat';\n// Preserve credentials + transcript for downstream nodes\np.credentials = $('Parse Body').item.json.credentials;\np.transcript = $('Parse Body').item.json.transcript;\np.sessionId = $('Parse Body').item.json.sessionId;\nreturn [{ json: p }];"
+      },
+      "position": [660, 0]
+    },
+    {
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.1,
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{ $json.intent }}",
+        "fallbackOutput": 3,
+        "rules": {
+          "rules": [
+            { "value2": { "string": { "value": "email.summarize" } } },
+            { "value2": { "string": { "value": "github.pr_check" } } },
+            { "value2": { "string": { "value": "calendar.peek" } } }
+          ]
+        }
+      },
+      "position": [880, 0]
+    },
+    {
+      "name": "email.summarize",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "parameters": { "workflowId": "EMAIL_SUMMARY_WF_ID" },
+      "position": [1100, -200]
+    },
+    {
+      "name": "github.pr_check",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "parameters": { "workflowId": "GITHUB_PR_WF_ID" },
+      "position": [1100, 0]
+    },
+    {
+      "name": "calendar.peek",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "parameters": { "workflowId": "CALENDAR_WF_ID" },
+      "position": [1100, 200]
+    },
+    {
+      "name": "general.chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": {
+          "model": "llama3.1:8b-instruct-q4_k_m",
+          "stream": false,
+          "messages": [
+            { "role": "user", "content": "={{ $json.transcript }}" }
+          ]
+        }
+      },
+      "position": [1100, 400]
+    },
+    {
+      "name": "Aggregate",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst reply = input.message?.content || input.reply_text || input.summary || input.result || '';\nconst intent = $('Parse Intent').item.json.intent;\nreturn [{ json: { reply_text: reply, intent: intent, context: input } }];"
+      },
+      "position": [1320, 100]
+    },
+    {
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "position": [1540, 100]
+    }
   ],
   "connections": {
-    "Webhook In": { "main": [ [ { "node": "Fetch Token Hash", "type": "main", "index": 0 } ] ] },
-    "Fetch Token Hash": { "main": [ [ { "node": "Auth Check", "type": "main", "index": 0 } ] ] },
-    "Auth Check": { "main": [ [ { "node": "STT (optional)", "type": "main", "index": 0 } ] ] },
-    "STT (optional)": { "main": [ [ { "node": "Classify Intent", "type": "main", "index": 0 } ] ] },
+    "Webhook In": { "main": [ [ { "node": "Parse Body", "type": "main", "index": 0 } ] ] },
+    "Parse Body": { "main": [ [ { "node": "Classify Intent", "type": "main", "index": 0 } ] ] },
     "Classify Intent": { "main": [ [ { "node": "Parse Intent", "type": "main", "index": 0 } ] ] },
     "Parse Intent": { "main": [ [ { "node": "Route", "type": "main", "index": 0 } ] ] },
     "Route": { "main": [
       [ { "node": "email.summarize", "type": "main", "index": 0 } ],
       [ { "node": "github.pr_check", "type": "main", "index": 0 } ],
       [ { "node": "calendar.peek", "type": "main", "index": 0 } ],
-      [ { "node": "general.chat", "type": "main", "index": 0 } ] ] },
+      [ { "node": "general.chat", "type": "main", "index": 0 } ]
+    ] },
     "email.summarize": { "main": [ [ { "node": "Aggregate", "type": "main", "index": 0 } ] ] },
     "github.pr_check": { "main": [ [ { "node": "Aggregate", "type": "main", "index": 0 } ] ] },
     "calendar.peek": { "main": [ [ { "node": "Aggregate", "type": "main", "index": 0 } ] ] },
     "general.chat": { "main": [ [ { "node": "Aggregate", "type": "main", "index": 0 } ] ] },
-    "Aggregate": { "main": [ [ { "node": "TTS (piper)", "type": "main", "index": 0 } ] ] },
-    "TTS (piper)": { "main": [ [ { "node": "Stream Back", "type": "main", "index": 0 } ] ] }
+    "Aggregate": { "main": [ [ { "node": "Respond", "type": "main", "index": 0 } ] ] }
   }
 }
-
