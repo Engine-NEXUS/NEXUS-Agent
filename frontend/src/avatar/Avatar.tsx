@@ -52,7 +52,7 @@ export function Avatar() {
   }, [speakSeq, speakInput, state]);
 
   return (
-    <div data-interactive className="avatar-wrap" style={{ position: "relative", width: 220, height: 220 }}>
+    <div data-interactive className="avatar-wrap" style={{ position: "relative", width: 140, height: 140 }}>
       {rive ? (
         <RiveComponent style={{ width: "100%", height: "100%" }} />
       ) : (
