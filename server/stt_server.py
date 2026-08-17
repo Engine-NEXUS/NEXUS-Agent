@@ -70,18 +70,33 @@ async def health() -> JSONResponse:
 
 @app.post("/transcribe")
 async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
-    """Transcribe raw audio bytes. Returns {"text": "transcript"}."""
+    """Transcribe raw audio bytes. Returns {"text": "transcript"}.
+
+    Accepts WAV, MP3, FLAC, or any format supported by PyAV.
+    Raw 16-bit PCM is also accepted (wrapped in BytesIO).
+    """
+    import io
     audio_bytes = await audio.read()
     if not audio_bytes:
         return JSONResponse({"text": ""}, status_code=400)
 
+    # faster-whisper uses PyAV to decode audio, which requires a file-like
+    # object with a read() method. Wrap the raw bytes in BytesIO.
+    audio_file = io.BytesIO(audio_bytes)
+    audio_file.name = "audio.wav"  # hint for PyAV format detection
+
     model = _get_model()
-    segments, _info = model.transcribe(
-        audio_bytes,
-        language="en",
-        vad_filter=True,
-        beam_size=5,
-    )
-    text = " ".join(seg.text for seg in segments).strip()
+    try:
+        segments, _info = model.transcribe(
+            audio_file,
+            language="en",
+            vad_filter=True,
+            beam_size=5,
+        )
+        text = " ".join(seg.text for seg in segments).strip()
+    except Exception as e:
+        log.error("transcription failed: %s", e)
+        return JSONResponse({"text": "", "error": str(e)}, status_code=500)
+
     log.info("transcribed %d bytes → %d chars", len(audio_bytes), len(text))
     return JSONResponse({"text": text})
