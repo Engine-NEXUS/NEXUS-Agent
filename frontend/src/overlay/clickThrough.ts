@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-
 /**
  * Region-aware click-through (Strategy A from ARCHITECTURE.md §5.1).
  *
@@ -10,8 +8,13 @@ import { invoke } from "@tauri-apps/api/core";
  * When over the avatar -> ignore=false (interactive).
  * When over transparent root -> ignore=true (clicks fall through to the OS app below).
  */
+function isTauri(): boolean {
+  return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+}
+
 export function attachClickThrough(): () => void {
-  let currentIgnore = true; // window starts click-through (set by Rust init)
+  if (!isTauri()) return () => {};
+  let currentIgnore = false; // window starts interactive (set by Rust init)
   let raf = 0;
 
   const onMove = (e: PointerEvent) => {
@@ -24,7 +27,9 @@ export function attachClickThrough(): () => void {
       const wantIgnore = !overAvatar;
       if (wantIgnore !== currentIgnore) {
         currentIgnore = wantIgnore;
-        invoke("set_click_through", { ignore: wantIgnore }).catch(() => {});
+        import("@tauri-apps/api/core").then(({ invoke }) => {
+          invoke("set_click_through", { ignore: wantIgnore }).catch(() => {});
+        });
       }
     });
   };

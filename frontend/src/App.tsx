@@ -1,115 +1,83 @@
 import { useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { Avatar } from "./avatar/Avatar";
 import { useAssistant } from "./store/assistant";
-import { attachClickThrough } from "./overlay/clickThrough";
-import { startRecording, abortCapture, stopRecording } from "./audio/recorder";
-import { startVad, stopVad } from "./audio/vad";
-import { openSession, cancelSession } from "./net/wsBridge";
-import { stopTts } from "./audio/ttsPlayer";
 
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.nexus.internal/ws";
-const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
-const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
-const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";
+function isTauri(): boolean {
+  return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+}
+
+async function tauriInvoke(cmd: string, args?: Record<string, unknown>): Promise<any> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke(cmd, args);
+}
 
 export default function App() {
   const state = useAssistant((s) => s.state);
   const visible = useAssistant((s) => s.visible);
-  const transcript = useAssistant((s) => s.transcript);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
-  // Click-through hook lives for the app lifetime.
-  useEffect(() => attachClickThrough(), []);
-
-  // Auto-scroll transcript to bottom on new entries.
+  // 5-second auto-hide: if user doesn't respond while listening, slide back down.
+  // Delay reset() until after the slide-down completes so the Lottie doesn't
+  // switch segments mid-slide (which would cause a visual glitch).
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript]);
-
-  // React to wake events from Rust (hotkey / Porcupine).
-  useEffect(() => {
-    const off = listen("assistant:wake", async () => {
-      const s = useAssistant.getState();
-
-      // Barge-in: if NEXUS is speaking, stop TTS and cancel the current session
-      // before starting a new capture. This lets the user interrupt mid-speech.
-      if (s.state === "speaking") {
-        stopTts();
-        await cancelSession();
-        await stopRecording();
-        stopVad();
-      } else if (s.state !== "idle") {
-        // Already listening or thinking — ignore subsequent wake events.
-        return;
-      }
-
-      let stream: MediaStream;
-      try {
-        s.setVisible(true);
-        s.setState("listening");
-        await openSession(SERVER_URL, DEVICE_TOKEN, USER_ID, DEVICE_ID);
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
-        await startRecording(stream);
-        await startVad(stream);
-      } catch (err) {
-        console.error("wake handler failed", err);
-        await abortCapture();
-      }
-    });
-    return () => { off.then((f) => f()); };
-  }, []);
-
-  // Auto-hide after 5s idle (longer than old 4s to let user read transcript).
-  useEffect(() => {
-    if (state !== "idle") return;
-    const t = setTimeout(() => useAssistant.getState().setVisible(false), 5000);
+    if (!visible || state !== "listening") return;
+    const t = setTimeout(() => {
+      useAssistant.getState().setVisible(false);
+      // Delay state reset until the 0.5s slide-down finishes.
+      setTimeout(() => useAssistant.getState().reset(), 550);
+    }, 5000);
     return () => clearTimeout(t);
-  }, [state]);
+  }, [visible, state]);
 
-  // Cancel event from Rust (e.g. tray "Stop" or escape key) — abort everything.
+  // Native window visibility with deferred hide for slide-down animation.
+  //
+  // Show: call show_overlay immediately so the native window is visible
+  //   before the CSS slide-up transition plays.
+  //
+  // Hide: DON'T call hide_overlay immediately. Instead, let the CSS class
+  //   change to app--hidden trigger the slide-down transition (0.5s).
+  //   Only after the transition completes do we call hide_overlay to
+  //   natively hide the window. This prevents the orb from vanishing
+  //   "in the air" — it slides back down the way it came.
+  //
+  // Edge case — rapid re-wake during slide-down: the pending hide timer
+  //   is cleared, the window stays shown, and the orb reverses direction.
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    const off = listen("assistant:cancel", async () => {
-      stopTts();
-      stopVad();
-      await stopRecording();
-      await cancelSession();
-      useAssistant.getState().reset();
-    });
-    return () => { off.then((f) => f()); };
-  }, []);
+    if (visible) {
+      // Cancel any pending native hide (e.g. rapid re-wake mid-slide-down).
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+      tauriInvoke("show_overlay").catch(() => {});
+    } else {
+      // Defer native hide until the CSS slide-down transition finishes.
+      // CSS transition is 0.5s; add 100ms buffer for safety.
+      hideTimerRef.current = setTimeout(() => {
+        tauriInvoke("hide_overlay").catch(() => {});
+        hideTimerRef.current = null;
+      }, 600);
+    }
+    return () => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [visible]);
 
-  const captionText = {
-    listening: "Listening...",
-    thinking: "Thinking...",
-    speaking: "",
-    idle: "",
-  }[state];
+  // When state is active (not idle), ensure click-through is OFF.
+  useEffect(() => {
+    if (state === "idle") return;
+    tauriInvoke("set_click_through", { ignore: false }).catch(() => {});
+  }, [state]);
 
   return (
     <div id="app" className={visible ? "app--visible" : "app--hidden"}>
-      {/* Avatar section (top) */}
-      <div className="avatar-section">
+      <div className="avatar-section" data-interactive>
         <Avatar />
-      </div>
-
-      {/* Status caption */}
-      {captionText && <div className="caption">{captionText}</div>}
-
-      {/* Transcript (scrollable conversation) */}
-      <div className="transcript">
-        {transcript.map((entry, i) => (
-          <div
-            key={i}
-            className={`transcript-entry transcript-entry--${entry.role}`}
-          >
-            {entry.text}
-          </div>
-        ))}
-        <div ref={transcriptEndRef} />
       </div>
     </div>
   );

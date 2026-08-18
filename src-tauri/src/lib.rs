@@ -13,11 +13,11 @@ mod network;
 mod tray;
 mod commands;
 mod stt;
+mod voice_profile;
 
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_positioner::{Position, WindowExt};
 use tracing_subscriber::EnvFilter;
 
 /// Shared app state held across async tasks.
@@ -75,9 +75,30 @@ pub fn run() {
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
 
-            // Position the main window at bottom-center.
+            // Position the orb at bottom-center, just above the taskbar/dock.
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.move_window(Position::BottomCenter);
+                use tauri::PhysicalPosition;
+                if let Ok(Some(monitor)) = win.current_monitor() {
+                    let scale = monitor.scale_factor();
+                    let screen = monitor.size();
+                    let orb = 200i32; // matches tauri.conf.json
+                    let phys_orb = (orb as f64 * scale) as i32;
+
+                    let x = (screen.width as i32 - phys_orb) / 2;
+                    // Position relative to the work area (excludes taskbar/dock).
+                    // Use the monitor's work area if available, otherwise estimate.
+                    // Windows taskbar ~48px, macOS dock ~70px.
+                    #[cfg(target_os = "macos")]
+                    let taskbar = (70.0 * scale) as i32;
+                    #[cfg(not(target_os = "macos"))]
+                    let taskbar = (48.0 * scale) as i32;
+                    // Small gap above the taskbar/dock
+                    let gap = (12.0 * scale) as i32;
+                    let y = screen.height as i32 - phys_orb - taskbar - gap;
+
+                    let _ = win.set_position(PhysicalPosition::new(x, y));
+                    tracing::info!("orb positioned at ({x}, {y})");
+                }
             }
 
             // Global hotkey → wake event.
@@ -128,6 +149,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             window_manager::set_click_through,
+            window_manager::show_overlay,
+            window_manager::hide_overlay,
             network::open_session,
             network::send_transcript,
             network::cancel_session,
@@ -135,6 +158,9 @@ pub fn run() {
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,
+            commands::get_voice_profile_status,
+            commands::enroll_voice,
+            commands::delete_voice_profile,
             stt::transcribe_audio,
             stt::stt_status,
         ])

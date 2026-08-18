@@ -56,3 +56,6 @@ src-tauri/resources/whisper/*.bin
 
 # Lock files (cargo generates Cargo.lock; npm uses package-lock.json)
 frontend/yarn.lock
+
+# Experiment / scratch projects (not part of NEXUS)
+experiment/

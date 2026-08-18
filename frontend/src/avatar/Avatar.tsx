@@ -1,62 +1,161 @@
-import { useEffect } from "react";
-import { useRive, useStateMachineInput } from "@rive-app/react-canvas";
-import { useAssistant, type AssistantState } from "../store/assistant";
+import { useEffect, useState, useRef } from "react";
+import lottie, { AnimationItem } from "lottie-web";
+import { useAssistant, AssistantState } from "../store/assistant";
 
 /**
- * Rive-driven avatar. State machine inputs `isListening`, `isThinking`, `isSpeaking`,
- * `idle` are driven from the zustand store. The element is marked `data-interactive`
- * so the click-through hook keeps it mouse-clickable.
+ * Lottie-driven floating orb avatar.
+ * Uses loading.json for the animation.
  *
- * If Rive fails to load (e.g. dev without the .riv asset), we fall back to a CSS orb so
- * the app remains functional.
+ * Animation segments (absolute frame numbers from loading.json):
+ *   171-260 : loading circles (3 colored circles moving)
+ *   261-316 : smile arrives (face transitions back, settles by frame 289)
+ *   frame 300 : stable smile hold frame (face ctrl pos=[0,0,0], scale=[100,100,100])
+ *
+ * Sequencing:
+ *   listening (wake)  : loading (1.5x, ~1s) → smile arrives (1.5x, ~0.6s) → hold at 300
+ *   thinking/speaking : loading circles loop (1.5x / 1.2x)
+ *   idle (after done) : smile arrives (1.0x, ~0.9s) → hold at 300
  */
+
+const SEG_LOADING: [number, number] = [171, 260];
+const SEG_SMILE_ARRIVE: [number, number] = [261, 316];
+const FRAME_HOLD_SMILE = 300;
+
+type AnimMode = "wake-loading" | "wake-smile" | "idle-smile" | "loading-loop" | "holding";
+
 export function Avatar() {
   const state = useAssistant((s) => s.state);
-  const speakSeq = useAssistant((s) => s.speakSeq);
+  const visible = useAssistant((s) => s.visible);
+  const [animationData, setAnimationData] = useState<object | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const animRef = useRef<AnimationItem | null>(null);
+  const modeRef = useRef<AnimMode>("holding");
 
-  const { RiveComponent, rive } = useRive({
-    src: "avatar.riv",
-    stateMachines: "AssistantSM",
-    autoplay: true,
-    onLoadError: () => console.warn("avatar.riv missing → CSS fallback"),
-  });
-
-  const idleInput = useStateMachineInput(rive, "AssistantSM", "idle");
-  const listenInput = useStateMachineInput(rive, "AssistantSM", "isListening");
-  const thinkInput = useStateMachineInput(rive, "AssistantSM", "isThinking");
-  const speakInput = useStateMachineInput(rive, "AssistantSM", "isSpeaking");
-
+  // Load the Lottie JSON animation
   useEffect(() => {
-    const map: Record<AssistantState, boolean[]> = {
-      idle: [true, false, false, false],
-      listening: [false, true, false, false],
-      thinking: [false, false, true, false],
-      speaking: [false, false, false, true],
+    fetch("/loading.json")
+      .then((res) => res.json())
+      .then((data) => setAnimationData(data))
+      .catch((err) => console.error("Failed to load lottie:", err));
+  }, []);
+
+  // Apply state-based animation to a given AnimationItem.
+  // Called both on initial load and on state changes.
+  function applyState(anim: AnimationItem, st: AssistantState) {
+    const speed: Record<AssistantState, number> = {
+      idle: 1.0,
+      listening: 1.5,
+      thinking: 1.5,
+      speaking: 1.2,
     };
-    const [i, l, t, s] = map[state];
-    if (idleInput) idleInput.value = i;
-    if (listenInput) listenInput.value = l;
-    if (thinkInput) thinkInput.value = t;
-    if (speakInput) speakInput.value = s;
-  }, [state, idleInput, listenInput, thinkInput, speakInput]);
+    anim.setSpeed(speed[st]);
 
-  // Mouth flap while speaking (toggled on each new TTS chunk).
+    if (st === "listening") {
+      // Wake sequence: loading (~1s at 1.5x) → smile arrives → hold
+      modeRef.current = "wake-loading";
+      anim.loop = false;
+      anim.playSegments(SEG_LOADING, true);
+    } else if (st === "thinking" || st === "speaking") {
+      // Loading circles loop continuously
+      modeRef.current = "loading-loop";
+      anim.loop = true;
+      anim.playSegments(SEG_LOADING, true);
+    } else {
+      // idle: smile arrives → hold
+      modeRef.current = "idle-smile";
+      anim.loop = false;
+      anim.playSegments(SEG_SMILE_ARRIVE, true);
+    }
+  }
+
+  // Initialize lottie animation when data is loaded
   useEffect(() => {
-    if (speakSeq == null || !speakInput) return;
-    // small visual pulse by toggling speaking input
-    speakInput.value = true;
-    const t = setTimeout(() => {
-      if (speakInput) speakInput.value = state === "speaking";
-    }, 80);
-    return () => clearTimeout(t);
-  }, [speakSeq, speakInput, state]);
+    if (!animationData || !containerRef.current) return;
+
+    // Destroy previous animation if exists
+    if (animRef.current) {
+      animRef.current.destroy();
+    }
+
+    const anim = lottie.loadAnimation({
+      container: containerRef.current,
+      renderer: "svg",
+      loop: true,
+      autoplay: false,
+      animationData,
+    });
+    animRef.current = anim;
+
+    // onComplete handler — sequences wake/idle animation phases.
+    // Fires only when loop=false (one-shot segments).
+    const onComplete = () => {
+      const a = animRef.current;
+      if (!a) return;
+      if (modeRef.current === "wake-loading") {
+        // Loading done → play smile arrival
+        modeRef.current = "wake-smile";
+        a.loop = false;
+        a.playSegments(SEG_SMILE_ARRIVE, true);
+      } else if (modeRef.current === "wake-smile" || modeRef.current === "idle-smile") {
+        // Smile arrival done → hold on stable frame
+        modeRef.current = "holding";
+        a.goToAndStop(FRAME_HOLD_SMILE, true);
+      }
+    };
+    anim.addEventListener("complete", onComplete);
+
+    // Apply current state/visible immediately after creation.
+    // Handles the race condition where hotkey fires before animation loads.
+    const { state: curState, visible: curVisible } = useAssistant.getState();
+    applyState(anim, curState);
+    if (!curVisible) {
+      anim.pause();
+    }
+
+    return () => {
+      anim.removeEventListener("complete", onComplete);
+      anim.destroy();
+      animRef.current = null;
+    };
+  }, [animationData]);
+
+  // React to state changes — apply correct segment/speed/mode.
+  useEffect(() => {
+    if (!animRef.current) return;
+    applyState(animRef.current, state);
+  }, [state]);
+
+  // Play/pause animation based on visibility.
+  // When hiding, delay the pause so the Lottie stays alive during the
+  // 0.5s slide-down animation — a frozen frame sliding down looks dead.
+  useEffect(() => {
+    if (!animRef.current) return;
+    if (visible) {
+      animRef.current.play();
+    } else {
+      const t = setTimeout(() => {
+        animRef.current?.pause();
+      }, 500);
+      return () => clearTimeout(t);
+    }
+  }, [visible]);
 
   return (
-    <div data-interactive className="avatar-wrap" style={{ position: "relative", width: 140, height: 140 }}>
-      {rive ? (
-        <RiveComponent style={{ width: "100%", height: "100%" }} />
+    <div
+      data-interactive
+      className={`avatar-wrap avatar-wrap--${state}`}
+      style={{
+        width: 180,
+        height: 180,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+      }}
+    >
+      {animationData ? (
+        <div ref={containerRef} style={{ width: 180, height: 180 }} />
       ) : (
-        // CSS fallback orb — still driven by state via CSS classes.
         <div className={`orb orb--${state}`} />
       )}
     </div>
