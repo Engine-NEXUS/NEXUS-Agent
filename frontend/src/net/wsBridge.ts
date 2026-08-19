@@ -38,6 +38,9 @@ async function tauriListen<T>(event: string, handler: (payload: T) => void): Pro
 
 let unlisten: (() => void) | null = null;
 
+/** Tracks whether a backend session is actually open. */
+let sessionOpen = false;
+
 export async function openSession(
   url: string = SERVER_URL,
   token: string = DEVICE_TOKEN,
@@ -46,15 +49,25 @@ export async function openSession(
 ): Promise<string> {
   if (!isTauri()) return "";
   const sessionId = await tauriInvoke<string>("open_session", { url, token, userId, deviceId });
+  sessionOpen = true;
   if (!unlisten) {
     unlisten = await tauriListen<ServerEvent>("assistant:server", (payload) => handle(payload));
   }
   return sessionId;
 }
 
-/** Send the transcribed text to the server for processing. */
+/** Returns true if a backend session is currently open. */
+export function hasSession(): boolean {
+  return sessionOpen;
+}
+
+/** Send the transcribed text to the server for processing.
+ * Throws if no session is open so the caller can handle the local-only case. */
 export async function sendTranscript(text: string): Promise<void> {
   if (!isTauri()) return;
+  if (!sessionOpen) {
+    throw new Error("no backend session — local-only mode");
+  }
   await tauriInvoke("send_transcript", { text });
 }
 
@@ -66,6 +79,7 @@ export async function cancelSession(): Promise<void> {
 
 export async function closeSession(): Promise<void> {
   if (!isTauri()) return;
+  sessionOpen = false;
   await tauriInvoke("close_session", {});
 }
 
@@ -109,10 +123,12 @@ function handle(ev: ServerEvent): void {
       }
       break;
     case "done":
+      sessionOpen = false;
       stopTts();
       store.reset();
       break;
     case "error":
+      sessionOpen = false;
       console.error("server error:", ev.message);
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       stopTts();

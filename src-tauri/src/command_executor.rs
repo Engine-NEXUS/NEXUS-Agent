@@ -1,0 +1,791 @@
+//! Local command executor — cached app resolution + direct platform launch.
+//!
+//! Resolution strategy:
+//!   1. AppRegistry cache lookup (O(1) HashMap + fuzzy match) → direct ShellExecuteW / open -b / exec
+//!   2. URL fallback (built into the registry) → open in default browser
+//!   3. Not found → "Didn't find that, sir."
+//!
+//! The old 4-tier strategy (process scan → Get-StartApps → URL → not found) is
+//! replaced by the pre-indexed AppRegistry. Get-StartApps runs ONCE at startup
+//! (background thread) and results are cached in memory + on disk.
+//!
+//! Performance: ~1ms per command (was ~1.5s with the old approach).
+
+use crate::app_registry;
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+
+/// Intent received from the frontend intent parser.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "action")]
+pub enum Intent {
+    #[serde(rename = "open_app")]
+    OpenApp { target: String },
+    #[serde(rename = "open_url")]
+    OpenUrl { target: String, url: String },
+    #[serde(rename = "search")]
+    Search { query: String },
+    #[serde(rename = "unknown")]
+    Unknown { raw: String },
+}
+
+/// Result of executing a command.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandResult {
+    pub success: bool,
+    /// Human-readable message to speak via TTS.
+    pub message: String,
+}
+
+/// IPC: Execute a local command from a parsed intent.
+#[tauri::command]
+pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
+    tracing::info!("executing local intent: {:?}", intent);
+    match intent {
+        Intent::OpenUrl { target, url } => open_url(&target, &url),
+        Intent::OpenApp { target } => resolve_and_open_app(&target),
+        Intent::Search { query } => open_search(&query),
+        Intent::Unknown { raw } => Ok(CommandResult {
+            success: false,
+            message: format!(
+                "I didn't understand: {}. Could you rephrase that, sir?",
+                raw
+            ),
+        }),
+    }
+}
+
+// ─── URL + Search ──────────────────────────────────────────────────────────
+
+fn open_url(target: &str, url: &str) -> Result<CommandResult, String> {
+    match open::that(url) {
+        Ok(()) => {
+            tracing::info!("opened URL for '{}': {}", target, url);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Opened {} in your browser, sir.", capitalize(target)),
+            })
+        }
+        Err(e) => {
+            tracing::error!("failed to open URL '{}': {}", url, e);
+            Ok(CommandResult {
+                success: false,
+                message: format!("I couldn't open {}, sir.", target),
+            })
+        }
+    }
+}
+
+fn open_search(query: &str) -> Result<CommandResult, String> {
+    let url = format!(
+        "https://www.google.com/search?q={}",
+        urlencoding::encode(query)
+    );
+    match open::that(&url) {
+        Ok(()) => {
+            tracing::info!("opened search for: {}", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Searching for {}, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("failed to search '{}': {}", query, e);
+            Ok(CommandResult {
+                success: false,
+                message: format!("I couldn't search for {}, sir.", query),
+            })
+        }
+    }
+}
+
+// ─── App Resolution (via pre-indexed AppRegistry) ──────────────────────────
+
+fn resolve_and_open_app(target: &str) -> Result<CommandResult, String> {
+    let start = std::time::Instant::now();
+    tracing::info!("resolving app: {}", target);
+
+    // Fast path: O(1) cache lookup + fuzzy match
+    if let Some(entry) = app_registry::lookup(target) {
+        tracing::info!(
+            "registry hit: '{}' → '{}' ({:?}) in {:.1}ms",
+            target,
+            entry.display_name,
+            entry.launch,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+
+        match app_registry::launch(&entry) {
+            Ok(()) => {
+                // Record usage for future ranking
+                app_registry::record_usage(target);
+                return Ok(CommandResult {
+                    success: true,
+                    message: "Ok sir.".to_string(),
+                });
+            }
+            Err(e) => {
+                tracing::error!("direct launch failed for '{}': {}", entry.display_name, e);
+                // Fall through to legacy resolver
+            }
+        }
+    }
+
+    tracing::info!(
+        "registry miss for '{}' in {:.1}ms, trying legacy resolver",
+        target,
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    // Legacy fallback: the old 4-tier resolution (only if registry misses)
+    let target_lower = target.to_lowercase();
+    let display_name = app_display_name(&target_lower);
+
+    // Tier 1: Check if the app is already running → focus its window.
+    if let Some(result) = check_running_and_focus(&target_lower, &display_name) {
+        return Ok(result);
+    }
+
+    // Tier 2: Check installed apps via OS-specific methods.
+    if let Some(result) = check_installed_and_launch(&target_lower, &display_name) {
+        return Ok(result);
+    }
+
+    // Tier 3: URL fallback — open in default browser.
+    if let Some(url) = url_fallback(&target_lower) {
+        return open_url(&display_name, &url);
+    }
+
+    // Not found.
+    Ok(CommandResult {
+        success: false,
+        message: "Didn't find that, sir.".to_string(),
+    })
+}
+
+/// Map internal target names to human-friendly display names for TTS.
+fn app_display_name(target: &str) -> String {
+    match target {
+        "gmail" | "google mail" => "Gmail".to_string(),
+        "youtube" | "you tube" => "YouTube".to_string(),
+        "github" | "git hub" => "GitHub".to_string(),
+        "vs code" | "visual studio code" | "code" => "VS Code".to_string(),
+        "notepad" => "Notepad".to_string(),
+        "calculator" | "calc" => "Calculator".to_string(),
+        "explorer" | "file explorer" => "File Explorer".to_string(),
+        "terminal" | "windows terminal" | "wt" => "Terminal".to_string(),
+        "command prompt" | "cmd" => "Command Prompt".to_string(),
+        "powershell" => "PowerShell".to_string(),
+        "task manager" => "Task Manager".to_string(),
+        "control panel" => "Control Panel".to_string(),
+        "settings" => "Settings".to_string(),
+        "paint" | "mspaint" => "Paint".to_string(),
+        "spotify" => "Spotify".to_string(),
+        "discord" => "Discord".to_string(),
+        "slack" => "Slack".to_string(),
+        "figma" => "Figma".to_string(),
+        "notion" => "Notion".to_string(),
+        "chatgpt" | "chat gpt" => "ChatGPT".to_string(),
+        "claude" => "Claude".to_string(),
+        "whatsapp" => "WhatsApp".to_string(),
+        "netflix" => "Netflix".to_string(),
+        "twitter" => "Twitter".to_string(),
+        "reddit" => "Reddit".to_string(),
+        "facebook" => "Facebook".to_string(),
+        "instagram" => "Instagram".to_string(),
+        "linkedin" => "LinkedIn".to_string(),
+        "twitch" => "Twitch".to_string(),
+        _ => capitalize(target),
+    }
+}
+
+// ─── Tier 1: Running process check + focus ─────────────────────────────────
+
+fn check_running_and_focus(target: &str, display_name: &str) -> Option<CommandResult> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, false, ProcessRefreshKind::new());
+
+    let process_names = app_to_process_names(target);
+    tracing::debug!("checking running processes: {:?}", process_names);
+
+    for proc in sys.processes().values() {
+        let name = proc.name().to_string_lossy().to_lowercase();
+        for candidate in &process_names {
+            if name.contains(candidate) {
+                tracing::info!("found running process: {} (pid={})", name, proc.pid());
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(result) = focus_window_by_process(proc.pid().as_u32(), display_name) {
+                        return Some(result);
+                    }
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let _ = Command::new("open").args(["-a", display_name]).spawn();
+                    return Some(CommandResult {
+                        success: true,
+                        message: format!("{} is already open, sir.", display_name),
+                    });
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = Command::new("wmctrl").args(["-a", display_name]).spawn();
+                    return Some(CommandResult {
+                        success: true,
+                        message: format!("{} is already open, sir.", display_name),
+                    });
+                }
+                #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+                {
+                    return Some(CommandResult {
+                        success: true,
+                        message: format!("{} is already running, sir.", display_name),
+                    });
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Map app name to possible process names (for sysinfo matching).
+fn app_to_process_names(target: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    names.push(target.to_lowercase());
+    names.push(target.replace(' ', ""));
+
+    match target {
+        "chrome" | "google chrome" | "browser" => { names.push("chrome".to_string()); }
+        "firefox" => { names.push("firefox".to_string()); }
+        "brave" => { names.push("brave".to_string()); }
+        "vs code" | "visual studio code" | "code" => { names.push("code".to_string()); }
+        "notepad" => { names.push("notepad".to_string()); }
+        "calculator" | "calc" => { names.push("calc".to_string()); names.push("calculator".to_string()); }
+        "spotify" => { names.push("spotify".to_string()); }
+        "discord" => { names.push("discord".to_string()); }
+        "terminal" | "windows terminal" | "wt" => { names.push("windowsterminal".to_string()); names.push("wt".to_string()); }
+        "explorer" | "file explorer" => { names.push("explorer".to_string()); }
+        "figma" => { names.push("figma".to_string()); }
+        "slack" => { names.push("slack".to_string()); }
+        "notion" => { names.push("notion".to_string()); }
+        "whatsapp" => { names.push("whatsapp".to_string()); }
+        _ => {}
+    }
+
+    names.sort();
+    names.dedup();
+    names
+}
+
+// ─── Tier 2: Installed app check + launch ──────────────────────────────────
+
+fn check_installed_and_launch(target: &str, display_name: &str) -> Option<CommandResult> {
+    #[cfg(target_os = "windows")]
+    {
+        return check_installed_windows(target, display_name);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return check_installed_macos(target, display_name);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return check_installed_linux(target, display_name);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (target, display_name);
+        None
+    }
+}
+
+// ─── Windows: Tier 2 (Get-StartApps primary resolver) ──────────────────────
+
+#[cfg(target_os = "windows")]
+fn check_installed_windows(target: &str, display_name: &str) -> Option<CommandResult> {
+    // PRIMARY: Use Get-StartApps — the universal app resolver on Windows.
+    // Finds: native Win32, UWP/Store, PWA (Chrome/Edge/Brave), Squirrel apps.
+    if let Some(result) = launch_via_start_apps(target, display_name) {
+        return Some(result);
+    }
+
+    // FALLBACK: Try `where.exe` for PATH-resolvable executables.
+    if let Some(result) = launch_via_where(target, display_name) {
+        return Some(result);
+    }
+
+    None
+}
+
+/// Use PowerShell Get-StartApps to find and launch an app by name.
+/// This finds PWAs, UWP apps, Store apps, and native apps with Start Menu shortcuts.
+#[cfg(target_os = "windows")]
+fn launch_via_start_apps(target: &str, _display_name: &str) -> Option<CommandResult> {
+    // Build a list of name variants to search for.
+    let search_names = app_search_names(target);
+    tracing::debug!("searching Get-StartApps for: {:?}", search_names);
+
+    // Get all Start apps as JSON for reliable parsing.
+    let ps_script = "Get-StartApps | ConvertTo-Json -Compress";
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", ps_script])
+        .output();
+
+    let json_str = match output {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => {
+            tracing::warn!("Get-StartApps failed");
+            return None;
+        }
+    };
+
+    // Parse the JSON manually (avoid adding serde_json dependency).
+    // Format: [{"Name":"Gmail","AppID":"Brave._crx_..."},...] or {"Name":"...","AppID":"..."}
+    let entries = parse_start_apps_json(&json_str);
+    tracing::debug!("Get-StartApps returned {} entries", entries.len());
+
+    // Find the best match: prefer exact name match, then contains match.
+    // Prefer native apps (com.squirrel.*, no _crx_) over PWAs (_crx_).
+    let mut exact_match: Option<&(String, String)> = None;
+    let mut contains_match: Option<&(String, String)> = None;
+    let mut exact_native: Option<&(String, String)> = None;
+    let mut contains_native: Option<&(String, String)> = None;
+
+    for entry in &entries {
+        let entry_name_lower = entry.0.to_lowercase();
+        let is_native = !entry.1.contains("_crx_");
+
+        for search in &search_names {
+            if entry_name_lower == *search {
+                if is_native {
+                    if exact_native.is_none() {
+                        exact_native = Some(entry);
+                    }
+                } else if exact_match.is_none() {
+                    exact_match = Some(entry);
+                }
+            } else if entry_name_lower.contains(search.as_str()) {
+                if is_native {
+                    if contains_native.is_none() {
+                        contains_native = Some(entry);
+                    }
+                } else if contains_match.is_none() {
+                    contains_match = Some(entry);
+                }
+            }
+        }
+    }
+
+    // Prefer: exact native > exact PWA > contains native > contains PWA
+    let chosen = exact_native.or(exact_match).or(contains_native).or(contains_match);
+
+    if let Some((name, app_id)) = chosen {
+        tracing::info!("found app in Get-StartApps: {} → {}", name, app_id);
+
+        // Launch via shell:AppsFolder\{AppID}
+        let shell_path = format!("shell:AppsFolder\\{}", app_id);
+        let result = Command::new("cmd")
+            .args(["/c", "start", "", &shell_path])
+            .spawn();
+
+        match result {
+            Ok(_) => {
+                tracing::info!("launched app via shell:AppsFolder: {}", app_id);
+                Some(CommandResult {
+                    success: true,
+                    message: format!("Ok sir."),
+                })
+            }
+            Err(e) => {
+                tracing::error!("failed to launch app '{}': {}", app_id, e);
+                None
+            }
+        }
+    } else {
+        tracing::info!("app '{}' not found in Get-StartApps", target);
+        None
+    }
+}
+
+/// Parse Get-StartApps JSON output into (Name, AppID) pairs.
+/// Handles both single-object and array formats.
+#[cfg(target_os = "windows")]
+fn parse_start_apps_json(json: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+
+    // Simple JSON parser — extract "Name" and "AppID" pairs.
+    // Format: [{"Name":"...","AppID":"..."},{"Name":"...","AppID":"..."}]
+    // or: {"Name":"...","AppID":"..."}
+    let mut remaining = json;
+
+    while let Some(name_start) = remaining.find("\"Name\"") {
+        remaining = &remaining[name_start..];
+        // Find the value after "Name":
+        if let Some(colon) = remaining.find(':') {
+            remaining = &remaining[colon + 1..];
+            // Skip whitespace and opening quote
+            if let Some(q1) = remaining.find('"') {
+                remaining = &remaining[q1 + 1..];
+                if let Some(q2) = remaining.find('"') {
+                    let name = &remaining[..q2];
+                    remaining = &remaining[q2 + 1..];
+
+                    // Find "AppID"
+                    if let Some(appid_pos) = remaining.find("\"AppID\"") {
+                        remaining = &remaining[appid_pos..];
+                        if let Some(colon2) = remaining.find(':') {
+                            remaining = &remaining[colon2 + 1..];
+                            if let Some(q3) = remaining.find('"') {
+                                remaining = &remaining[q3 + 1..];
+                                if let Some(q4) = remaining.find('"') {
+                                    let app_id = &remaining[..q4];
+                                    remaining = &remaining[q4 + 1..];
+                                    entries.push((name.to_string(), app_id.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            break;
+        }
+    }
+
+    entries
+}
+
+/// Build search name variants for Get-StartApps matching.
+#[cfg(target_os = "windows")]
+fn app_search_names(target: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    names.push(target.to_lowercase());
+
+    // Add display name (e.g. "gmail" → "gmail" but also try "google mail")
+    match target {
+        "gmail" => { names.push("gmail".to_string()); }
+        "youtube" | "you tube" => { names.push("youtube".to_string()); }
+        "github" | "git hub" => { names.push("github".to_string()); }
+        "vs code" | "visual studio code" | "code" => {
+            names.push("visual studio code".to_string());
+            names.push("vs code".to_string());
+        }
+        "calculator" | "calc" => { names.push("calculator".to_string()); }
+        "terminal" | "windows terminal" | "wt" => {
+            names.push("windows terminal".to_string());
+            names.push("terminal".to_string());
+        }
+        "explorer" | "file explorer" => { names.push("file explorer".to_string()); }
+        "command prompt" | "cmd" => { names.push("command prompt".to_string()); }
+        "task manager" => { names.push("task manager".to_string()); }
+        "control panel" => { names.push("control panel".to_string()); }
+        "settings" => { names.push("settings".to_string()); }
+        "paint" => { names.push("paint".to_string()); }
+        "chatgpt" | "chat gpt" => { names.push("chatgpt".to_string()); }
+        "google drive" => { names.push("google drive".to_string()); }
+        "google docs" => { names.push("google docs".to_string()); }
+        "google sheets" => { names.push("google sheets".to_string()); }
+        "google slides" => { names.push("google slides".to_string()); }
+        "google maps" | "maps" => { names.push("google maps".to_string()); names.push("maps".to_string()); }
+        "google calendar" | "calendar" => { names.push("google calendar".to_string()); names.push("calendar".to_string()); }
+        "google photos" | "photos" => { names.push("google photos".to_string()); names.push("photos".to_string()); }
+        "google meet" => { names.push("google meet".to_string()); }
+        "google chat" | "chat" => { names.push("google chat".to_string()); names.push("chat".to_string()); }
+        "google translate" | "translate" => { names.push("google translate".to_string()); names.push("translate".to_string()); }
+        "google news" => { names.push("google news".to_string()); }
+        "google gemini" | "gemini" => { names.push("gemini".to_string()); }
+        "whatsapp" => { names.push("whatsapp".to_string()); }
+        _ => {}
+    }
+
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Fallback: use `where.exe` to find executables in PATH + App Paths registry.
+#[cfg(target_os = "windows")]
+fn launch_via_where(target: &str, _display_name: &str) -> Option<CommandResult> {
+    let exe_name = if target.ends_with(".exe") {
+        target.to_string()
+    } else {
+        format!("{}.exe", target)
+    };
+
+    tracing::debug!("trying where.exe: {}", exe_name);
+
+    let output = Command::new("where")
+        .args([&exe_name])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let path = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string();
+            if path.is_empty() {
+                return None;
+            }
+            tracing::info!("found executable via where.exe: {}", path);
+
+            let result = Command::new("cmd")
+                .args(["/c", "start", "", &path])
+                .spawn();
+
+            match result {
+                Ok(_) => {
+                    Some(CommandResult {
+                        success: true,
+                        message: format!("Ok sir."),
+                    })
+                }
+                Err(e) => {
+                    tracing::error!("failed to launch '{}': {}", path, e);
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+// ─── Windows: Tier 1 (focus window) ────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+fn focus_window_by_process(pid: u32, display_name: &str) -> Option<CommandResult> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    let target_pid = pid;
+    let mut hwnds: Vec<isize> = Vec::new();
+
+    unsafe extern "system" fn collect_hwnds(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let hwnds = &mut *(lparam.0 as *mut Vec<isize>);
+        if IsWindowVisible(hwnd).as_bool() {
+            hwnds.push(hwnd.0 as isize);
+        }
+        BOOL(1)
+    }
+
+    unsafe {
+        let lparam = LPARAM(&mut hwnds as *mut Vec<isize> as isize);
+        let _ = EnumWindows(Some(collect_hwnds), lparam);
+    }
+
+    for hwnd_val in hwnds {
+        let hwnd = HWND(hwnd_val);
+        unsafe {
+            let mut window_pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut window_pid as *mut u32);
+            if window_pid == target_pid {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                tracing::info!("focused window for pid={}", target_pid);
+                return Some(CommandResult {
+                    success: true,
+                    message: format!("{} is already open, sir.", display_name),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+// ─── macOS: Tier 2 ─────────────────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn check_installed_macos(target: &str, display_name: &str) -> Option<CommandResult> {
+    let app_name = if target.ends_with(".app") {
+        target.to_string()
+    } else {
+        format!("{}.app", display_name)
+    };
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let locations = [
+        format!("/Applications/{}", app_name),
+        format!("{}/Applications/{}", home, app_name),
+        format!("/System/Applications/{}", app_name),
+    ];
+
+    for path in &locations {
+        if std::path::Path::new(path).exists() {
+            tracing::info!("found app at: {}", path);
+            let result = Command::new("open").args(["-a", &app_name]).spawn();
+            if result.is_ok() {
+                return Some(CommandResult {
+                    success: true,
+                    message: format!("Opened {}, sir.", display_name),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+// ─── Linux: Tier 2 ─────────────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn check_installed_linux(target: &str, display_name: &str) -> Option<CommandResult> {
+    if let Some(exec) = find_desktop_entry(target) {
+        let result = Command::new("sh").args(["-c", &exec]).spawn();
+        if result.is_ok() {
+            return Some(CommandResult {
+                success: true,
+                message: format!("Opened {}, sir.", display_name),
+            });
+        }
+    }
+
+    let result = open::that(target);
+    if result.is_ok() {
+        return Some(CommandResult {
+            success: true,
+            message: format!("Opened {}, sir.", display_name),
+        });
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn find_desktop_entry(name: &str) -> Option<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dirs = [
+        "/usr/share/applications",
+        "/usr/local/share/applications",
+        &format!("{}/.local/share/applications", home),
+    ];
+
+    let name_lower = name.to_lowercase();
+    let name_no_spaces = name_lower.replace(' ', "-");
+
+    for dir in &dirs {
+        let path = std::path::Path::new(dir);
+        if !path.exists() { continue; }
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_lowercase();
+                if fname.contains(&name_lower) || fname.contains(&name_no_spaces) {
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        for line in content.lines() {
+                            if line.starts_with("Exec=") {
+                                let exec = &line[5..];
+                                let clean = exec
+                                    .split_whitespace()
+                                    .filter(|w| !w.starts_with('%'))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                return Some(clean);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// ─── Tier 3: URL fallback ──────────────────────────────────────────────────
+
+fn url_fallback(target: &str) -> Option<String> {
+    let url_map: &[(&str, &str)] = &[
+        ("gmail", "https://mail.google.com"),
+        ("google mail", "https://mail.google.com"),
+        ("youtube", "https://www.youtube.com"),
+        ("you tube", "https://www.youtube.com"),
+        ("github", "https://github.com"),
+        ("git hub", "https://github.com"),
+        ("twitter", "https://twitter.com"),
+        ("x", "https://x.com"),
+        ("facebook", "https://facebook.com"),
+        ("instagram", "https://instagram.com"),
+        ("reddit", "https://reddit.com"),
+        ("linkedin", "https://linkedin.com"),
+        ("whatsapp", "https://web.whatsapp.com"),
+        ("whatsapp web", "https://web.whatsapp.com"),
+        ("spotify", "https://open.spotify.com"),
+        ("netflix", "https://netflix.com"),
+        ("amazon", "https://amazon.com"),
+        ("google drive", "https://drive.google.com"),
+        ("google docs", "https://docs.google.com"),
+        ("google sheets", "https://sheets.google.com"),
+        ("google slides", "https://slides.google.com"),
+        ("google maps", "https://maps.google.com"),
+        ("google calendar", "https://calendar.google.com"),
+        ("google translate", "https://translate.google.com"),
+        ("google photos", "https://photos.google.com"),
+        ("google news", "https://news.google.com"),
+        ("google meet", "https://meet.google.com"),
+        ("google chat", "https://chat.google.com"),
+        ("google play", "https://play.google.com"),
+        ("google play store", "https://play.google.com"),
+        ("play store", "https://play.google.com"),
+        ("app store", "https://apps.apple.com"),
+        ("mac app store", "https://apps.apple.com"),
+        ("chatgpt", "https://chat.openai.com"),
+        ("chat gpt", "https://chat.openai.com"),
+        ("open ai", "https://chat.openai.com"),
+        ("openai", "https://chat.openai.com"),
+        ("claude", "https://claude.ai"),
+        ("figma", "https://figma.com"),
+        ("notion", "https://notion.so"),
+        ("slack", "https://slack.com"),
+        ("discord", "https://discord.com/app"),
+        ("twitch", "https://twitch.tv"),
+        ("stack overflow", "https://stackoverflow.com"),
+        ("stackoverflow", "https://stackoverflow.com"),
+        ("wikipedia", "https://wikipedia.org"),
+        ("chat", "https://chat.google.com"),
+        ("maps", "https://maps.google.com"),
+        ("translate", "https://translate.google.com"),
+        ("my drive", "https://drive.google.com"),
+        ("calendar", "https://calendar.google.com"),
+        ("gemini", "https://gemini.google.com"),
+        ("google gemini", "https://gemini.google.com"),
+    ];
+
+    for (name, url) in url_map {
+        if target == *name {
+            return Some(url.to_string());
+        }
+    }
+    None
+}
+
+// ─── Utilities ─────────────────────────────────────────────────────────────
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+mod urlencoding {
+    pub fn encode(s: &str) -> String {
+        let mut result = String::with_capacity(s.len() * 3);
+        for byte in s.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    result.push(byte as char);
+                }
+                b' ' => result.push('+'),
+                _ => result.push_str(&format!("%{:02X}", byte)),
+            }
+        }
+        result
+    }
+}

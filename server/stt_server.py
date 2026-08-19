@@ -48,6 +48,31 @@ MODEL_NAME = os.getenv("WHISPER_MODEL", "base")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8")
 
+# Hotwords — biases the Whisper decoder toward known app/brand names so that
+# mispronunciations like "gamail" are more likely to be transcribed as "gmail".
+# This is faster-whisper's built-in hotword feature (PR #731, merged May 2024).
+# It adds the hotwords as a prompt to every transcription window, unlike
+# initial_prompt which only affects the first window.
+HOTWORDS = os.getenv(
+    "WHISPER_HOTWORDS",
+    " ".join([
+        # Web apps / services
+        "gmail", "youtube", "github", "google", "chrome", "brave", "firefox",
+        "twitter", "instagram", "facebook", "reddit", "linkedin", "whatsapp",
+        "netflix", "amazon", "wikipedia", "twitch", "spotify", "discord",
+        "slack", "notion", "figma", "chatgpt", "claude", "gemini",
+        # Google suite
+        "drive", "docs", "sheets", "slides", "maps", "calendar", "translate",
+        "photos", "meet", "chat",
+        # Native apps
+        "notepad", "calculator", "explorer", "terminal", "powershell",
+        "paint", "settings", "outlook", "word", "excel", "powerpoint",
+        "vscode", "code", "steam", "zoom", "teams", "skype", "telegram",
+        # Action words
+        "open", "launch", "start", "search", "find", "close",
+    ]),
+)
+
 app = FastAPI(title="NEXUS STT", version="0.1.0")
 
 # Load model once on startup.
@@ -65,7 +90,12 @@ def _get_model() -> WhisperModel:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"ok": True, "model": MODEL_NAME, "device": DEVICE})
+    return JSONResponse({
+        "ok": True,
+        "model": MODEL_NAME,
+        "device": DEVICE,
+        "hotwords": HOTWORDS[:80] + "..." if len(HOTWORDS) > 80 else HOTWORDS,
+    })
 
 
 @app.post("/transcribe")
@@ -73,15 +103,43 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
     """Transcribe raw audio bytes. Returns {"text": "transcript"}.
 
     Accepts WAV, MP3, FLAC, or any format supported by PyAV.
-    Raw 16-bit PCM is also accepted (wrapped in BytesIO).
+    Raw 16-bit PCM is also accepted — we wrap it in a WAV header so
+    PyAV/faster-whisper can decode it.
     """
     import io
+    import struct
     audio_bytes = await audio.read()
     if not audio_bytes:
         return JSONResponse({"text": ""}, status_code=400)
 
-    # faster-whisper uses PyAV to decode audio, which requires a file-like
-    # object with a read() method. Wrap the raw bytes in BytesIO.
+    # Check if the bytes start with a RIFF/WAV header. If not, assume raw
+    # 16-bit LE mono PCM at 16kHz and wrap it in a WAV header so PyAV can
+    # decode it.
+    is_wav = len(audio_bytes) >= 12 and audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE"
+    if not is_wav:
+        sample_rate = 16000
+        num_channels = 1
+        bits_per_sample = 16
+        data_len = len(audio_bytes)
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            36 + data_len,
+            b"WAVE",
+            b"fmt ",
+            16,  # fmt chunk size
+            1,   # PCM
+            num_channels,
+            sample_rate,
+            sample_rate * num_channels * bits_per_sample // 8,  # byte rate
+            num_channels * bits_per_sample // 8,  # block align
+            bits_per_sample,
+            b"data",
+            data_len,
+        )
+        audio_bytes = header + audio_bytes
+        log.info("wrapped raw PCM (%d bytes) in WAV header", data_len)
+
     audio_file = io.BytesIO(audio_bytes)
     audio_file.name = "audio.wav"  # hint for PyAV format detection
 
@@ -90,7 +148,16 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
         segments, _info = model.transcribe(
             audio_file,
             language="en",
+            hotwords=HOTWORDS,
+            # Use VAD but with gentle parameters — default VAD is too aggressive
+            # on short command clips (<2s) and discards them entirely.
+            # min_silence_duration_ms=1500 matches the frontend VAD timing.
             vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=1500,
+                speech_pad_ms=250,
+                threshold=0.3,
+            ),
             beam_size=5,
         )
         text = " ".join(seg.text for seg in segments).strip()

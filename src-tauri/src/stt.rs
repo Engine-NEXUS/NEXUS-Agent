@@ -15,8 +15,10 @@
 
 use tauri::Runtime;
 
-/// Default local STT endpoint. Audio goes here (localhost), not the remote server.
-const DEFAULT_LOCAL_STT_URL: &str = "http://localhost:8000/transcribe";
+/// Default local STT endpoint. Audio goes here (127.0.0.1), not the remote server.
+/// Use 127.0.0.1 instead of "localhost" — Rust's hyper/tokio tries IPv6 (::1)
+/// first when resolving "localhost", and uvicorn binds to IPv4 only by default.
+const DEFAULT_LOCAL_STT_URL: &str = "http://127.0.0.1:8000/transcribe";
 
 fn local_stt_url() -> String {
     std::env::var("NEXUS_LOCAL_STT_URL").unwrap_or_else(|_| DEFAULT_LOCAL_STT_URL.to_string())

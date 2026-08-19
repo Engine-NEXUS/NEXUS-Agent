@@ -16,16 +16,22 @@ export default function App() {
   const state = useAssistant((s) => s.state);
   const visible = useAssistant((s) => s.visible);
 
-  // 5-second auto-hide: if user doesn't respond while listening, slide back down.
+  // 8-second auto-hide: if user doesn't respond while listening, slide back down.
+  // Also cleans up VAD + recording + mic stream to avoid orphaned AudioContexts.
   // Delay reset() until after the slide-down completes so the Lottie doesn't
   // switch segments mid-slide (which would cause a visual glitch).
   useEffect(() => {
     if (!visible || state !== "listening") return;
     const t = setTimeout(() => {
+      // Stop VAD + recording + mic stream before hiding.
+      import("./audio/vad").then(({ stopVad }) => stopVad()).catch(() => {});
+      import("./audio/recorder").then(({ abortCapture }) => {
+        void abortCapture().catch(() => {});
+      }).catch(() => {});
       useAssistant.getState().setVisible(false);
       // Delay state reset until the 0.5s slide-down finishes.
       setTimeout(() => useAssistant.getState().reset(), 550);
-    }, 5000);
+    }, 8000);
     return () => clearTimeout(t);
   }, [visible, state]);
 

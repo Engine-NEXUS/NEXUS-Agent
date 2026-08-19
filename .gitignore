@@ -59,3 +59,6 @@ frontend/yarn.lock
 
 # Experiment / scratch projects (not part of NEXUS)
 experiment/
+
+# Duplicate model file at root (real one is in src-tauri/resources/oww/)
+/nexus.onnx

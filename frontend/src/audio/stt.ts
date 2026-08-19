@@ -11,6 +11,9 @@ function isTauri(): boolean {
   return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
 }
 
+/** STT timeout — first call loads the whisper model (~10s on CPU), so allow 30s. */
+const STT_TIMEOUT_MS = 30000;
+
 /**
  * Transcribe raw 16-bit mono PCM audio to text via the local STT server.
  *
@@ -19,11 +22,20 @@ function isTauri(): boolean {
  */
 export async function transcribeAudio(samples: Int16Array): Promise<string> {
   if (!isTauri()) return "";
-  // Convert Int16Array to a plain array for Tauri IPC serialization.
+  // NOTE: Array.from() + JSON serialization is O(n) for ~80k samples.
+  // This is a Tauri IPC limitation — Phase 2 replaces this with in-process
+  // sherpa-onnx, eliminating the IPC round-trip entirely.
   const payload = Array.from(samples);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const text = await invoke<string>("transcribe_audio", { samples: payload });
+    // Race the STT call against a timeout so the user isn't stuck waiting
+    // if the local STT server is slow or unresponsive.
+    const text = await Promise.race([
+      invoke<string>("transcribe_audio", { samples: payload }),
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error("STT timeout")), STT_TIMEOUT_MS),
+      ),
+    ]);
     return text;
   } catch (err) {
     console.error("local STT failed:", err);

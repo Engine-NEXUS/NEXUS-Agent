@@ -57,9 +57,11 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return;
   }
 
-  // Cancel any in-progress speech (shouldn't happen if stopTts is called
-  // first, but this is a safety net).
-  speechSynthesis.cancel();
+  // NOTE: Do NOT call speechSynthesis.cancel() here.
+  // cancel() fires an 'interrupted' error on any in-progress utterance,
+  // which causes the previous speak()'s onerror handler to fire and
+  // resolve its promise early. The caller is responsible for calling
+  // stopTts() before starting a new utterance if barge-in is desired.
 
   await ensureVoices();
 

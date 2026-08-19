@@ -60,6 +60,25 @@ base64 = "0.22"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
+# Cross-platform app/URL launching (open::that, open::with)
+open = "5"
+
+# Platform-agnostic user dirs (for app_registry disk cache path)
+dirs-next = "2"
+
+# Process enumeration — check if an app is already running (3-tier resolution)
+sysinfo = "0.32"
+
+# Windows-specific: EnumWindows + SetForegroundWindow + ShellExecuteW
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.36", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+] }
+# Registry access for App Paths + Uninstall keys (app discovery)
+winreg = "0.55"
+
 [features]
 default = ["wakeword-oww"]
 wakeword-porcupine = []   # legacy: bundle libpv_porcupine + .ppn at runtime
