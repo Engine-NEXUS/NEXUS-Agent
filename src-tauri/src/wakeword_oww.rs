@@ -51,10 +51,20 @@ mod engine {
 
     /// A structured intent emitted when a command classifier fires.
     /// This is serialized and sent to the frontend via a Tauri event.
+    ///
+    /// Type 1 (Fixed): `needs_param` is false (or absent), `target` is set.
+    ///   → Frontend executes directly, no STT needed.
+    ///
+    /// Type 2 (Parameterized): `needs_param` is true, `target` is empty.
+    ///   → Frontend speaks "On it sir", records 3s of audio, runs STT
+    ///     to get the parameter (song name, search query), then executes.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct CommandIntent {
         pub action: String,
+        #[serde(default)]
         pub target: String,
+        #[serde(default)]
+        pub needs_param: bool,
     }
 
     /// The intent mapping loaded from `command_intents.json`.
@@ -827,8 +837,8 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     tokio::spawn(async move {
         while let Some(intent) = cmd_rx.recv().await {
             tracing::info!(
-                "Tier 3: emitting command-detected event → action={}, target={}",
-                intent.action, intent.target
+                "Tier 3: emitting command-detected event → action={}, target={}, needs_param={}",
+                intent.action, intent.target, intent.needs_param
             );
 
             // Emit to frontend — the frontend will skip STT and execute

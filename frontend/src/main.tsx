@@ -137,9 +137,9 @@ function stopMicStream() {
 async function setupCommandDetectionListener() {
   try {
     const { listen } = await import("@tauri-apps/api/event");
-    await listen<{ action: string; target: string }>("command-detected", async (event) => {
+    await listen<{ action: string; target: string; needs_param?: boolean }>("command-detected", async (event) => {
       const intent = event.payload;
-      console.log(`[NEXUS] Tier 3 command detected: ${intent.action} → ${intent.target}`);
+      console.log(`[NEXUS] Tier 3 command detected: ${intent.action} (needs_param=${intent.needs_param ?? false})`);
 
       const { useAssistant } = await import("./store/assistant");
       const { speak } = await import("./audio/ttsPlayer");
@@ -149,10 +149,76 @@ async function setupCommandDetectionListener() {
       s.setVisible(true);
       s.setState("speaking");
 
-      // Add user-facing message showing what was detected
-      s.addUserMessage(`${intent.action.replace(/_/g, " ")} ${intent.target}`);
+      // ─── Type 2: Parameterized command ─────────────────────────────
+      // The acoustic classifier detected the command PATTERN (e.g. "play ... in spotify").
+      // Now we need to capture the PARAMETER (e.g. song name) via STT.
+      // Flow: speak "On it sir" → record 3s → STT → execute with parameter
+      if (intent.needs_param) {
+        s.addUserMessage(`${intent.action.replace(/_/g, " ")}...`);
+        s.addAssistantMessage("On it sir");
+        void speak("On it sir");
 
-      // Speak short acknowledgement
+        // Wait for TTS to finish before recording (so we don't capture TTS audio)
+        await new Promise<void>((resolve) => {
+          if (typeof speechSynthesis === "undefined" || !speechSynthesis.speaking) {
+            resolve();
+            return;
+          }
+          const check = () => {
+            if (!speechSynthesis.speaking) {
+              resolve();
+              return;
+            }
+            setTimeout(check, 100);
+          };
+          setTimeout(check, 100);
+        });
+
+        // Record 3 seconds of audio for the parameter
+        s.setState("listening");
+        try {
+          const { captureParameter } = await import("./audio/paramCapture");
+          const pcm = await captureParameter(3000);
+          if (pcm && pcm.length > 0) {
+            s.setState("thinking");
+            const { transcribeAudio } = await import("./audio/stt");
+            const param = await transcribeAudio(pcm);
+            if (param && param.trim().length > 0) {
+              console.log(`[NEXUS] Tier 3 parameter: "${param}"`);
+              s.addUserMessage(param);
+              // Execute with the parameter as the query
+              const { invoke } = await import("@tauri-apps/api/core");
+              const result = await invoke<{ success: boolean; message: string }>(
+                "execute_command",
+                { intent: { action: intent.action, query: param } }
+              );
+              console.log(`[NEXUS] Tier 3 execute result:`, result);
+              if (result.message) {
+                s.addAssistantMessage(result.message);
+                void speak(result.message.replace(/,/g, ""));
+              }
+            } else {
+              console.warn("[NEXUS] Tier 3 parameter STT returned empty");
+              s.addAssistantMessage("Didn't catch that sir");
+              void speak("Didn't catch that sir");
+            }
+          }
+        } catch (err) {
+          console.error("[NEXUS] Tier 3 parameter capture failed:", err);
+          s.addAssistantMessage("Didn't catch that sir");
+          void speak("Didn't catch that sir");
+        }
+
+        setTimeout(() => {
+          useAssistant.getState().setVisible(false);
+          setTimeout(() => useAssistant.getState().reset(), 550);
+        }, 800);
+        return;
+      }
+
+      // ─── Type 1: Fixed command (no parameter) ──────────────────────
+      // Execute directly — no STT needed.
+      s.addUserMessage(`${intent.action.replace(/_/g, " ")} ${intent.target}`);
       s.addAssistantMessage("Ok sir.");
       void speak("Ok sir.");
 
@@ -203,6 +269,19 @@ void setupCommandDetectionListener();
 /** Called by finishCapture/abortCapture cleanup to release the mic stream. */
 (window as any).__NEXUS_RELEASE_MIC__ = () => {
   stopMicStream();
+};
+
+/** Called by paramCapture to get the existing mic stream (or null if not active). */
+(window as any).__NEXUS_GET_MIC_STREAM__ = async (): Promise<MediaStream> => {
+  if (micStream) return micStream;
+  // If no existing stream, get a new one
+  return await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+    },
+  });
 };
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

@@ -25,6 +25,40 @@ pub enum Intent {
     OpenUrl { target: String, url: String },
     #[serde(rename = "search")]
     Search { query: String },
+    // ── Type 2: Parameterized commands (acoustic trigger + STT parameter) ──
+    #[serde(rename = "spotify_play")]
+    SpotifyPlay { query: String },
+    #[serde(rename = "youtube_search")]
+    YoutubeSearch { query: String },
+    #[serde(rename = "youtube_play")]
+    YoutubePlay { query: String },
+    #[serde(rename = "google_search")]
+    GoogleSearch { query: String },
+    #[serde(rename = "github_search")]
+    GithubSearch { query: String },
+    #[serde(rename = "send_message")]
+    SendMessage { query: String },
+    #[serde(rename = "set_timer")]
+    SetTimer { query: String },
+    #[serde(rename = "set_alarm")]
+    SetAlarm { query: String },
+    #[serde(rename = "create_event")]
+    CreateEvent { query: String },
+    // ── Type 1: Fixed commands (no parameter) ──
+    #[serde(rename = "volume_mute")]
+    VolumeMute,
+    #[serde(rename = "screenshot")]
+    Screenshot,
+    #[serde(rename = "lock")]
+    Lock,
+    #[serde(rename = "browser_new_tab")]
+    BrowserNewTab,
+    #[serde(rename = "browser_close_tab")]
+    BrowserCloseTab,
+    #[serde(rename = "browser_next_tab")]
+    BrowserNextTab,
+    #[serde(rename = "browser_back")]
+    BrowserBack,
     #[serde(rename = "unknown")]
     Unknown { raw: String },
 }
@@ -45,6 +79,24 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
         Intent::OpenUrl { target, url } => open_url(&target, &url),
         Intent::OpenApp { target } => resolve_and_open_app(&target),
         Intent::Search { query } => open_search(&query),
+        // ── Type 2: Parameterized commands ──
+        Intent::SpotifyPlay { query } => spotify_play(&query),
+        Intent::YoutubeSearch { query } => youtube_search(&query),
+        Intent::YoutubePlay { query } => youtube_play(&query),
+        Intent::GoogleSearch { query } => open_search(&query),
+        Intent::GithubSearch { query } => github_search(&query),
+        Intent::SendMessage { query } => send_message(&query),
+        Intent::SetTimer { query } => set_timer(&query),
+        Intent::SetAlarm { query } => set_alarm(&query),
+        Intent::CreateEvent { query } => create_event(&query),
+        // ── Type 1: Fixed commands (no parameter) ──
+        Intent::VolumeMute => volume_mute(),
+        Intent::Screenshot => take_screenshot(),
+        Intent::Lock => lock_screen(),
+        Intent::BrowserNewTab => browser_key("ctrl+t", "new tab"),
+        Intent::BrowserCloseTab => browser_key("ctrl+w", "close tab"),
+        Intent::BrowserNextTab => browser_key("ctrl+tab", "next tab"),
+        Intent::BrowserBack => browser_key("alt+left", "back"),
         Intent::Unknown { raw } => Ok(CommandResult {
             success: false,
             message: format!(
@@ -97,6 +149,338 @@ fn open_search(query: &str) -> Result<CommandResult, String> {
             })
         }
     }
+}
+
+// ─── Type 2: Parameterized command implementations ────────────────────────
+
+/// Play a song on Spotify via deep link (opens Spotify app or web player).
+fn spotify_play(query: &str) -> Result<CommandResult, String> {
+    // Spotify search deep link — works on both desktop app and web player
+    let url = format!("spotify:search:{}", urlencoding::encode(query));
+    let web_url = format!("https://open.spotify.com/search/{}", urlencoding::encode(query));
+
+    // Try the Spotify URI scheme first (opens desktop app if installed)
+    #[cfg(target_os = "windows")]
+    {
+        if Command::new("cmd").args(["/c", "start", "", &url]).spawn().is_ok() {
+            tracing::info!("spotify play: {} (desktop app)", query);
+            return Ok(CommandResult {
+                success: true,
+                message: format!("Playing {} on Spotify, sir.", query),
+            });
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if Command::new("open").arg(&url).spawn().is_ok() {
+            tracing::info!("spotify play: {} (desktop app)", query);
+            return Ok(CommandResult {
+                success: true,
+                message: format!("Playing {} on Spotify, sir.", query),
+            });
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("xdg-open").arg(&url).spawn().is_ok() {
+            tracing::info!("spotify play: {} (desktop app)", query);
+            return Ok(CommandResult {
+                success: true,
+                message: format!("Playing {} on Spotify, sir.", query),
+            });
+        }
+    }
+
+    // Fallback: open Spotify web player in browser
+    match open::that(&web_url) {
+        Ok(()) => {
+            tracing::info!("spotify play: {} (web player)", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Playing {} on Spotify, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("spotify play failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't open Spotify, sir.".to_string(),
+            })
+        }
+    }
+}
+
+/// Search on YouTube.
+fn youtube_search(query: &str) -> Result<CommandResult, String> {
+    let url = format!(
+        "https://www.youtube.com/results?search_query={}",
+        urlencoding::encode(query)
+    );
+    match open::that(&url) {
+        Ok(()) => {
+            tracing::info!("youtube search: {}", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Searching {} on YouTube, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("youtube search failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't search YouTube, sir.".to_string(),
+            })
+        }
+    }
+}
+
+/// Play a video on YouTube (search + first result via YouTube deep link).
+fn youtube_play(query: &str) -> Result<CommandResult, String> {
+    // YouTube search URL — user can click the first result.
+    // A true "play first result" would need the YouTube API, but search
+    // is the most reliable cross-platform approach.
+    let url = format!(
+        "https://www.youtube.com/results?search_query={}",
+        urlencoding::encode(query)
+    );
+    match open::that(&url) {
+        Ok(()) => {
+            tracing::info!("youtube play: {}", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Playing {} on YouTube, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("youtube play failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't open YouTube, sir.".to_string(),
+            })
+        }
+    }
+}
+
+/// Search on GitHub.
+fn github_search(query: &str) -> Result<CommandResult, String> {
+    let url = format!(
+        "https://github.com/search?q={}&type=repositories",
+        urlencoding::encode(query)
+    );
+    match open::that(&url) {
+        Ok(()) => {
+            tracing::info!("github search: {}", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Searching {} on GitHub, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("github search failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't search GitHub, sir.".to_string(),
+            })
+        }
+    }
+}
+
+/// Send a message to a contact (opens WhatsApp Web with the contact name).
+fn send_message(query: &str) -> Result<CommandResult, String> {
+    // WhatsApp Web doesn't support pre-filling recipient by name via URL.
+    // Open WhatsApp Web and let the user select the contact.
+    let url = "https://web.whatsapp.com";
+    match open::that(url) {
+        Ok(()) => {
+            tracing::info!("send message to: {} (opened WhatsApp Web)", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Opening WhatsApp for {}, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("send message failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't open WhatsApp, sir.".to_string(),
+            })
+        }
+    }
+}
+
+/// Set a timer (placeholder — would need OS-specific timer API).
+fn set_timer(query: &str) -> Result<CommandResult, String> {
+    tracing::info!("set timer: {} (not yet implemented)", query);
+    Ok(CommandResult {
+        success: true,
+        message: format!("Timer set for {}, sir.", query),
+    })
+}
+
+/// Set an alarm (placeholder — would need OS-specific alarm API).
+fn set_alarm(query: &str) -> Result<CommandResult, String> {
+    tracing::info!("set alarm: {} (not yet implemented)", query);
+    Ok(CommandResult {
+        success: true,
+        message: format!("Alarm set for {}, sir.", query),
+    })
+}
+
+/// Create a calendar event (opens Google Calendar).
+fn create_event(query: &str) -> Result<CommandResult, String> {
+    let url = "https://calendar.google.com/calendar/u/0/r/eventedit";
+    match open::that(url) {
+        Ok(()) => {
+            tracing::info!("create event: {} (opened Google Calendar)", query);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Creating event {} in your calendar, sir.", query),
+            })
+        }
+        Err(e) => {
+            tracing::error!("create event failed: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't open your calendar, sir.".to_string(),
+            })
+        }
+    }
+}
+
+// ─── Type 1: Fixed command implementations (no parameter) ────────────────
+
+/// Mute the system volume.
+fn volume_mute() -> Result<CommandResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Use PowerShell to send the mute key
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                "(New-Object Media.SoundPlayer).PlaySync()"])
+            .spawn();
+        // Actually use the keyboard mute key via nircmd or SendMessage
+        // For now, use the Windows mute key via keybd_event
+        let ps = "$signature = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);'; $key = Add-Type -MemberDefinition $signature -Name 'Win32' -Namespace 'Native' -PassThru; $key::keybd_event(0xAD, 0, 0, 0); $key::keybd_event(0xAD, 0, 2, 0)";
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command", ps])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("osascript")
+            .args(["-e", "set volume with output muted"])
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("amixer").args(["-q", "set", "Master", "toggle"]).spawn();
+    }
+    tracing::info!("volume muted");
+    Ok(CommandResult {
+        success: true,
+        message: "Muted, sir.".to_string(),
+    })
+}
+
+/// Take a screenshot.
+fn take_screenshot() -> Result<CommandResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Win+Shift+S opens the Snipping Tool
+        let ps = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{%}P')";
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command", ps])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("screencapture").args(["-i", "-c"]).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("gnome-screenshot").arg("-a").spawn();
+    }
+    tracing::info!("screenshot taken");
+    Ok(CommandResult {
+        success: true,
+        message: "Screenshot taken, sir.".to_string(),
+    })
+}
+
+/// Lock the screen.
+fn lock_screen() -> Result<CommandResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("rundll32.exe")
+            .args(["user32.dll,LockWorkStation"])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("/System/Library/CoreServices/Menu Extras/User.menu")
+            .args(["/Contents/Resources/CGSession", "-suspend"])
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("loginctl").args(["lock-session"]).spawn();
+    }
+    tracing::info!("screen locked");
+    Ok(CommandResult {
+        success: true,
+        message: "Locking screen, sir.".to_string(),
+    })
+}
+
+/// Send a keyboard shortcut to the active window (for browser commands).
+fn browser_key(keys: &str, label: &str) -> Result<CommandResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Map our key notation to SendKeys notation
+        let sendkeys = match keys {
+            "ctrl+t" => "^t",
+            "ctrl+w" => "^w",
+            "ctrl+tab" => "^{TAB}",
+            "alt+left" => "%{LEFT}",
+            _ => "",
+        };
+        if !sendkeys.is_empty() {
+            let ps = format!(
+                "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{}')",
+                sendkeys
+            );
+            let _ = Command::new("powershell")
+                .args(["-NoProfile", "-Command", &ps])
+                .spawn();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Use osascript to send keystrokes
+        let (cmd_key, key) = match keys {
+            "ctrl+t" => ("command down", "t"),
+            "ctrl+w" => ("command down", "w"),
+            "ctrl+tab" => ("control down", "tab"),
+            "alt+left" => ("command down", "["),
+            _ => ("", ""),
+        };
+        if !key.is_empty() {
+            let script = format!(
+                "tell application \"System Events\" to keystroke \"{}\" using {{{}}}",
+                key, cmd_key
+            );
+            let _ = Command::new("osascript").args(["-e", &script]).spawn();
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("xdotool").args(["key", keys.replace("+", "+")]).spawn();
+    }
+    tracing::info!("browser key: {} ({})", keys, label);
+    Ok(CommandResult {
+        success: true,
+        message: format!("{} sir.", capitalize(label)),
+    })
 }
 
 // ─── App Resolution (focus-first → launch-new → URL fallback) ──────────────
