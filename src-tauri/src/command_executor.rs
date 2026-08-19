@@ -99,13 +99,19 @@ fn open_search(query: &str) -> Result<CommandResult, String> {
     }
 }
 
-// ─── App Resolution (via pre-indexed AppRegistry) ──────────────────────────
+// ─── App Resolution (focus-first → launch-new → URL fallback) ──────────────
+//
+// Priority order (what the user asked for):
+//   1. If app is already running → FOCUS its existing window
+//   2. If app is installed → LAUNCH a new instance
+//   3. If app is a known web service → OPEN as URL in browser
+//   4. If nothing found → "Didn't find that, sir."
 
 fn resolve_and_open_app(target: &str) -> Result<CommandResult, String> {
     let start = std::time::Instant::now();
     tracing::info!("resolving app: {}", target);
 
-    // Fast path: O(1) cache lookup + fuzzy match
+    // Registry lookup (O(1) HashMap + fuzzy match, ~0.1ms)
     if let Some(entry) = app_registry::lookup(target) {
         tracing::info!(
             "registry hit: '{}' → '{}' ({:?}) in {:.1}ms",
@@ -115,9 +121,18 @@ fn resolve_and_open_app(target: &str) -> Result<CommandResult, String> {
             start.elapsed().as_secs_f64() * 1000.0
         );
 
+        // PRIORITY 1: Focus existing window if app is already running
+        if app_registry::try_focus_existing(&entry) {
+            app_registry::record_usage(target);
+            return Ok(CommandResult {
+                success: true,
+                message: "Ok sir.".to_string(),
+            });
+        }
+
+        // PRIORITY 2: Launch a new instance (app is not running)
         match app_registry::launch(&entry) {
             Ok(()) => {
-                // Record usage for future ranking
                 app_registry::record_usage(target);
                 return Ok(CommandResult {
                     success: true,
@@ -129,15 +144,15 @@ fn resolve_and_open_app(target: &str) -> Result<CommandResult, String> {
                 // Fall through to legacy resolver
             }
         }
+    } else {
+        tracing::info!(
+            "registry miss for '{}' in {:.1}ms, trying legacy resolver",
+            target,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
-    tracing::info!(
-        "registry miss for '{}' in {:.1}ms, trying legacy resolver",
-        target,
-        start.elapsed().as_secs_f64() * 1000.0
-    );
-
-    // Legacy fallback: the old 4-tier resolution (only if registry misses)
+    // Legacy fallback: the old 4-tier resolution (only if registry misses or launch fails)
     let target_lower = target.to_lowercase();
     let display_name = app_display_name(&target_lower);
 
