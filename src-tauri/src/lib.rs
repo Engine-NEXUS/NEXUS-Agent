@@ -23,8 +23,9 @@ mod command_executor;
 mod app_registry;
 mod stt;
 mod voice_profile;
+mod meeting_detect;
 
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_subscriber::EnvFilter;
@@ -98,6 +99,49 @@ pub fn run() {
 
             // Tray menu.
             tray::setup(app.handle())?;
+
+            // ─── Meeting / privacy mode state ──────────────────────────
+            // Shared atomic state — read by the audio callback on every chunk,
+            // written by the meeting detection loop, tray menu, and frontend events.
+            let meeting_state = std::sync::Arc::new(meeting_detect::MeetingState::new());
+            app.manage(meeting_state.clone());
+
+            // Wire the meeting state into the wake engine so the audio callback
+            // can check `should_suppress_wake()` on every chunk.
+            #[cfg(feature = "wakeword-oww")]
+            wakeword_oww::set_meeting_state(meeting_state.clone());
+
+            // Spawn the meeting detection polling loop (WASAPI on Windows,
+            // process-name detection on macOS/Linux).
+            let state_for_loop = meeting_state.clone();
+            tauri::async_runtime::spawn(async move {
+                meeting_detect::run_detection_loop(state_for_loop).await;
+            });
+
+            // Listen for TTS events from the frontend.
+            // When NEXUS starts speaking, suppress wake detection to prevent
+            // self-triggering (NEXUS hears its own TTS voice).
+            // When TTS ends, resume after a short grace period.
+            {
+                let state_for_tts = meeting_state.clone();
+                let app_for_tts = app.handle().clone();
+                app.handle().listen("tts-started", move |_event| {
+                    state_for_tts.set_tts_playing(true);
+                    tracing::debug!("meeting: TTS started — suppressing wake detection");
+                });
+
+                let state_for_tts_end = meeting_state.clone();
+                app.handle().listen("tts-ended", move |_event| {
+                    // Don't immediately resume — wait 500ms for audio to settle
+                    let state = state_for_tts_end.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        state.set_tts_playing(false);
+                        tracing::debug!("meeting: TTS ended — resuming wake detection");
+                    });
+                    let _ = app_for_tts;
+                });
+            }
 
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
@@ -191,6 +235,10 @@ pub fn run() {
             commands::get_voice_profile_status,
             commands::enroll_voice,
             commands::delete_voice_profile,
+            commands::meeting_active,
+            commands::is_nexus_paused,
+            commands::meeting_status,
+            commands::set_meeting_detection,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,
