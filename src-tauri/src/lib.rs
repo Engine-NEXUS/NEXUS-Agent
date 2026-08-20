@@ -120,6 +120,34 @@ pub fn run() {
                 meeting_detect::run_detection_loop(state_for_loop).await;
             });
 
+            // Sleep/wake greeting via time-jump detection.
+            // thread::sleep uses the monotonic clock (stops while the system is
+            // asleep); SystemTime is the wall clock (jumps forward across sleep).
+            // A gap much larger than the sleep interval means the machine just
+            // resumed from sleep/hibernate → greet (unless meeting/paused).
+            {
+                let handle = app.handle().clone();
+                let state = meeting_state.clone();
+                std::thread::Builder::new()
+                    .name("sleep-wake-watch".into())
+                    .spawn(move || loop {
+                        let before = std::time::SystemTime::now();
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        let gap = std::time::SystemTime::now()
+                            .duration_since(before)
+                            .unwrap_or_default();
+                        if gap > std::time::Duration::from_secs(60) {
+                            if state.is_meeting_active() || state.is_paused() {
+                                tracing::info!("wake greeting skipped (meeting active or paused)");
+                                continue;
+                            }
+                            tracing::info!("system resumed from sleep (gap {gap:?}) — greeting");
+                            let _ = handle.emit("app:greeting", ());
+                        }
+                    })
+                    .ok();
+            }
+
             // Listen for TTS events from the frontend.
             // When NEXUS starts speaking, suppress wake detection to prevent
             // self-triggering (NEXUS hears its own TTS voice).
@@ -194,8 +222,10 @@ pub fn run() {
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
             // The sidecar (Python FastAPI on port 49152) must be running for this to work.
-            // Auto-spawn it if not already running.
-            sidecar_manager::init();
+            // Auto-spawn it in a BACKGROUND THREAD so a slow Python cold-start
+            // (3-8s on boot) doesn't block app startup. The frontend's WebSocket
+            // retry logic (1s→2s→4s→8s backoff) connects once it's ready.
+            std::thread::spawn(sidecar_manager::init);
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -256,6 +286,7 @@ pub fn run() {
             commands::is_nexus_paused,
             commands::meeting_status,
             commands::set_meeting_detection,
+            commands::frontend_ready,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,

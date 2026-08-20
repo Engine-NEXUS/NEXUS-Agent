@@ -284,6 +284,54 @@ void setupCommandDetectionListener();
   });
 };
 
+/**
+ * Boot / wake greeting.
+ *
+ * Two triggers, both decided by Rust:
+ *   1. Boot: this file invokes `frontend_ready` once the webview has loaded.
+ *      Rust returns true only on a fresh boot (system uptime < 15 min) with
+ *      no meeting active and no manual pause.
+ *   2. Sleep/wake: Rust's time-jump detector emits `app:greeting` when the
+ *      machine resumes from sleep.
+ *
+ * The greeting shows the orb, speaks, then hides again. It's skipped silently
+ * if NEXUS is mid-conversation (state != idle). The speak() call itself
+ * additionally suppresses audio during meetings as a second layer.
+ */
+async function greet() {
+  const { useAssistant } = await import("./store/assistant");
+  const { speak } = await import("./audio/ttsPlayer");
+  const s = useAssistant.getState();
+  if (s.state !== "idle") {
+    console.log("[NEXUS] greeting skipped — not idle:", s.state);
+    return;
+  }
+  console.log("[NEXUS] greeting");
+  s.setVisible(true);
+  s.setState("speaking");
+  await speak("Hello sir, how can I assist you today?");
+  s.setVisible(false);
+  // Delay reset until the 0.5s slide-down transition completes.
+  setTimeout(() => useAssistant.getState().reset(), 550);
+}
+
+const isTauriRuntime = typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+if (isTauriRuntime) {
+  // Boot path: ask Rust whether to greet.
+  import("@tauri-apps/api/core").then(async ({ invoke }) => {
+    try {
+      const shouldGreet = await invoke<boolean>("frontend_ready");
+      if (shouldGreet) void greet();
+    } catch (e) {
+      console.warn("[NEXUS] frontend_ready failed:", e);
+    }
+  });
+  // Sleep/wake path: Rust emits app:greeting on resume.
+  import("@tauri-apps/api/event").then(({ listen }) => {
+    void listen("app:greeting", () => void greet());
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />
