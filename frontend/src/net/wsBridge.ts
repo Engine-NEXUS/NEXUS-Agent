@@ -13,10 +13,9 @@ import { speak, stopTts } from "../audio/ttsPlayer";
  *   Server → Client: state, ack, result, done, error
  */
 
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.nexus.internal/ws";
-const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
-const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
-const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";
+// Build-time fallback only — the real URL comes from get_server_config at runtime.
+const FALLBACK_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "ws://127.0.0.1:49152/ws";
+const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "";
 
 /**
  * Check if we're running inside the Tauri WebView (has IPC bridge).
@@ -41,19 +40,92 @@ let unlisten: (() => void) | null = null;
 /** Tracks whether a backend session is actually open. */
 let sessionOpen = false;
 
+/** Cached server config — loaded once from Rust at first use, then reused. */
+let cachedConfig: { url: string; token: string; userId: string; deviceId: string } | null = null;
+
+/**
+ * Load server config from Rust (reads nexus-config.json).
+ * Falls back to build-time env vars if not in Tauri or if the IPC call fails.
+ */
+async function getServerConfig(): Promise<{ url: string; token: string; userId: string; deviceId: string }> {
+  if (cachedConfig) return cachedConfig;
+
+  if (isTauri()) {
+    try {
+      const config = await tauriInvoke<{ server_url: string; user_id: string; device_id: string }>("get_server_config");
+      cachedConfig = {
+        url: config.server_url,
+        token: DEVICE_TOKEN,
+        userId: config.user_id,
+        deviceId: config.device_id,
+      };
+      return cachedConfig;
+    } catch (err) {
+      console.warn("[NEXUS] get_server_config failed, using fallback:", err);
+    }
+  }
+
+  // Fallback: build-time env vars
+  cachedConfig = {
+    url: FALLBACK_URL,
+    token: DEVICE_TOKEN,
+    userId: (import.meta.env.VITE_USER_ID as string) ?? "local-user",
+    deviceId: (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device",
+  };
+  return cachedConfig;
+}
+
+/**
+ * Open a backend session with retry logic.
+ *
+ * On cold boot, the Python sidecar may take 3-10 seconds to start.
+ * This retries the connection with exponential backoff instead of
+ * failing immediately.
+ *
+ * @param maxRetries Number of retry attempts (default 5)
+ * @param baseDelayMs Initial delay between retries (default 1000ms, doubles each time)
+ */
 export async function openSession(
-  url: string = SERVER_URL,
-  token: string = DEVICE_TOKEN,
-  userId: string = USER_ID,
-  deviceId: string = DEVICE_ID,
+  url?: string,
+  token?: string,
+  userId?: string,
+  deviceId?: string,
 ): Promise<string> {
   if (!isTauri()) return "";
-  const sessionId = await tauriInvoke<string>("open_session", { url, token, userId, deviceId });
-  sessionOpen = true;
-  if (!unlisten) {
-    unlisten = await tauriListen<ServerEvent>("assistant:server", (payload) => handle(payload));
+
+  // If URL not passed, load from runtime config.
+  if (!url) {
+    const config = await getServerConfig();
+    url = config.url;
+    token = token ?? config.token;
+    userId = userId ?? config.userId;
+    deviceId = deviceId ?? config.deviceId;
   }
-  return sessionId;
+
+  const maxRetries = 5;
+  const baseDelayMs = 1000;
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const sessionId = await tauriInvoke<string>("open_session", { url, token, userId, deviceId });
+      sessionOpen = true;
+      if (!unlisten) {
+        unlisten = await tauriListen<ServerEvent>("assistant:server", (payload) => handle(payload));
+      }
+      return sessionId;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxRetries - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt); // 1s, 2s, 4s, 8s
+        console.warn(`[NEXUS] backend session attempt ${attempt + 1}/${maxRetries} failed, retrying in ${delay}ms:`, err);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  }
+
+  // All retries exhausted — throw so caller falls through to local-only mode.
+  throw new Error(`backend session failed after ${maxRetries} retries: ${lastErr}`);
 }
 
 /** Returns true if a backend session is currently open. */
