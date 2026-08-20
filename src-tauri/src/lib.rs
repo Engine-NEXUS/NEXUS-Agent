@@ -188,7 +188,7 @@ pub fn run() {
             });
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
-            // The sidecar (Python FastAPI on port 8443) must be running for this to work.
+            // The sidecar (Python FastAPI on port 49152) must be running for this to work.
             // Auto-spawn it if not already running.
             sidecar_manager::init();
 

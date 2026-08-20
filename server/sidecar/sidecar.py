@@ -287,6 +287,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "sidecar:app",
         host=os.getenv("SIDECAR_HOST", "0.0.0.0"),
-        port=int(os.getenv("SIDECAR_PORT", "8443")),
+        port=int(os.getenv("SIDECAR_PORT", "49152")),
         log_level="info",
     )
