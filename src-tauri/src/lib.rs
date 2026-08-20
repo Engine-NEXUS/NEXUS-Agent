@@ -24,6 +24,7 @@ mod app_registry;
 mod stt;
 mod voice_profile;
 mod meeting_detect;
+mod sidecar_manager;
 
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -187,6 +188,10 @@ pub fn run() {
             });
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
+            // The sidecar (Python FastAPI on port 8443) must be running for this to work.
+            // Auto-spawn it if not already running.
+            sidecar_manager::init();
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::run(handle).await {
