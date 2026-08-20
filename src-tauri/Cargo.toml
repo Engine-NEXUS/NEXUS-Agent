@@ -83,6 +83,10 @@ windows = { version = "0.36", features = [
 ] }
 # Registry access for App Paths + Uninstall keys (app discovery)
 winreg = "0.55"
+# WebView2 COM bindings for the PermissionRequested handler (auto-approve mic
+# permission so the prompt never re-appears). Version pinned to match wry's.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [features]
 default = ["wakeword-oww"]

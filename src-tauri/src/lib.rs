@@ -25,6 +25,7 @@ mod stt;
 mod voice_profile;
 mod meeting_detect;
 mod sidecar_manager;
+mod mic_permissions;
 
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -146,6 +147,10 @@ pub fn run() {
 
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
+
+            // WebView2 permission handler — auto-approves mic/camera for our
+            // own app origins so the permission dialog never re-appears.
+            mic_permissions::init(app);
 
             // Position the orb at bottom-center, just above the taskbar/dock.
             if let Some(win) = app.get_webview_window("main") {
