@@ -24,6 +24,8 @@ mod app_registry;
 mod stt;
 mod voice_profile;
 mod meeting_detect;
+mod sidecar_manager;
+mod mic_permissions;
 
 use tauri::{Emitter, Listener, Manager};
 use tauri_plugin_autostart::ManagerExt;
@@ -118,6 +120,34 @@ pub fn run() {
                 meeting_detect::run_detection_loop(state_for_loop).await;
             });
 
+            // Sleep/wake greeting via time-jump detection.
+            // thread::sleep uses the monotonic clock (stops while the system is
+            // asleep); SystemTime is the wall clock (jumps forward across sleep).
+            // A gap much larger than the sleep interval means the machine just
+            // resumed from sleep/hibernate → greet (unless meeting/paused).
+            {
+                let handle = app.handle().clone();
+                let state = meeting_state.clone();
+                std::thread::Builder::new()
+                    .name("sleep-wake-watch".into())
+                    .spawn(move || loop {
+                        let before = std::time::SystemTime::now();
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                        let gap = std::time::SystemTime::now()
+                            .duration_since(before)
+                            .unwrap_or_default();
+                        if gap > std::time::Duration::from_secs(60) {
+                            if state.is_meeting_active() || state.is_paused() {
+                                tracing::info!("wake greeting skipped (meeting active or paused)");
+                                continue;
+                            }
+                            tracing::info!("system resumed from sleep (gap {gap:?}) — greeting");
+                            let _ = handle.emit("app:greeting", ());
+                        }
+                    })
+                    .ok();
+            }
+
             // Listen for TTS events from the frontend.
             // When NEXUS starts speaking, suppress wake detection to prevent
             // self-triggering (NEXUS hears its own TTS voice).
@@ -145,6 +175,10 @@ pub fn run() {
 
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
+
+            // WebView2 permission handler — auto-approves mic/camera for our
+            // own app origins so the permission dialog never re-appears.
+            mic_permissions::init(app);
 
             // Position the orb at bottom-center, just above the taskbar/dock.
             if let Some(win) = app.get_webview_window("main") {
@@ -187,6 +221,12 @@ pub fn run() {
             });
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
+            // The sidecar (Python FastAPI on port 49152) must be running for this to work.
+            // Auto-spawn it in a BACKGROUND THREAD so a slow Python cold-start
+            // (3-8s on boot) doesn't block app startup. The frontend's WebSocket
+            // retry logic (1s→2s→4s→8s backoff) connects once it's ready.
+            std::thread::spawn(sidecar_manager::init);
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::run(handle).await {
@@ -205,17 +245,23 @@ pub fn run() {
                 }
             });
 
-            // Check if this is first launch (no server URL configured) → show setup.
+            // Check if this is first launch (no server URL configured).
+            // Instead of showing the setup window (which confuses users into
+            // thinking there's a connection error), auto-create the config
+            // with sensible defaults. The setup window can be opened later
+            // via the tray menu "Settings…" if the user wants to change anything.
             let store_path = app.path().app_data_dir().ok();
-            let needs_setup = if let Some(dir) = store_path {
-                !dir.join("nexus-config.json").exists()
-            } else {
-                true
-            };
-            if needs_setup {
-                if let Some(setup_win) = app.get_webview_window("setup") {
-                    let _ = setup_win.show();
-                    let _ = setup_win.set_focus();
+            if let Some(dir) = store_path {
+                let config_path = dir.join("nexus-config.json");
+                if !config_path.exists() {
+                    let default_config = serde_json::json!({
+                        "serverUrl": "ws://127.0.0.1:49152/ws",
+                        "userId": "local-user",
+                        "deviceId": "local-device",
+                    });
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&config_path, default_config.to_string());
+                    tracing::info!("auto-created default config at {:?}", config_path);
                 }
             }
 
@@ -232,6 +278,7 @@ pub fn run() {
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,
+            commands::get_server_config,
             commands::get_voice_profile_status,
             commands::enroll_voice,
             commands::delete_voice_profile,
@@ -239,6 +286,7 @@ pub fn run() {
             commands::is_nexus_paused,
             commands::meeting_status,
             commands::set_meeting_detection,
+            commands::frontend_ready,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,
