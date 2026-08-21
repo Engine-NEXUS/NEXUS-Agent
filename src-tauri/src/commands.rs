@@ -299,26 +299,70 @@ pub fn delete_voice_profile<R: Runtime>(
     Ok(())
 }
 
-// ─── Boot greeting ─────────────────────────────────────────────────────────
+// ─── First-of-day greeting ─────────────────────────────────────────────────
+//
+// Instead of greeting on every boot or every sleep/wake, NEXUS greets only
+// on the first user interaction (wake) of each calendar day. The last
+// greeting date is persisted to `greeting-state.json` in the app data dir,
+// so it survives restarts, shutdowns, and crashes.
+//
+// Flow:
+//   1. User wakes NEXUS (hotkey or spoken "nexus")
+//   2. Frontend calls `should_greet_today` → Rust compares today's date
+//      with the stored `last_greeting_date`
+//   3. If different (first time today) → frontend speaks the greeting,
+//      then calls `mark_greeted_today` to persist today's date
+//   4. If same (already greeted today) → frontend skips greeting, goes
+//      straight to listening
 
-/// Seconds of system uptime below which a launch counts as a fresh boot.
-/// If NEXUS starts while uptime < 15 min, it was almost certainly launched by
-/// Windows autostart after a restart — greet the user.
-const FRESH_BOOT_UPTIME_SECS: u64 = 15 * 60;
+/// Resolve the greeting state file path in the app data directory.
+fn greeting_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("greeting-state.json"))
+}
 
-/// IPC: the frontend calls this once it has loaded. Returns true if the
-/// frontend should greet ("Hello sir, how can I assist you today?").
+/// Read the last greeting date from disk. Returns None if the file
+/// doesn't exist or is corrupted (safe default: greet).
+fn read_last_greeting_date(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json["last_greeting_date"]
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Write today's date to the greeting state file.
+fn write_last_greeting_date(path: &Path, date: &str) -> Result<(), String> {
+    let json = serde_json::json!({ "last_greeting_date": date });
+    std::fs::write(path, json.to_string())
+        .map_err(|e| format!("failed to write greeting state: {e}"))
+}
+
+/// Get today's date as YYYY-MM-DD in the local timezone.
+fn today_local() -> String {
+    use chrono::Local;
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// IPC: Check if NEXUS should greet the user on this wake.
 ///
-/// Conditions: fresh boot (uptime < 15 min) AND no meeting active AND not
-/// manually paused. The frontend signals readiness instead of Rust pushing on
-/// a timer, so the greeting can't fire before speechSynthesis is usable.
+/// Returns true if today's date differs from the stored `last_greeting_date`
+/// (i.e., this is the first interaction of the day). Also checks meeting/pause
+/// state — if a meeting is active or NEXUS is paused, the greeting is
+/// suppressed but the date is NOT saved, so the next wake after the meeting
+/// will still greet.
 #[tauri::command]
-pub fn frontend_ready<R: Runtime>(
+pub fn should_greet_today<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<bool, String> {
-    let uptime = sysinfo::System::uptime();
-    let fresh_boot = uptime < FRESH_BOOT_UPTIME_SECS;
+    let path = greeting_state_path(&app)?;
+    let last = read_last_greeting_date(&path);
+    let today = today_local();
 
+    let is_new_day = last.as_deref() != Some(&today);
+
+    // Check meeting/pause state — suppress greeting but don't save date
     let (meeting, paused) = match app
         .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
     {
@@ -326,12 +370,27 @@ pub fn frontend_ready<R: Runtime>(
         None => (false, false),
     };
 
-    let should_greet = fresh_boot && !meeting && !paused;
+    let should_greet = is_new_day && !meeting && !paused;
     tracing::info!(
-        "frontend ready: uptime={}s fresh_boot={} meeting={} paused={} → greet={}",
-        uptime, fresh_boot, meeting, paused, should_greet
+        "greeting check: today={} last={:?} new_day={} meeting={} paused={} → greet={}",
+        today, last, is_new_day, meeting, paused, should_greet
     );
     Ok(should_greet)
+}
+
+/// IPC: Mark that NEXUS has greeted the user today.
+///
+/// Called by the frontend AFTER the greeting TTS finishes (or starts —
+/// either way, the date is saved so subsequent wakes don't re-greet).
+#[tauri::command]
+pub fn mark_greeted_today<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let path = greeting_state_path(&app)?;
+    let today = today_local();
+    write_last_greeting_date(&path, &today)?;
+    tracing::info!("greeting: marked today ({}) as greeted", today);
+    Ok(())
 }
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────
