@@ -100,7 +100,13 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": ["English"],
+        "template": "installer/nexus-installer.nsi",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "compression": "lzma",
+        "displayLanguageSelector": false
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
