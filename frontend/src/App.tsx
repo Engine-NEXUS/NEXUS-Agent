@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Avatar } from "./avatar/Avatar";
+import { StatusBar } from "./components/StatusBar";
+import { TranscriptPanel } from "./components/TranscriptPanel";
 import { useAssistant } from "./store/assistant";
 
 function isTauri(): boolean {
@@ -82,8 +84,18 @@ export default function App() {
 
   return (
     <div id="app" className={visible ? "app--visible" : "app--hidden"}>
-      <div className="avatar-section" data-interactive>
-        <Avatar />
+      <div className="nx-card" data-interactive>
+        {/* Orb with state-reactive glow halo */}
+        <div className="avatar-section" data-interactive>
+          <div className={`nx-orb-halo nx-orb-halo--${state}`} />
+          <Avatar />
+        </div>
+
+        {/* Status text: LISTENING / THINKING / SPEAKING / etc. */}
+        <StatusBar />
+
+        {/* Conversation transcript (last few messages) */}
+        <TranscriptPanel />
       </div>
     </div>
   );

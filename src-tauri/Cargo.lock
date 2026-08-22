@@ -2887,7 +2887,9 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
+ "webview2-com",
  "windows 0.36.1",
+ "windows-core 0.61.2",
  "winreg 0.55.0",
 ]
 

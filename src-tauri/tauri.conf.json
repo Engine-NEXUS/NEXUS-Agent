@@ -15,10 +15,10 @@
       {
         "label": "main",
         "title": "NEXUS",
-        "width": 200,
-        "height": 200,
-        "minWidth": 200,
-        "minHeight": 200,
+        "width": 320,
+        "height": 440,
+        "minWidth": 320,
+        "minHeight": 440,
         "resizable": false,
         "decorations": false,
         "transparent": true,
@@ -49,6 +49,23 @@
         "fullscreen": false,
         "center": true,
         "url": "setup.html"
+      },
+      {
+        "label": "settings",
+        "title": "NEXUS Settings",
+        "width": 600,
+        "height": 720,
+        "resizable": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "focus": true,
+        "visible": false,
+        "fullscreen": false,
+        "center": true,
+        "url": "settings.html"
       }
     ],
     "trayIcon": {

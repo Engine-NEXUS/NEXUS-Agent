@@ -1,4 +1,10 @@
-/* Transparent background for floating orb */
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS Main Orb Window — White Theme
+   Transparent overlay: only the card + orb are visible.
+   ═══════════════════════════════════════════════════════════════ */
+
+@import "./theme/tokens.css";
+
 html, body, #root {
   margin: 0;
   padding: 0;
@@ -8,108 +14,226 @@ html, body, #root {
   background: transparent !important;
   -webkit-user-select: none;
   user-select: none;
-  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--nx-font);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Small floating orb container - transparent window, only orb is visible */
+/* ── App container: transparent window, card is centered ─────── */
 #app {
   width: 100vw;
   height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   background: transparent !important;
-  /* Default state: hidden below screen */
   transform: translateY(100vh);
   opacity: 0;
   overflow: visible;
+  padding-bottom: 8px;
 }
 
-/* With transparent: false, the window has a solid bg. Make it match the orb area. */
-html, body {
-  background: transparent !important;
-}
-
-/* Slide UP: bouncy spring overshoot — fast and neat */
 #app.app--visible {
   transform: translateY(0);
   opacity: 1;
-  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+  transition: transform 0.4s var(--nx-ease-spring), opacity 0.3s ease;
 }
 
-/* Slide DOWN: smooth gravity ease-in, opacity fades only at the very end */
 #app.app--hidden {
   transform: translateY(100vh);
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.5s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.15s ease 0.35s;
+  transition: transform 0.5s var(--nx-ease), opacity 0.15s ease 0.35s;
 }
 
-/* Avatar wrapper - transparent, only Lottie strokes are visible */
-.avatar-wrap {
-  transition: transform 0.3s ease, filter 0.3s ease;
-  cursor: pointer;
-  background: transparent;
+/* ── Glass card: the visible white surface ───────────────────── */
+.nx-card {
+  width: 300px;
+  background: var(--nx-bg);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-lg);
+  box-shadow: var(--nx-shadow-lg);
+  padding: var(--nx-space-5) var(--nx-space-4) var(--nx-space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--nx-space-3);
 }
 
-.avatar-wrap--listening {
-  transform: scale(1.05);
-}
-
-.avatar-wrap--thinking {
-  animation: pulse-think 1s ease-in-out infinite;
-}
-
-.avatar-wrap--speaking {
-  animation: pulse-speak 0.5s ease-in-out infinite;
-}
-
-@keyframes pulse-think {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.08); }
-}
-
-@keyframes pulse-speak {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-}
-
-/* CSS fallback orb */
-.orb {
-  width: 80px;
-  height: 80px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #6aa8ff, #1d3b8f 60%, #0a1330);
-  box-shadow:
-    0 0 40px rgba(70, 130, 255, 0.5) inset,
-    0 0 30px rgba(70, 130, 255, 0.4);
-  animation: breathe 3s ease-in-out infinite;
-}
-
-.orb--listening { animation: pulse-listen 1s ease-in-out infinite; }
-.orb--thinking  { animation: spin 1.2s linear infinite; }
-.orb--speaking  { animation: pulse-speak 0.4s ease-in-out infinite; }
-
-@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-@keyframes pulse-listen { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
-@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-
-/* Hide transcript and caption for small orb mode */
-.transcript, .caption {
-  display: none;
-}
-
+/* ── Orb section ─────────────────────────────────────────────── */
 .avatar-section {
   display: flex;
   align-items: center;
   justify-content: center;
   background: transparent !important;
+  position: relative;
 }
 
-/* Force Lottie SVG to fill its container */
 .avatar-section svg {
   width: 100% !important;
   height: 100% !important;
   display: block;
+}
+
+/* Glow halo behind orb — color changes per state */
+.nx-orb-halo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0.15;
+  filter: blur(20px);
+  transition: background 0.4s ease, opacity 0.4s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.nx-orb-halo--listening  { background: var(--nx-listening); opacity: 0.25; }
+.nx-orb-halo--thinking   { background: var(--nx-thinking);  opacity: 0.25; }
+.nx-orb-halo--speaking   { background: var(--nx-speaking);  opacity: 0.25; }
+.nx-orb-halo--error      { background: var(--nx-error);     opacity: 0.20; }
+.nx-orb-halo--connecting { background: var(--nx-accent-blue); opacity: 0.20; }
+.nx-orb-halo--idle       { background: var(--nx-accent-blue); opacity: 0.10; }
+
+/* Avatar wrapper */
+.avatar-wrap {
+  transition: transform 0.3s ease, filter 0.3s ease;
+  cursor: pointer;
+  background: transparent;
+  position: relative;
+  z-index: 1;
+}
+
+.avatar-wrap--listening { transform: scale(1.05); }
+.avatar-wrap--thinking  { animation: pulse-think 1s ease-in-out infinite; }
+.avatar-wrap--speaking  { animation: pulse-speak 0.5s ease-in-out infinite; }
+.avatar-wrap--error     { animation: shake 0.4s ease-in-out; }
+
+@keyframes pulse-think {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+@keyframes pulse-speak {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* CSS fallback orb */
+.orb {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: var(--nx-accent-grad);
+  box-shadow: var(--nx-shadow-glow-blue);
+  animation: breathe 3s ease-in-out infinite;
+}
+.orb--listening { animation: pulse-listen 1s ease-in-out infinite; }
+.orb--thinking  { animation: spin 1.2s linear infinite; }
+.orb--speaking  { animation: pulse-speak 0.4s ease-in-out infinite; }
+.orb--error     { background: var(--nx-error); animation: shake 0.4s ease-in-out; }
+
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+@keyframes pulse-listen { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
+/* ── Status bar ──────────────────────────────────────────────── */
+.nx-status {
+  font-size: var(--nx-text-xs);
+  font-weight: var(--nx-weight-semibold);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--nx-text-secondary);
+  height: 16px;
+  display: flex;
+  align-items: center;
+  gap: var(--nx-space-2);
+  transition: color 0.3s ease;
+}
+
+.nx-status--listening  { color: var(--nx-listening); }
+.nx-status--thinking   { color: var(--nx-thinking); }
+.nx-status--speaking   { color: var(--nx-speaking); }
+.nx-status--error      { color: var(--nx-error); }
+.nx-status--connecting { color: var(--nx-accent-blue); }
+
+/* Pulsing dot before status text */
+.nx-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Transcript panel ────────────────────────────────────────── */
+.nx-transcript {
+  width: 100%;
+  max-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-2);
+  padding: var(--nx-space-2) var(--nx-space-1);
+  scrollbar-width: thin;
+  scrollbar-color: var(--nx-border) transparent;
+}
+
+.nx-transcript::-webkit-scrollbar { width: 4px; }
+.nx-transcript::-webkit-scrollbar-track { background: transparent; }
+.nx-transcript::-webkit-scrollbar-thumb {
+  background: var(--nx-border);
+  border-radius: 2px;
+}
+
+.nx-msg {
+  font-size: var(--nx-text-sm);
+  line-height: 1.4;
+  padding: var(--nx-space-2) var(--nx-space-3);
+  border-radius: var(--nx-radius);
+  max-width: 85%;
+  word-wrap: break-word;
+}
+
+.nx-msg--user {
+  align-self: flex-end;
+  background: var(--nx-accent-soft);
+  color: var(--nx-text-primary);
+  border: 1px solid rgba(106, 168, 255, 0.15);
+}
+
+.nx-msg--assistant {
+  align-self: flex-start;
+  background: var(--nx-bg-card);
+  color: var(--nx-text-primary);
+  border: 1px solid var(--nx-border);
+}
+
+.nx-msg-role {
+  font-size: var(--nx-text-xs);
+  font-weight: var(--nx-weight-semibold);
+  color: var(--nx-text-tertiary);
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Empty state hint */
+.nx-transcript-empty {
+  font-size: var(--nx-text-sm);
+  color: var(--nx-text-tertiary);
+  text-align: center;
+  padding: var(--nx-space-3);
 }

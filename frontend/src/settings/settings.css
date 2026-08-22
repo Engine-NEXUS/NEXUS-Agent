@@ -1,0 +1,405 @@
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS Settings Window — White Theme
+   ═══════════════════════════════════════════════════════════════ */
+
+@import "../theme/tokens.css";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: var(--nx-font);
+  background: var(--nx-bg);
+  color: var(--nx-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Layout ──────────────────────────────────────────────────── */
+.nx-settings {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar (tabs) ──────────────────────────────────────────── */
+.nx-sidebar {
+  width: 200px;
+  background: var(--nx-bg-card);
+  border-right: 1px solid var(--nx-border);
+  padding: var(--nx-space-6) var(--nx-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-1);
+  flex-shrink: 0;
+}
+
+.nx-sidebar-header {
+  padding: 0 var(--nx-space-3) var(--nx-space-5);
+  border-bottom: 1px solid var(--nx-border);
+  margin-bottom: var(--nx-space-4);
+}
+
+.nx-sidebar-logo {
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-bold);
+  background: var(--nx-accent-grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.nx-sidebar-sub {
+  font-size: var(--nx-text-xs);
+  color: var(--nx-text-tertiary);
+  margin-top: 2px;
+}
+
+.nx-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-space-2);
+  padding: var(--nx-space-3) var(--nx-space-3);
+  border-radius: var(--nx-radius);
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-medium);
+  color: var(--nx-text-secondary);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  transition: all var(--nx-duration-fast) var(--nx-ease);
+  text-align: left;
+  width: 100%;
+}
+
+.nx-tab:hover {
+  background: var(--nx-bg-hover);
+  color: var(--nx-text-primary);
+}
+
+.nx-tab--active {
+  background: var(--nx-accent-soft);
+  color: var(--nx-accent-blue);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.nx-tab-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+/* ── Main content ────────────────────────────────────────────── */
+.nx-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--nx-space-6) var(--nx-space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-5);
+}
+
+.nx-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--nx-space-2);
+}
+
+.nx-content-title {
+  font-size: var(--nx-text-xl);
+  font-weight: var(--nx-weight-bold);
+  color: var(--nx-text-primary);
+}
+
+/* ── Cards / sections ────────────────────────────────────────── */
+.nx-section {
+  background: var(--nx-bg-card);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-md);
+  padding: var(--nx-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-4);
+}
+
+.nx-section-title {
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-semibold);
+  color: var(--nx-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ── Form rows ───────────────────────────────────────────────── */
+.nx-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nx-space-4);
+  min-height: 40px;
+}
+
+.nx-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nx-row-name {
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-medium);
+  color: var(--nx-text-primary);
+}
+
+.nx-row-hint {
+  font-size: var(--nx-text-xs);
+  color: var(--nx-text-tertiary);
+}
+
+/* ── Inputs ──────────────────────────────────────────────────── */
+.nx-input {
+  padding: var(--nx-space-2) var(--nx-space-3);
+  background: var(--nx-bg);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-sm);
+  color: var(--nx-text-primary);
+  font-size: var(--nx-text-base);
+  font-family: var(--nx-font);
+  outline: none;
+  transition: border-color var(--nx-duration-fast) var(--nx-ease);
+  min-width: 180px;
+}
+
+.nx-input:focus {
+  border-color: var(--nx-border-focus);
+  box-shadow: 0 0 0 3px var(--nx-accent-soft);
+}
+
+.nx-select {
+  padding: var(--nx-space-2) var(--nx-space-3);
+  background: var(--nx-bg);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-sm);
+  color: var(--nx-text-primary);
+  font-size: var(--nx-text-base);
+  font-family: var(--nx-font);
+  outline: none;
+  cursor: pointer;
+  min-width: 180px;
+  transition: border-color var(--nx-duration-fast) var(--nx-ease);
+}
+
+.nx-select:focus {
+  border-color: var(--nx-border-focus);
+}
+
+/* ── Toggle switch ───────────────────────────────────────────── */
+.nx-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: var(--nx-radius-full);
+  background: var(--nx-border);
+  cursor: pointer;
+  transition: background var(--nx-duration) var(--nx-ease);
+  border: none;
+  flex-shrink: 0;
+}
+
+.nx-toggle--on {
+  background: var(--nx-accent-blue);
+}
+
+.nx-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: var(--nx-shadow-sm);
+  transition: transform var(--nx-duration) var(--nx-ease-spring);
+}
+
+.nx-toggle--on .nx-toggle-knob {
+  transform: translateX(20px);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.nx-btn {
+  padding: var(--nx-space-2) var(--nx-space-4);
+  background: var(--nx-bg);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-sm);
+  color: var(--nx-text-primary);
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-medium);
+  font-family: var(--nx-font);
+  cursor: pointer;
+  transition: all var(--nx-duration-fast) var(--nx-ease);
+  white-space: nowrap;
+}
+
+.nx-btn:hover:not(:disabled) {
+  background: var(--nx-bg-hover);
+  border-color: var(--nx-accent-blue);
+}
+
+.nx-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nx-btn--primary {
+  background: var(--nx-accent-grad);
+  border: none;
+  color: var(--nx-text-inverse);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.nx-btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.nx-btn--danger {
+  color: var(--nx-error);
+  border-color: rgba(220, 38, 38, 0.2);
+}
+
+.nx-btn--danger:hover {
+  background: var(--nx-error-bg);
+}
+
+.nx-btn--small {
+  padding: var(--nx-space-1) var(--nx-space-3);
+  font-size: var(--nx-text-xs);
+}
+
+/* ── Badges ──────────────────────────────────────────────────── */
+.nx-badge {
+  font-size: var(--nx-text-xs);
+  font-weight: var(--nx-weight-semibold);
+  padding: 3px var(--nx-space-2);
+  border-radius: var(--nx-radius-full);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.nx-badge--ok {
+  background: var(--nx-success-bg);
+  color: var(--nx-success);
+}
+
+.nx-badge--warn {
+  background: var(--nx-warning-bg);
+  color: var(--nx-warning);
+}
+
+.nx-badge--error {
+  background: var(--nx-error-bg);
+  color: var(--nx-error);
+}
+
+/* ── Status indicator ────────────────────────────────────────── */
+.nx-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-space-2);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-text-secondary);
+}
+
+.nx-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.nx-status-dot--ok    { background: var(--nx-success); }
+.nx-status-dot--error { background: var(--nx-error); }
+.nx-status-dot--warn  { background: var(--nx-warning); }
+
+/* ── Slider ──────────────────────────────────────────────────── */
+.nx-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 160px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--nx-border);
+  outline: none;
+}
+
+.nx-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--nx-accent-blue);
+  cursor: pointer;
+  box-shadow: var(--nx-shadow-sm);
+}
+
+.nx-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--nx-accent-blue);
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--nx-shadow-sm);
+}
+
+/* ── Segmented control (Low / Med / High) ────────────────────── */
+.nx-segmented {
+  display: inline-flex;
+  background: var(--nx-bg-card);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-sm);
+  padding: 2px;
+}
+
+.nx-segmented-btn {
+  padding: var(--nx-space-1) var(--nx-space-3);
+  border: none;
+  background: transparent;
+  color: var(--nx-text-secondary);
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-medium);
+  font-family: var(--nx-font);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--nx-duration-fast) var(--nx-ease);
+}
+
+.nx-segmented-btn--active {
+  background: var(--nx-bg);
+  color: var(--nx-accent-blue);
+  box-shadow: var(--nx-shadow-sm);
+}
+
+/* ── Footer ──────────────────────────────────────────────────── */
+.nx-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-4) var(--nx-space-8);
+  border-top: 1px solid var(--nx-border);
+  background: var(--nx-bg);
+  flex-shrink: 0;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+.nx-content::-webkit-scrollbar { width: 6px; }
+.nx-content::-webkit-scrollbar-track { background: transparent; }
+.nx-content::-webkit-scrollbar-thumb {
+  background: var(--nx-border);
+  border-radius: 3px;
+}
