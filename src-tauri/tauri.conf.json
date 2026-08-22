@@ -49,6 +49,44 @@
         "fullscreen": false,
         "center": true,
         "url": "setup.html"
+      },
+      {
+        "label": "settings",
+        "title": "NEXUS Settings",
+        "width": 600,
+        "height": 720,
+        "resizable": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "focus": true,
+        "visible": false,
+        "fullscreen": false,
+        "center": true,
+        "url": "settings.html"
+      },
+      {
+        "label": "sidebar",
+        "title": "NEXUS Response",
+        "width": 280,
+        "height": 500,
+        "minWidth": 280,
+        "minHeight": 500,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "visible": false,
+        "fullscreen": false,
+        "hiddenTitle": true,
+        "tabbingIdentifier": null,
+        "dragDropEnabled": false,
+        "url": "sidebar.html"
       }
     ],
     "trayIcon": {
@@ -83,7 +121,13 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English"]
+        "languages": ["English"],
+        "template": "installer/nexus-installer.nsi",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installerIcon": "icons/icon.ico",
+        "compression": "lzma",
+        "displayLanguageSelector": false
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

@@ -1,0 +1,173 @@
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS Response Sidebar — Right-edge panel
+   Shows server responses (n8n/Ollama/Hermes) only.
+   Slides in from the right edge.
+   ═══════════════════════════════════════════════════════════════ */
+
+@import "../theme/tokens.css";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent !important;
+  font-family: var(--nx-font);
+  -webkit-font-smoothing: antialiased;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── App container: transparent, slides from right ────────────── */
+#sidebar-app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  background: transparent !important;
+  padding: 0 0 8px 0;
+  transform: translateX(100vw);
+  opacity: 0;
+  overflow: visible;
+}
+
+#sidebar-app.sidebar--visible {
+  transform: translateX(0);
+  opacity: 1;
+  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+}
+
+#sidebar-app.sidebar--hidden {
+  transform: translateX(100vw);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.4s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.15s ease 0.25s;
+}
+
+/* ── Card: the visible white surface ──────────────────────────── */
+.sidebar-card {
+  width: 260px;
+  background: var(--nx-bg);
+  border: 1px solid var(--nx-border);
+  border-radius: var(--nx-radius-lg);
+  box-shadow: var(--nx-shadow-lg);
+  padding: var(--nx-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-3);
+  margin-right: 8px;
+}
+
+/* ── Header ───────────────────────────────────────────────────── */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--nx-space-2);
+  border-bottom: 1px solid var(--nx-border);
+}
+
+.sidebar-logo {
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-bold);
+  background: var(--nx-accent-grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nx-accent-blue);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+.sidebar-done-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nx-success);
+}
+
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* ── Response area ────────────────────────────────────────────── */
+.sidebar-response {
+  max-height: 380px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--nx-border) transparent;
+}
+
+.sidebar-response::-webkit-scrollbar { width: 4px; }
+.sidebar-response::-webkit-scrollbar-track { background: transparent; }
+.sidebar-response::-webkit-scrollbar-thumb {
+  background: var(--nx-border);
+  border-radius: 2px;
+}
+
+.sidebar-response-text {
+  font-size: var(--nx-text-sm);
+  line-height: 1.5;
+  color: var(--nx-text-primary);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* ── Thinking indicator ───────────────────────────────────────── */
+.sidebar-thinking {
+  display: flex;
+  align-items: center;
+  gap: var(--nx-space-2);
+  padding: var(--nx-space-3) 0;
+}
+
+.sidebar-thinking-text {
+  font-size: var(--nx-text-sm);
+  color: var(--nx-text-secondary);
+  font-weight: var(--nx-weight-medium);
+}
+
+.sidebar-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--nx-accent-blue);
+  animation: dots-bounce 1.4s ease-in-out infinite;
+}
+
+.sidebar-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.sidebar-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dots-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}

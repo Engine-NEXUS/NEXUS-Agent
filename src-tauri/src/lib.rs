@@ -28,9 +28,13 @@ mod sidecar_manager;
 mod mic_permissions;
 
 use tauri::{Emitter, Listener, Manager};
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 /// Shared app state held across async tasks.
 pub struct AppState {
@@ -95,9 +99,85 @@ pub fn run() {
                 let _ = app.deep_link().register("nexus");
             }
 
-            // Autostart on by default.
-            let autostart = app.autolaunch();
-            let _ = autostart.enable();
+            // ─── Autostart: Windows Scheduled Task (zero-delay) ───────────
+            //
+            // On Windows, we use a Scheduled Task with "At log on" trigger
+            // instead of the HKCU\...\Run registry key. This launches NEXUS
+            // IMMEDIATELY when the user logs on — no 10-30s desktop-settle
+            // delay. This is the same technique Discord, Steam, and other
+            // startup-optimized apps use.
+            //
+            // We use PowerShell's Register-ScheduledTask cmdlet instead of
+            // schtasks.exe because schtasks.exe requires admin privileges
+            // for /rl highest, while Register-ScheduledTask works for the
+            // current user without elevation.
+            //
+            // On macOS/Linux, we keep tauri-plugin-autostart (LaunchAgent /
+            // systemd user units are already zero-delay on those platforms).
+            #[cfg(target_os = "windows")]
+            {
+                let exe_path = std::env::current_exe()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                if !exe_path.is_empty() {
+                    // Remove old HKCU\Run entry (from the previous autostart plugin)
+                    // to avoid double-launching.
+                    let _ = std::process::Command::new("reg")
+                        .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                               "/v", "NEXUS", "/f"])
+                        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                        .status();
+
+                    // Create/update the scheduled task via PowerShell.
+                    // Register-ScheduledTask is idempotent with -Force and
+                    // doesn't require admin privileges when -User is specified.
+                    // We pass the current user's identity to both the trigger
+                    // and the registration to avoid "Access is denied" errors.
+                    let ps_script = format!(
+                        r#"$exe = '{}';
+                        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name;
+                        $action = New-ScheduledTaskAction -Execute $exe;
+                        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user;
+                        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0);
+                        $result = Register-ScheduledTask -TaskName 'NEXUS' -Action $action -Trigger $trigger -Settings $settings -User $user -Force;
+                        if ($result) {{ Write-Output 'NEXUS_TASK_OK' }} else {{ Write-Output 'NEXUS_TASK_FAIL' }}"#,
+                        exe_path
+                    );
+
+                    let result = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                        .output();
+
+                    match result {
+                        Ok(out) if out.status.success()
+                            && String::from_utf8_lossy(&out.stdout).contains("NEXUS_TASK_OK") =>
+                        {
+                            tracing::info!(
+                                "autostart: scheduled task 'NEXUS' created (AtLogOn, zero-delay)"
+                            );
+                        }
+                        Ok(out) => {
+                            tracing::warn!(
+                                "autostart: Register-ScheduledTask failed: stdout={} stderr={}",
+                                String::from_utf8_lossy(&out.stdout).trim(),
+                                String::from_utf8_lossy(&out.stderr).trim()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("autostart: failed to run PowerShell: {e}");
+                        }
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                // macOS/Linux: use tauri-plugin-autostart (LaunchAgent / systemd)
+                let autostart = app.autolaunch();
+                let _ = autostart.enable();
+            }
 
             // Tray menu.
             tray::setup(app.handle())?;
@@ -120,14 +200,19 @@ pub fn run() {
                 meeting_detect::run_detection_loop(state_for_loop).await;
             });
 
-            // Sleep/wake greeting via time-jump detection.
+            // Sleep/wake detection via time-jump monitoring.
             // thread::sleep uses the monotonic clock (stops while the system is
             // asleep); SystemTime is the wall clock (jumps forward across sleep).
             // A gap much larger than the sleep interval means the machine just
-            // resumed from sleep/hibernate → greet (unless meeting/paused).
+            // resumed from sleep/hibernate.
+            //
+            // Note: This no longer triggers a greeting. Greeting is now
+            // "first interaction of the day" — handled when the user wakes
+            // NEXUS via `should_greet_today` / `mark_greeted_today` IPC.
+            // The sleep-wake watcher remains for future use (e.g. re-init
+            // audio device after sleep, refresh app registry, etc.).
             {
-                let handle = app.handle().clone();
-                let state = meeting_state.clone();
+                let _state = meeting_state.clone();
                 std::thread::Builder::new()
                     .name("sleep-wake-watch".into())
                     .spawn(move || loop {
@@ -137,12 +222,7 @@ pub fn run() {
                             .duration_since(before)
                             .unwrap_or_default();
                         if gap > std::time::Duration::from_secs(60) {
-                            if state.is_meeting_active() || state.is_paused() {
-                                tracing::info!("wake greeting skipped (meeting active or paused)");
-                                continue;
-                            }
-                            tracing::info!("system resumed from sleep (gap {gap:?}) — greeting");
-                            let _ = handle.emit("app:greeting", ());
+                            tracing::info!("system resumed from sleep (gap {gap:?})");
                         }
                     })
                     .ok();
@@ -212,13 +292,24 @@ pub fn run() {
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
 
-            // Wake-word engine (native Porcupine or mock).
+            // Wake-word engine — runs on a DEDICATED OS THREAD, not tokio.
+            // tract-onnx model optimization is CPU-heavy blocking work that
+            // can take 30-120s on a cold boot. Running it on tokio's async
+            // runtime (which is single-threaded in NEXUS) would block ALL
+            // other async tasks (meeting detection, network bridge, sidecar
+            // health check) for the entire duration.
+            //
+            // The hotkey still works immediately (registered above) — the
+            // user can press Ctrl+Shift+Space while the wake engine loads.
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = wakeword::run(handle).await {
-                    tracing::error!("wake-word engine stopped: {e}");
-                }
-            });
+            std::thread::Builder::new()
+                .name("wake-engine".into())
+                .spawn(move || {
+                    if let Err(e) = wakeword::run(handle) {
+                        tracing::error!("wake-word engine stopped: {e}");
+                    }
+                })
+                .ok();
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
             // The sidecar (Python FastAPI on port 49152) must be running for this to work.
@@ -286,7 +377,15 @@ pub fn run() {
             commands::is_nexus_paused,
             commands::meeting_status,
             commands::set_meeting_detection,
-            commands::frontend_ready,
+            commands::should_greet_today,
+            commands::mark_greeted_today,
+            commands::open_settings_window,
+            commands::close_settings_window,
+            commands::get_settings,
+            commands::save_settings,
+            commands::clear_transcript,
+            commands::show_sidebar,
+            commands::hide_sidebar,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,

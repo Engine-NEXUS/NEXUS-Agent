@@ -299,26 +299,70 @@ pub fn delete_voice_profile<R: Runtime>(
     Ok(())
 }
 
-// ─── Boot greeting ─────────────────────────────────────────────────────────
+// ─── First-of-day greeting ─────────────────────────────────────────────────
+//
+// Instead of greeting on every boot or every sleep/wake, NEXUS greets only
+// on the first user interaction (wake) of each calendar day. The last
+// greeting date is persisted to `greeting-state.json` in the app data dir,
+// so it survives restarts, shutdowns, and crashes.
+//
+// Flow:
+//   1. User wakes NEXUS (hotkey or spoken "nexus")
+//   2. Frontend calls `should_greet_today` → Rust compares today's date
+//      with the stored `last_greeting_date`
+//   3. If different (first time today) → frontend speaks the greeting,
+//      then calls `mark_greeted_today` to persist today's date
+//   4. If same (already greeted today) → frontend skips greeting, goes
+//      straight to listening
 
-/// Seconds of system uptime below which a launch counts as a fresh boot.
-/// If NEXUS starts while uptime < 15 min, it was almost certainly launched by
-/// Windows autostart after a restart — greet the user.
-const FRESH_BOOT_UPTIME_SECS: u64 = 15 * 60;
+/// Resolve the greeting state file path in the app data directory.
+fn greeting_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("greeting-state.json"))
+}
 
-/// IPC: the frontend calls this once it has loaded. Returns true if the
-/// frontend should greet ("Hello sir, how can I assist you today?").
+/// Read the last greeting date from disk. Returns None if the file
+/// doesn't exist or is corrupted (safe default: greet).
+fn read_last_greeting_date(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json["last_greeting_date"]
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Write today's date to the greeting state file.
+fn write_last_greeting_date(path: &Path, date: &str) -> Result<(), String> {
+    let json = serde_json::json!({ "last_greeting_date": date });
+    std::fs::write(path, json.to_string())
+        .map_err(|e| format!("failed to write greeting state: {e}"))
+}
+
+/// Get today's date as YYYY-MM-DD in the local timezone.
+fn today_local() -> String {
+    use chrono::Local;
+    Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// IPC: Check if NEXUS should greet the user on this wake.
 ///
-/// Conditions: fresh boot (uptime < 15 min) AND no meeting active AND not
-/// manually paused. The frontend signals readiness instead of Rust pushing on
-/// a timer, so the greeting can't fire before speechSynthesis is usable.
+/// Returns true if today's date differs from the stored `last_greeting_date`
+/// (i.e., this is the first interaction of the day). Also checks meeting/pause
+/// state — if a meeting is active or NEXUS is paused, the greeting is
+/// suppressed but the date is NOT saved, so the next wake after the meeting
+/// will still greet.
 #[tauri::command]
-pub fn frontend_ready<R: Runtime>(
+pub fn should_greet_today<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<bool, String> {
-    let uptime = sysinfo::System::uptime();
-    let fresh_boot = uptime < FRESH_BOOT_UPTIME_SECS;
+    let path = greeting_state_path(&app)?;
+    let last = read_last_greeting_date(&path);
+    let today = today_local();
 
+    let is_new_day = last.as_deref() != Some(&today);
+
+    // Check meeting/pause state — suppress greeting but don't save date
     let (meeting, paused) = match app
         .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
     {
@@ -326,12 +370,27 @@ pub fn frontend_ready<R: Runtime>(
         None => (false, false),
     };
 
-    let should_greet = fresh_boot && !meeting && !paused;
+    let should_greet = is_new_day && !meeting && !paused;
     tracing::info!(
-        "frontend ready: uptime={}s fresh_boot={} meeting={} paused={} → greet={}",
-        uptime, fresh_boot, meeting, paused, should_greet
+        "greeting check: today={} last={:?} new_day={} meeting={} paused={} → greet={}",
+        today, last, is_new_day, meeting, paused, should_greet
     );
     Ok(should_greet)
+}
+
+/// IPC: Mark that NEXUS has greeted the user today.
+///
+/// Called by the frontend AFTER the greeting TTS finishes (or starts —
+/// either way, the date is saved so subsequent wakes don't re-greet).
+#[tauri::command]
+pub fn mark_greeted_today<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let path = greeting_state_path(&app)?;
+    let today = today_local();
+    write_last_greeting_date(&path, &today)?;
+    tracing::info!("greeting: marked today ({}) as greeted", today);
+    Ok(())
 }
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────
@@ -398,4 +457,187 @@ pub struct MeetingStatus {
     pub paused: bool,
     pub tts_playing: bool,
     pub detection_enabled: bool,
+}
+
+// ─── Response Sidebar window ─────────────────────────────────────────
+
+/// IPC: Show the response sidebar window (positioned at bottom-right).
+/// Called when a server response is incoming (n8n/Ollama/Hermes).
+#[tauri::command]
+pub fn show_sidebar<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window not found".to_string())?;
+
+    // Position at bottom-right of the screen, above the taskbar.
+    use tauri::PhysicalPosition;
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let sidebar_w = 280i32;
+        let sidebar_h = 500i32;
+        let phys_w = (sidebar_w as f64 * scale) as i32;
+        let phys_h = (sidebar_h as f64 * scale) as i32;
+
+        #[cfg(target_os = "macos")]
+        let taskbar = (70.0 * scale) as i32;
+        #[cfg(not(target_os = "macos"))]
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+
+        let x = screen.width as i32 - phys_w - gap;
+        let y = screen.height as i32 - phys_h - taskbar - gap;
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+    }
+
+    win.show().map_err(|e| e.to_string())?;
+    // Don't steal focus from the main window
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// IPC: Hide the response sidebar window.
+/// Called after the server response has been spoken.
+#[tauri::command]
+pub fn hide_sidebar<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window not found".to_string())?;
+    win.hide().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ─── Settings window + persistence ───────────────────────────────────
+
+/// IPC: Open the settings window.
+#[tauri::command]
+pub fn open_settings_window<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("settings")
+        .ok_or_else(|| "settings window not found".to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// IPC: Close/hide the settings window.
+#[tauri::command]
+pub fn close_settings_window<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("settings")
+        .ok_or_else(|| "settings window not found".to_string())?;
+    win.hide().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Serialized settings returned by `get_settings` and accepted by `save_settings`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusSettings {
+    pub autostart: bool,
+    pub hotkey: String,
+    pub auto_hide_delay: u32,
+    pub wake_word_enabled: bool,
+    pub wake_phrase: String,
+    pub wake_sensitivity: String,
+    pub speaker_verification: bool,
+    pub meeting_mode_auto: bool,
+    pub suppress_tts_in_meetings: bool,
+    pub local_stt_only: bool,
+    pub server_url: String,
+    pub user_id: String,
+    pub device_id: String,
+    pub tts_voice: String,
+    pub speech_rate: f64,
+}
+
+impl Default for NexusSettings {
+    fn default() -> Self {
+        Self {
+            autostart: true,
+            hotkey: "Ctrl+Shift+Space".to_string(),
+            auto_hide_delay: 8,
+            wake_word_enabled: true,
+            wake_phrase: "NEXUS".to_string(),
+            wake_sensitivity: "medium".to_string(),
+            speaker_verification: false,
+            meeting_mode_auto: true,
+            suppress_tts_in_meetings: true,
+            local_stt_only: true,
+            server_url: String::new(),
+            user_id: "local-user".to_string(),
+            device_id: "local-device".to_string(),
+            tts_voice: "default".to_string(),
+            speech_rate: 1.0,
+        }
+    }
+}
+
+/// IPC: Get the current settings (merged with defaults for missing fields).
+#[tauri::command]
+pub fn get_settings<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<NexusSettings, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    if !path.exists() {
+        return Ok(NexusSettings::default());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut settings: NexusSettings = serde_json::from_str(&content)
+        .unwrap_or_default();
+    // Merge server config if present
+    let config_path = dir.join("nexus-config.json");
+    if config_path.exists() {
+        if let Ok(config) = std::fs::read_to_string(&config_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&config) {
+                if let Some(url) = json.get("serverUrl").and_then(|v| v.as_str()) {
+                    settings.server_url = url.to_string();
+                }
+                if let Some(uid) = json.get("userId").and_then(|v| v.as_str()) {
+                    settings.user_id = uid.to_string();
+                }
+                if let Some(did) = json.get("deviceId").and_then(|v| v.as_str()) {
+                    settings.device_id = did.to_string();
+                }
+            }
+        }
+    }
+    Ok(settings)
+}
+
+/// IPC: Save settings to disk.
+#[tauri::command]
+pub fn save_settings<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    settings: NexusSettings,
+) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // Also save server config separately (so existing code can read it)
+    let config = serde_json::json!({
+        "serverUrl": settings.server_url,
+        "userId": settings.user_id,
+        "deviceId": settings.device_id,
+    });
+    let config_path = dir.join("nexus-config.json");
+    std::fs::write(&config_path, config.to_string()).map_err(|e| e.to_string())?;
+    tracing::info!("settings saved to {:?}", path);
+    Ok(())
+}
+
+/// IPC: Clear the conversation transcript (frontend store).
+/// This is a no-op on the Rust side — the frontend handles it.
+/// The command exists so the settings UI can call it via IPC.
+#[tauri::command]
+pub fn clear_transcript() -> Result<(), String> {
+    tracing::info!("transcript cleared (frontend-side)");
+    Ok(())
 }
