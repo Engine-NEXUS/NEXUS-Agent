@@ -5,6 +5,24 @@
 
 ---
 
+## UI Overhaul + Installer + Response Sidebar (PR #16)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `03a34ad` | 2026-08-22 | feat: right-side response sidebar — shows only for server responses | [21-response-sidebar.md](./21-response-sidebar.md), [22-installer-desktop-shortcut-removal.md](./22-installer-desktop-shortcut-removal.md) |
+| `6663e57` | 2026-08-20 | feat: white-themed NSIS installer + setup wizard (orb untouched) | [19-nsis-installer.md](./19-nsis-installer.md), [20-setup-wizard-redesign.md](./20-setup-wizard-redesign.md) |
+| `4e1086c` | 2026-08-20 | revert: restore original orb window — keep settings window + setup wizard | [18-orb-revert.md](./18-orb-revert.md) |
+| `5ee9275` | 2026-08-20 | feat: white theme UI overhaul — orb card, settings window, setup wizard | [17-white-theme-ui-overhaul.md](./17-white-theme-ui-overhaul.md) |
+
+## Boot Reliability + Greeting (PR #15)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `4d3c032` | 2026-08-19 | fix: suppress all terminal windows on Windows (CREATE_NO_WINDOW) | — |
+| `89ed188` | 2026-08-19 | fix: autostart via Windows Scheduled Task — zero-delay launch on restart | — |
+| `96e4962` | 2026-08-19 | feat: first-of-day greeting — "Welcome sir" on first wake, persisted across restarts | [03-boot-greeting.md](./03-boot-greeting.md) |
+| `431ec11` | 2026-08-19 | fix: wake engine blocks tokio runtime for 5 min on cold boot (3 root causes) | — |
+
 ## Recent Changes (Boot Reliability + Greeting)
 
 | Commit | Date | Summary | Details |
