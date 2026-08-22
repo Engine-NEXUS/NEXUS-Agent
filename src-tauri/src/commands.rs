@@ -459,6 +459,56 @@ pub struct MeetingStatus {
     pub detection_enabled: bool,
 }
 
+// ─── Response Sidebar window ─────────────────────────────────────────
+
+/// IPC: Show the response sidebar window (positioned at bottom-right).
+/// Called when a server response is incoming (n8n/Ollama/Hermes).
+#[tauri::command]
+pub fn show_sidebar<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window not found".to_string())?;
+
+    // Position at bottom-right of the screen, above the taskbar.
+    use tauri::PhysicalPosition;
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let sidebar_w = 280i32;
+        let sidebar_h = 500i32;
+        let phys_w = (sidebar_w as f64 * scale) as i32;
+        let phys_h = (sidebar_h as f64 * scale) as i32;
+
+        #[cfg(target_os = "macos")]
+        let taskbar = (70.0 * scale) as i32;
+        #[cfg(not(target_os = "macos"))]
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+
+        let x = screen.width as i32 - phys_w - gap;
+        let y = screen.height as i32 - phys_h - taskbar - gap;
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+    }
+
+    win.show().map_err(|e| e.to_string())?;
+    // Don't steal focus from the main window
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// IPC: Hide the response sidebar window.
+/// Called after the server response has been spoken.
+#[tauri::command]
+pub fn hide_sidebar<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window not found".to_string())?;
+    win.hide().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── Settings window + persistence ───────────────────────────────────
 
 /// IPC: Open the settings window.

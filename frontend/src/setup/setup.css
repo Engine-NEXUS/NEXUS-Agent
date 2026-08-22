@@ -214,6 +214,31 @@ html, body, #root {
   border-color: var(--nx-accent-blue);
 }
 
+.setup-provider--large {
+  padding: var(--nx-space-5);
+  gap: var(--nx-space-3);
+}
+
+.setup-provider-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--nx-radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.setup-provider-icon--google {
+  background: #FFFFFF;
+  border: 1px solid var(--nx-border);
+}
+
+.setup-provider-icon--github {
+  background: #1F2937;
+  color: #FFFFFF;
+}
+
 .setup-provider-info p {
   font-size: var(--nx-text-xs);
   color: var(--nx-text-tertiary);
