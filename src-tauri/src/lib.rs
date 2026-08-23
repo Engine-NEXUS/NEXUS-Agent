@@ -391,6 +391,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::clear_transcript,
+            commands::refresh_app_registry,
             commands::show_sidebar,
             commands::hide_sidebar,
             stt::transcribe_audio,

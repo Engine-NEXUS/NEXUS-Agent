@@ -7,9 +7,13 @@
  * 3-TIER RESOLUTION: All "open <app>" commands are sent to Rust as
  * `open_app` intents. The Rust command_executor resolves them in order:
  *   Tier 1: Is the app already running? → Focus its window
- *   Tier 2: Is the app installed? → Launch the native app
+ *   Tier 2: Is the app installed? → Launch the native app (Store/PWA/Win32)
  *   Tier 3: Is there a URL fallback? → Open in browser
  *   Tier 4: Not found → Speak error
+ *
+ * The frontend does NOT short-circuit to browser URLs. Rust owns the
+ * full resolution chain so native apps, Store apps, and PWAs are always
+ * preferred over browser tabs.
  *
  * PHONETIC MATCHING: If the STT transcript contains a word that sounds like
  * a known app name (e.g. "gamail" → "gmail"), the phonetic matcher corrects
@@ -27,11 +31,13 @@ export type Intent =
   | { action: "unknown"; raw: string };
 
 /**
- * Apps that have a known URL fallback. The Rust command_executor also
- * has this list — it's duplicated here so the frontend can still send
- * `open_url` directly if needed (e.g. for explicit "open website" commands).
+ * URL map for explicit "open <app> in browser" commands ONLY.
+ * This is NOT used for regular "open <app>" — those go to Rust which
+ * checks for native apps/Store apps/PWAs first, then falls back to URLs.
+ * Kept here so the frontend can handle "open gmail in browser" without
+ * a round-trip to Rust.
  */
-const URL_MAP: Record<string, string> = {
+const BROWSER_FORCE_URL_MAP: Record<string, string> = {
   gmail: "https://mail.google.com",
   "google mail": "https://mail.google.com",
   youtube: "https://www.youtube.com",
@@ -524,31 +530,49 @@ export function parseIntent(transcript: string): Intent {
     const target = openMatch[1].trim();
 
     // Strip trailing "app" or "application" — "open gmail app" → "gmail"
-    const cleaned = target.replace(/\s+(?:app|application|website|site|for\s+me)$/i, "");
+    const cleaned = target.replace(/\s+(?:app|application|for\s+me)$/i, "");
 
-    // Check if it's a known URL target first
-    const url = URL_MAP[cleaned];
-    if (url) {
-      return { action: "open_url", target: cleaned, url };
+    // ESCAPE HATCH: "open gmail in browser" / "open gmail website" / "open gmail site"
+    // Forces browser URL instead of native app. Lets user choose browser version
+    // even when a native app/PWA is installed.
+    const browserForceMatch = cleaned.match(
+      /^(.+?)\s+(?:in\s+(?:the\s+)?browser|website|site|on\s+(?:the\s+)?web|web\s+version)$/i,
+    );
+    if (browserForceMatch) {
+      const appName = browserForceMatch[1].trim();
+      const url = BROWSER_FORCE_URL_MAP[appName];
+      if (url) {
+        return { action: "open_url", target: appName, url };
+      }
+      // Unknown app + "in browser" → try constructing a URL
+      if (appName.includes(".") && !appName.includes(" ")) {
+        const fullUrl = appName.startsWith("http") ? appName : `https://${appName}`;
+        return { action: "open_url", target: appName, url: fullUrl };
+      }
+      // Fall through to open_app — Rust will URL-fallback if no native app
     }
 
+    // Strip trailing "website"/"site" if not matched above (e.g. "open gmail website" without "in")
+    const cleanedNoSite = cleaned.replace(/\s+(?:website|site)$/i, "");
+
     // If it looks like a URL (has a dot, no spaces), open directly
-    if (cleaned.includes(".") && !cleaned.includes(" ")) {
-      const fullUrl = cleaned.startsWith("http") ? cleaned : `https://${cleaned}`;
-      return { action: "open_url", target: cleaned, url: fullUrl };
+    if (cleanedNoSite.includes(".") && !cleanedNoSite.includes(" ")) {
+      const fullUrl = cleanedNoSite.startsWith("http") ? cleanedNoSite : `https://${cleanedNoSite}`;
+      return { action: "open_url", target: cleanedNoSite, url: fullUrl };
     }
 
     // PHONETIC CORRECTION: If Whisper misheard the app name (e.g. "gamail"
     // instead of "gmail"), correct it using DoubleMetaphone matching.
     // This runs AFTER regex matching but BEFORE sending to Rust, so the
     // Rust resolver receives the canonical app name.
-    const corrected = phoneticCorrectPhrase(cleaned);
-    if (corrected !== cleaned) {
-      console.log(`[NEXUS] phonetic correction: "${cleaned}" → "${corrected}"`);
+    const corrected = phoneticCorrectPhrase(cleanedNoSite);
+    if (corrected !== cleanedNoSite) {
+      console.log(`[NEXUS] phonetic correction: "${cleanedNoSite}" → "${corrected}"`);
     }
 
     // All "open" commands go to Rust as open_app.
     // Rust handles: running check → installed check → URL fallback.
+    // This ensures native apps, Store apps, and PWAs are preferred over browser tabs.
     return { action: "open_app", target: corrected };
   }
 
