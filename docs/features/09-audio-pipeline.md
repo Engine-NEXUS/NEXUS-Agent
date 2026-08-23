@@ -1,14 +1,47 @@
 # Feature: Local Audio Pipeline (VAD → STT → TTS)
 
-> The complete local audio chain: capture, voice activity detection, speech-to-text, and text-to-speech. All audio stays on the device.
+> The complete local audio chain: capture, voice activity detection, speech-to-text, and text-to-speech. All audio stays on the device. Mic stream and VAD are kept warm between commands for ~10ms wake-to-listen.
 
 **Source files:**
+- `frontend/src/main.tsx` — wake handler, hot mic, parallel init
 - `frontend/src/audio/recorder.ts` — mic capture (ScriptProcessorNode)
-- `frontend/src/audio/vad.ts` — Silero VAD (ONNX Runtime Web)
+- `frontend/src/audio/vad.ts` — Silero VAD (ONNX Runtime Web) + pre-init
 - `frontend/src/audio/stt.ts` — local STT IPC wrapper
 - `frontend/src/audio/ttsPlayer.ts` — Web Speech API TTS
 - `frontend/src/audio/paramCapture.ts` — 3-second parameter capture for Tier 3
 - `src-tauri/src/stt.rs` — Rust HTTP client to local faster-whisper server
+- `src-tauri/src/stt_server_manager.rs` — auto-start STT server
+
+---
+
+## Hot Mic + Pre-Init VAD
+
+NEXUS keeps the mic stream and Silero VAD instance warm between commands to eliminate wake-to-listen delay:
+
+```
+APP STARTUP:
+  1. getUserMedia() → micStream (acquired ONCE, kept warm)
+  2. preloadSileroVad() → fetch ONNX WASM + model from CDN
+  3. preloadMicVad(micStream) → create MicVAD instance (paused)
+  Total startup: ~2-3s (background, user doesn't notice)
+
+ON WAKE ("NEXUS"):
+  1. Re-enable mic tracks (~0ms)
+  2. Promise.all([captureUntilSilence(), startVad()]) — parallel (~5ms)
+  Total wake-to-listen: ~10-50ms (down from ~200-500ms)
+
+AFTER COMMAND:
+  1. micVad.pause() — VAD paused, not destroyed
+  2. micStream tracks disabled, not stopped
+  → Both ready for instant resume on next wake
+```
+
+| Metric | Before (cold) | After (hot) |
+|--------|--------------|-------------|
+| getUserMedia() | 50-200ms per wake | 0ms (stream warm) |
+| MicVAD.new() | 60-250ms per wake | ~1ms (resume from pause) |
+| Recording + VAD | Sequential (~255ms) | Parallel (~5ms) |
+| **Total wake-to-listen** | **~200-500ms** | **~10-50ms** |
 
 ---
 
@@ -18,7 +51,7 @@
                     ┌─────────────────────────────────────────────────────┐
                     │  FRONTEND (WebView)                                  │
                     │                                                     │
-  Mic ────────────▶│  getUserMedia()                                     │
+  Mic ────────────▶│  getUserMedia() — ONCE at startup, kept warm       │
                     │  │                                                  │
                     │  ▼                                                  │
                     │  ScriptProcessorNode (4096 buffer, native SR)      │
@@ -26,6 +59,7 @@
                     │  ├──▶ Float32 buffer (in memory)                    │
                     │  │                                                  │
                     │  └──▶ Silero VAD (ONNX Runtime Web, WASM)          │
+                    │       (pre-initialized at startup, paused/resumed)  │
                     │       │                                             │
                     │       ▼                                             │
                     │    speech detected? ─── no ──▶ keep listening      │
@@ -45,7 +79,7 @@
                          ▼
                     ┌─────────────────────────────────────────────────────┐
                     │  LOCAL STT SERVER (faster-whisper)                  │
-                    │  127.0.0.1:8000                                      │
+                    │  127.0.0.1:8000 (auto-started by stt_server_manager)│
                     │                                                     │
                     │  CTranslate2 inference                               │
                     │  Returns transcript text                             │

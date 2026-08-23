@@ -22,6 +22,7 @@ mod commands;
 mod command_executor;
 mod app_registry;
 mod stt;
+mod stt_server_manager;
 mod voice_profile;
 mod meeting_detect;
 mod sidecar_manager;
@@ -318,6 +319,12 @@ pub fn run() {
             // retry logic (1s→2s→4s→8s backoff) connects once it's ready.
             std::thread::spawn(sidecar_manager::init);
 
+            // STT server (faster-whisper on port 8000) transcribes audio locally.
+            // Without it, no commands can be executed — every transcript is empty.
+            // Auto-spawn it in a BACKGROUND THREAD — model loading takes 10-20s on CPU
+            // and must not block app startup. The first transcription will wait for it.
+            std::thread::spawn(stt_server_manager::init);
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::run(handle).await {
@@ -384,6 +391,7 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::clear_transcript,
+            commands::refresh_app_registry,
             commands::show_sidebar,
             commands::hide_sidebar,
             stt::transcribe_audio,

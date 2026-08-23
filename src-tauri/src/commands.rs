@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Runtime};
 use crate::voice_profile;
+use crate::app_registry;
 
 /// IPC: open the setup window (called from tray menu "Settings…" or first launch).
 #[tauri::command]
@@ -640,4 +641,13 @@ pub fn save_settings<R: Runtime>(
 pub fn clear_transcript() -> Result<(), String> {
     tracing::info!("transcript cleared (frontend-side)");
     Ok(())
+}
+
+/// Force a manual app registry refresh (e.g. after installing a new app).
+/// Scans the OS for installed apps and updates the cache immediately.
+#[tauri::command]
+pub fn refresh_app_registry() -> Result<String, String> {
+    tracing::info!("manual app registry refresh requested");
+    app_registry::force_refresh();
+    Ok("App registry refreshed".to_string())
 }

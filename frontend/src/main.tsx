@@ -3,38 +3,76 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
-// Pre-load Silero VAD model at app startup so it's ready instantly
-// when the first wake word is detected. This eliminates the ~1-2s
-// initialization delay on the first wake.
-import { preloadSileroVad } from "./audio/vad";
-preloadSileroVad().catch(() => {
-  // Non-fatal — RMS fallback will be used if Silero fails to load.
-  console.warn("[NEXUS] Silero VAD pre-load failed at startup — will use RMS fallback");
-});
+// ─── HOT MIC + PRE-INIT VAD (Approach A+B) ─────────────────────────────────
+// At startup, we pre-acquire the mic stream and pre-initialize the Silero
+// MicVAD instance. This eliminates the two biggest sources of wake-to-listen
+// delay:
+//   1. getUserMedia() — 50-200ms per wake → eliminated (mic stays warm)
+//   2. MicVAD.new()   — 60-250ms per wake → eliminated (VAD stays paused, ready)
+//
+// On wake, we just resume the VAD + start recording in parallel (Approach C).
+// Wake-to-listen drops from ~200-500ms to ~10-50ms.
+//
+// Privacy: Audio is ALWAYS processed locally. The mic stream stays open but
+// audio is only captured when recording is active. VAD runs only during
+// listening state. No audio leaves the device.
+
+import { preloadSileroVad, preloadMicVad, startVad, stopVad } from "./audio/vad";
+import { captureUntilSilence, abortCapture } from "./audio/recorder";
+import { stopTts } from "./audio/ttsPlayer";
+import { useAssistant } from "./store/assistant";
+
+let micStream: MediaStream | null = null;
+
+/**
+ * Acquire the mic stream at startup and keep it warm.
+ * This eliminates the 50-200ms getUserMedia() latency on every wake.
+ *
+ * If this fails (e.g. mic permission not yet granted), we fall back to
+ * acquiring the mic on the first wake — the old behavior.
+ */
+async function warmMic(): Promise<void> {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    console.log("[NEXUS] hot mic: stream acquired and warming");
+
+    // Pre-initialize MicVAD with the warm stream.
+    // This creates the AudioWorklet + loads the Silero model.
+    // The VAD starts in paused state — it won't process audio until startVad().
+    await preloadMicVad(micStream);
+    console.log("[NEXUS] hot mic: MicVAD pre-initialized and ready");
+  } catch (err) {
+    console.warn("[NEXUS] hot mic: startup mic acquisition failed, will acquire on wake:", err);
+    micStream = null;
+  }
+}
+
+// Start the hot mic + VAD preload at app startup (non-blocking)
+preloadSileroVad()
+  .then(() => warmMic())
+  .catch(() => {
+    console.warn("[NEXUS] Silero VAD pre-load failed at startup — will use RMS fallback");
+  });
 
 /**
  * Wake-word / hotkey → mic capture → VAD → STT → intent → execute / backend.
  *
- * The wake function is called from Rust via `win.eval()`, bypassing the
- * Tauri event system (which has reliability issues with repeated events in v2).
- *
- * Flow:
+ * With hot mic + pre-init VAD, the wake-to-listen path is:
  *   1. Wake fires → show overlay, set state to "listening"
- *   2. Acquire mic stream (16 kHz mono, echo cancellation, noise suppression)
- *   3. Open backend session (non-fatal if backend is unavailable — local-only mode)
- *   4. Start recording (AudioWorklet buffers PCM locally)
- *   5. Start VAD (Silero ONNX or RMS fallback) — detects speech/silence
- *   6. On silence → finishCapture() → local STT → transcript → intent/backend
+ *   2. Mic stream already warm → skip getUserMedia (saves 50-200ms)
+ *   3. Start recording + start VAD in PARALLEL (saves 60-250ms)
+ *   4. VAD detects silence → finishCapture() → STT → intent → execute
+ *
+ * Total wake-to-listen: ~10-50ms (down from ~200-500ms)
  */
 
-let micStream: MediaStream | null = null;
-
 async function startListening() {
-  const { useAssistant } = await import("./store/assistant");
-  const { captureUntilSilence } = await import("./audio/recorder");
-  const { startVad } = await import("./audio/vad");
-  const { stopTts } = await import("./audio/ttsPlayer");
-
   const s = useAssistant.getState();
   console.log("[NEXUS] wake →", s.state);
 
@@ -50,8 +88,6 @@ async function startListening() {
   if (s.state === "speaking" || s.state === "thinking") {
     console.log("[NEXUS] barge-in: cancelling current turn");
     stopTts();
-    const { stopVad } = await import("./audio/vad");
-    const { abortCapture } = await import("./audio/recorder");
     stopVad();
     await abortCapture().catch(() => {});
   }
@@ -59,62 +95,44 @@ async function startListening() {
   s.setVisible(true);
   s.setState("listening");
 
-  // Acquire mic with echo cancellation + noise suppression.
-  // NOTE: sampleRate constraint is intentionally omitted — most browsers
-  // ignore it and some devices fail if they can't honor it. The AudioContext
-  // at 16kHz handles resampling internally.
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
-    });
-  } catch (err) {
-    console.error("[NEXUS] mic permission denied or unavailable:", err);
-    useAssistant.getState().reset();
-    useAssistant.getState().setVisible(false);
-    return;
+  // ─── Approach A: Hot Mic ───────────────────────────────────────────
+  // If the mic stream is already warm (acquired at startup), reuse it.
+  // Only call getUserMedia() if the stream was lost or never acquired.
+  if (!micStream || !micStream.active) {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      console.log("[NEXUS] hot mic: stream re-acquired (was cold)");
+    } catch (err) {
+      console.error("[NEXUS] mic permission denied or unavailable:", err);
+      useAssistant.getState().reset();
+      useAssistant.getState().setVisible(false);
+      return;
+    }
+  } else {
+    // Re-enable tracks in case they were disabled by VAD's pauseStream
+    micStream.getTracks().forEach((t) => (t.enabled = true));
   }
 
-  // Start recording (and try to open backend session — non-fatal if it fails).
-  // captureUntilSilence handles the backend failure internally and always starts recording.
+  // ─── Approach C: Parallel recording + VAD start ────────────────────
+  // Start recording and VAD simultaneously instead of sequentially.
+  // This overlaps the two init operations, saving ~60-250ms.
   try {
-    await captureUntilSilence(micStream);
+    await Promise.all([
+      captureUntilSilence(micStream),
+      startVad(micStream),
+    ]);
   } catch (err) {
-    console.error("[NEXUS] recording failed:", err);
-    stopMicStream();
-    useAssistant.getState().reset();
-    useAssistant.getState().setVisible(false);
-    return;
-  }
-
-  if (!micStream) {
-    console.error("[NEXUS] mic stream lost, aborting listen");
-    useAssistant.getState().reset();
-    return;
-  }
-
-  // Start VAD — detects silence and calls finishCapture() automatically.
-  try {
-    await startVad(micStream);
-  } catch (err) {
-    console.error("[NEXUS] VAD failed to start:", err);
-    // Clean up: stop recording, release mic, reset state.
-    // Without VAD, nothing will call finishCapture(), so we must abort.
-    const { stopVad } = await import("./audio/vad");
-    const { abortCapture } = await import("./audio/recorder");
+    console.error("[NEXUS] recording/VAD failed:", err);
     stopVad();
     await abortCapture().catch(() => {});
-    stopMicStream();
-  }
-}
-
-function stopMicStream() {
-  if (micStream) {
-    micStream.getTracks().forEach((t) => t.stop());
-    micStream = null;
+    useAssistant.getState().reset();
+    useAssistant.getState().setVisible(false);
   }
 }
 
@@ -320,23 +338,27 @@ void setupCommandDetectionListener();
 
 /** Called from Rust to cancel the current session. */
 (window as any).__NEXUS_CANCEL__ = async () => {
-  const { useAssistant } = await import("./store/assistant");
-  const { stopVad } = await import("./audio/vad");
-  const { abortCapture } = await import("./audio/recorder");
   console.log("[NEXUS] cancel");
   // Stop VAD first so it doesn't trigger finishCapture during cleanup.
   stopVad();
   // Then abort recording and close the session.
   await abortCapture();
-  // Finally release the mic and reset state.
-  stopMicStream();
+  // Hot mic: don't release the stream, just disable tracks
+  if (micStream) {
+    micStream.getTracks().forEach((t) => (t.enabled = false));
+  }
   useAssistant.getState().reset();
   useAssistant.getState().setVisible(false);
 };
 
-/** Called by finishCapture/abortCapture cleanup to release the mic stream. */
+/** Called by finishCapture/abortCapture cleanup to release the mic stream.
+ *  With hot mic, we DON'T release the stream — we keep it warm for the next wake.
+ *  The stream tracks are disabled by VAD's pauseStream callback instead. */
 (window as any).__NEXUS_RELEASE_MIC__ = () => {
-  stopMicStream();
+  // Hot mic: keep the stream alive, just disable the tracks
+  if (micStream) {
+    micStream.getTracks().forEach((t) => (t.enabled = false));
+  }
 };
 
 /** Called by paramCapture to get the existing mic stream (or null if not active). */

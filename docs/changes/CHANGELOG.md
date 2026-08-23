@@ -5,6 +5,35 @@
 
 ---
 
+## Voice Pipeline Performance + Native App Resolution (2026-08-23)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `92040f8` | 2026-08-23 | feat: hot mic + pre-init VAD + parallel init (A+B+C) — eliminates 2s wake-to-listen delay | [28-hot-mic-preinit-vad.md](./28-hot-mic-preinit-vad.md) |
+| `02d162c` | 2026-08-23 | feat: native app priority + resolution cache + daily scan — opens PWAs/Store apps instead of browser tabs | [27-native-app-priority-resolution-cache.md](./27-native-app-priority-resolution-cache.md) |
+| `80aabed` | 2026-08-23 | perf: switch STT to tiny.en + greedy decoding — 54x faster, 22% less RAM | [26-stt-performance-optimization.md](./26-stt-performance-optimization.md) |
+| `58af31e` | 2026-08-23 | fix: auto-start STT server — root cause of all command failures | [25-stt-server-auto-start.md](./25-stt-server-auto-start.md) |
+| `e0d0c80` | 2026-08-23 | fix: local commands hijacked by sidecar — local-first intent routing | [24-local-first-intent-routing.md](./24-local-first-intent-routing.md) |
+| `d1e9d20` | 2026-08-23 | fix: meeting detection self-trigger — NEXUS detects own WebView2 as meeting | [23-meeting-detection-self-trigger-fix.md](./23-meeting-detection-self-trigger-fix.md) |
+
+## UI Overhaul + Installer + Response Sidebar (PR #16)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `03a34ad` | 2026-08-22 | feat: right-side response sidebar — shows only for server responses | [21-response-sidebar.md](./21-response-sidebar.md), [22-installer-desktop-shortcut-removal.md](./22-installer-desktop-shortcut-removal.md) |
+| `6663e57` | 2026-08-20 | feat: white-themed NSIS installer + setup wizard (orb untouched) | [19-nsis-installer.md](./19-nsis-installer.md), [20-setup-wizard-redesign.md](./20-setup-wizard-redesign.md) |
+| `4e1086c` | 2026-08-20 | revert: restore original orb window — keep settings window + setup wizard | [18-orb-revert.md](./18-orb-revert.md) |
+| `5ee9275` | 2026-08-20 | feat: white theme UI overhaul — orb card, settings window, setup wizard | [17-white-theme-ui-overhaul.md](./17-white-theme-ui-overhaul.md) |
+
+## Boot Reliability + Greeting (PR #15)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `4d3c032` | 2026-08-19 | fix: suppress all terminal windows on Windows (CREATE_NO_WINDOW) | — |
+| `89ed188` | 2026-08-19 | fix: autostart via Windows Scheduled Task — zero-delay launch on restart | — |
+| `96e4962` | 2026-08-19 | feat: first-of-day greeting — "Welcome sir" on first wake, persisted across restarts | [03-boot-greeting.md](./03-boot-greeting.md) |
+| `431ec11` | 2026-08-19 | fix: wake engine blocks tokio runtime for 5 min on cold boot (3 root causes) | — |
+
 ## Recent Changes (Boot Reliability + Greeting)
 
 | Commit | Date | Summary | Details |
@@ -63,6 +92,18 @@
 ---
 
 ## Feature Area Summary
+
+### Voice Pipeline Performance (3 commits)
+Eliminated the 2-second wake-to-listen delay with hot mic + pre-init VAD + parallel init. STT latency reduced from 15s to 276ms with tiny.en + greedy decoding. STT server now auto-starts with NEXUS.
+
+### Native App Resolution (1 commit)
+NEXUS now opens installed native apps, Store apps, and browser PWAs instead of browser tabs. Added resolution cache for instant repeat commands, daily scan for app changes, and cross-platform PWA discovery.
+
+### Local-First Intent Routing (1 commit)
+Local commands (open, search, play) now execute locally before contacting the remote backend. Eliminates dependency on n8n for basic commands.
+
+### Meeting Detection Fix (1 commit)
+Fixed NEXUS detecting its own WebView2 process as a meeting, causing wake/TTS suppression deadlock.
 
 ### Boot Reliability (6 commits)
 Fixed the entire cold-boot experience: no browser reopening, no terminal window, no mic prompt, fast startup, greeting on boot.
