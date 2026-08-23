@@ -511,18 +511,32 @@ function levenshtein(a: string, b: string): number {
 export function parseIntent(transcript: string): Intent {
   const text = transcript.trim().toLowerCase().replace(/\s+/g, " ");
 
-  // --- "open <something>" ---
+  // --- "open <something>" / "launch <something>" / etc. ---
   // Matches: "open gmail", "open notepad", "open calculator", "open youtube"
+  //          "launch spotify", "start calculator", "run powershell"
+  //          "fire up chrome", "bring up notepad", "show calculator"
   // All "open" commands go through the 3-tier resolution in Rust:
   //   running → installed → browser fallback → not found
   const openMatch = text.match(
-    /^(?:open|launch|start|run|fire up|bring up)\s+(.+)$/i,
+    /^(?:open|launch|start|run|fire\s+up|bring\s+up|show|pull\s+up|go\s+to|visit|browse\s+to|navigate\s+to)\s+(.+)$/i,
   );
   if (openMatch) {
     const target = openMatch[1].trim();
 
     // Strip trailing "app" or "application" — "open gmail app" → "gmail"
-    const cleaned = target.replace(/\s+(?:app|application)$/i, "");
+    const cleaned = target.replace(/\s+(?:app|application|website|site|for\s+me)$/i, "");
+
+    // Check if it's a known URL target first
+    const url = URL_MAP[cleaned];
+    if (url) {
+      return { action: "open_url", target: cleaned, url };
+    }
+
+    // If it looks like a URL (has a dot, no spaces), open directly
+    if (cleaned.includes(".") && !cleaned.includes(" ")) {
+      const fullUrl = cleaned.startsWith("http") ? cleaned : `https://${cleaned}`;
+      return { action: "open_url", target: cleaned, url: fullUrl };
+    }
 
     // PHONETIC CORRECTION: If Whisper misheard the app name (e.g. "gamail"
     // instead of "gmail"), correct it using DoubleMetaphone matching.
@@ -538,30 +552,11 @@ export function parseIntent(transcript: string): Intent {
     return { action: "open_app", target: corrected };
   }
 
-  // --- "go to <url>" / "visit <url>" / "browse to <url>" ---
-  // These are explicit URL commands — send directly as open_url.
-  const urlMatch = text.match(
-    /^(?:go\s+to|visit|browse\s+to|navigate\s+to)\s+(.+)$/i,
-  );
-  if (urlMatch) {
-    const target = urlMatch[1].trim();
-    const url = URL_MAP[target];
-    if (url) {
-      return { action: "open_url", target, url };
-    }
-    // If it looks like a URL, use it directly
-    if (target.includes(".") && !target.includes(" ")) {
-      const fullUrl = target.startsWith("http") ? target : `https://${target}`;
-      return { action: "open_url", target, url: fullUrl };
-    }
-    // Otherwise treat as app name
-    return { action: "open_app", target };
-  }
-
   // --- "search for <query>" ---
-  // Matches: "search for cats", "google cats", "look up cats"
+  // Matches: "search for cats", "google cats", "look up cats", "find cats"
+  //          "search cats on youtube", "youtube cats", "spotify play <song>"
   const searchMatch = text.match(
-    /^(?:search\s+for|search|google|look\s+up|find\s+me|find)\s+(.+)$/i,
+    /^(?:search\s+for|search|google|look\s+up|find\s+me|find|look\s+for)\s+(.+)$/i,
   );
   if (searchMatch) {
     const query = searchMatch[1].trim();
@@ -570,6 +565,25 @@ export function parseIntent(transcript: string): Intent {
       query,
     };
   }
+
+  // --- "play <song> on spotify" / "play <song>" ---
+  const spotifyMatch = text.match(
+    /^(?:play|put\s+on)\s+(.+?)(?:\s+on\s+spotify)?$/i,
+  );
+  if (spotifyMatch) {
+    const query = spotifyMatch[1].trim();
+    // If they said "on spotify" or just "play <song>", search on YouTube
+    // (most universal) — the Rust executor can handle spotify_play too
+    return {
+      action: "search",
+      query: `${query} on spotify`,
+    };
+  }
+
+  // --- "close <app>" / "quit <app>" / "exit <app>" ---
+  // TODO: These could be handled by Rust in the future. For now, treat as
+  // unknown so the backend can handle them if available.
+  // const closeMatch = text.match(/^(?:close|quit|exit|kill)\s+(.+)$/i);
 
   // --- No local intent matched ---
   return { action: "unknown", raw: transcript };
