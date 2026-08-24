@@ -54,11 +54,21 @@ async function warmMic(): Promise<void> {
 }
 
 // Start the hot mic + VAD preload at app startup (non-blocking)
+// NOTE: warmMic() is DISABLED at startup because it opens getUserMedia() via
+// WebView2, which conflicts with the Rust cpal wake-word stream on some audio
+// drivers (Intel Smart Sound Technology). The cpal stream gets silence when
+// WebView2 is also capturing from the same mic.
+// The frontend will acquire the mic on first wake via startListening().
 preloadSileroVad()
-  .then(() => warmMic())
+  .then(() => {
+    console.log("[NEXUS] Silero VAD model pre-loaded (mic NOT acquired — cpal has exclusive access)");
+  })
   .catch(() => {
     console.warn("[NEXUS] Silero VAD pre-load failed at startup — will use RMS fallback");
   });
+
+// warmMic is kept for future use but not called at startup to avoid mic conflict.
+void warmMic;
 
 /**
  * Wake-word / hotkey → mic capture → VAD → STT → intent → execute / backend.
