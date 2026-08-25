@@ -84,12 +84,18 @@ this — the Vite server serves any HTML file on demand).
 - Default feature: `wakeword-oww` (tract-onnx inference in Rust)
 - Models: `src-tauri/resources/oww/{melspectrogram.onnx, embedding_model.onnx, nexus.onnx}`
 - Threshold: 0.5, chunk size: 1280 samples (80ms at 16kHz)
-- **Known issue (2026-08-24):** The `nexus.onnx` model is broken — it produces
-  max probability ~0.014 for real "NEXUS" speech (tested with the official
-  openWakeWord Python library). The model needs to be retrained using
-  `train_nexus_oww.ipynb` on Google Colab.
-- **Mic conflict:** The frontend's `warmMic()` (getUserMedia via WebView2)
+- **FIXED (2026-08-24):** The wake word now works — probability 0.991 for real
+  "NEXUS" speech. The root cause was a 32768x input scaling mismatch: cpal
+  produces f32 audio in [-1.0, 1.0] but the openWakeWord melspectrogram model
+  expects int16-scale float32 values in [-32768, 32767]. Fix: multiply audio
+  by 32768.0 in `wakeword_oww.rs` before feeding to the melspectrogram model.
+- **Mic conflict (FIXED):** The frontend's `warmMic()` (getUserMedia via WebView2)
   conflicts with the Rust cpal wake-word stream on Intel Smart Sound Technology
   drivers. `warmMic()` is disabled at startup; the mic is acquired on first
   wake instead. This is why cpal was getting silence (RMS=0.0000).
 - The global hotkey still works independently of the wake-word model.
+- **Command models (2026-08-25):** Training 4 category-level acoustic models
+  (`command_open`, `command_close`, `command_search`, `command_play`) via
+  `train_nexus_commands.ipynb` on Google Colab. Models detect command TYPE,
+  then STT extracts the parameter (which app, what query). See
+  `src-tauri/resources/oww/commands/command_intents.json`.
