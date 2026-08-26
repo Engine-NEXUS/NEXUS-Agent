@@ -99,6 +99,112 @@ async def health() -> JSONResponse:
     })
 
 
+# ---- User registration (called by the installer.exe) ----
+#
+# When a user installs NEXUS and runs the setup wizard, the Tauri app
+# calls this endpoint to register the new user + device with the server.
+# The server returns the configuration the client needs to connect.
+#
+# This is the "handshake" between the installer and the main server.
+
+@app.post("/api/register")
+async def register_user(request: Request) -> JSONResponse:
+    """
+    Register a new user + device with the NEXUS server.
+
+    Called by the NEXUS installer / setup wizard on first launch.
+
+    Body:
+    {
+      "user_id": "user_a1b2c3d4...",     # auto-generated UUID on the client
+      "device_id": "device_f6e5d4c3...",  # auto-generated UUID on the client
+      "device_name": "Lakshya-ThinkPad",  # human-readable, optional
+      "os": "windows" | "macos" | "linux"
+    }
+
+    Response (200):
+    {
+      "ok": true,
+      "user_id": "user_a1b2c3d4...",
+      "device_id": "device_f6e5d4c3...",
+      "server_config": {
+        "ws_url": "ws://100.71.60.31:8443/ws",
+        "sidecar_url": "http://100.71.60.31:8443",
+        "n8n_url": "http://100.71.60.31:5678"
+      },
+      "providers": {
+        "google": {"configured": true, "scopes": "..."},
+        "github": {"configured": true, "scopes": "..."}
+      }
+    }
+
+    The client saves server_config to nexus-config.json and uses it
+    for all subsequent WebSocket + OAuth connections.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    user_id = body.get("user_id", "")
+    device_id = body.get("device_id", "")
+    device_name = body.get("device_name", "")
+    os_name = body.get("os", "")
+
+    if not user_id or not device_id:
+        return JSONResponse(
+            {"error": "user_id and device_id are required"},
+            status_code=400,
+        )
+
+    # Register the device in the database
+    db.register_device(user_id, device_id)
+
+    # Build the server config to return to the client
+    # The WebSocket URL is how the NEXUS laptop connects to this sidecar
+    # The sidecar URL is how the setup wizard reaches OAuth endpoints
+    host = os.getenv("NEXUS_PUBLIC_HOST", "")
+    if not host:
+        # Fall back to the request's host header
+        host = request.headers.get("host", "localhost:8443")
+        # Strip the port for the hostname, we'll add our own
+        host = host.split(":")[0]
+
+    port = os.getenv("SIDECAR_PORT", "8443")
+    ws_url = f"ws://{host}:{port}/ws"
+    sidecar_url = f"http://{host}:{port}"
+
+    # Check which OAuth providers are configured on this server
+    from .oauth import GOOGLE_CLIENT_ID, GITHUB_CLIENT_ID, GOOGLE_SCOPES, GITHUB_SCOPES
+    providers = {
+        "google": {
+            "configured": bool(GOOGLE_CLIENT_ID),
+            "scopes": GOOGLE_SCOPES if GOOGLE_CLIENT_ID else "",
+        },
+        "github": {
+            "configured": bool(GITHUB_CLIENT_ID),
+            "scopes": GITHUB_SCOPES if GITHUB_CLIENT_ID else "",
+        },
+    }
+
+    log.info(
+        "user registered: user=%s device=%s name=%s os=%s",
+        user_id, device_id, device_name, os_name,
+    )
+
+    return JSONResponse({
+        "ok": True,
+        "user_id": user_id,
+        "device_id": device_id,
+        "server_config": {
+            "ws_url": ws_url,
+            "sidecar_url": sidecar_url,
+            "n8n_url": f"http://{host}:5678",
+        },
+        "providers": providers,
+    })
+
+
 # ---- WebSocket endpoint ----
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
