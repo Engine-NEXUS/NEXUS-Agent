@@ -1,7 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS Response Sidebar — Right-edge panel
+   NEXUS Response Sidebar — Right-edge frosted glass panel
    Shows server responses (n8n/Ollama/Hermes) only.
    Slides in from the right edge.
+   Dismissed via Ctrl+Shift+Space (the same global hotkey).
    ═══════════════════════════════════════════════════════════════ */
 
 @import "../theme/tokens.css";
@@ -51,13 +52,21 @@ html, body, #root {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.15s ease 0.25s;
 }
 
-/* ── Card: the visible white surface ──────────────────────────── */
+/* ── Card: frosted glass surface ──────────────────────────────── */
 .sidebar-card {
   width: 260px;
-  background: var(--nx-bg);
-  border: 1px solid var(--nx-border);
-  border-radius: var(--nx-radius-lg);
-  box-shadow: var(--nx-shadow-lg);
+  /* Translucent white — the desktop wallpaper shows through, blurred */
+  background: rgba(255, 255, 255, 0.12);
+  /* Heavy blur + saturation boost so colors behind pop through */
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  /* Soft white border with top-edge highlight (matches reference images) */
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 20px;
+  /* Outer depth shadow + inset top highlight for the glass edge effect */
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
   padding: var(--nx-space-4);
   display: flex;
   flex-direction: column;
@@ -71,7 +80,7 @@ html, body, #root {
   align-items: center;
   justify-content: space-between;
   padding-bottom: var(--nx-space-2);
-  border-bottom: 1px solid var(--nx-border);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .sidebar-logo {
@@ -109,65 +118,48 @@ html, body, #root {
   50% { opacity: 0.4; transform: scale(0.8); }
 }
 
+/* ── Query line (what the user asked) ─────────────────────────── */
+.sidebar-query {
+  font-size: var(--nx-text-sm);
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: var(--nx-weight-medium);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
 /* ── Response area ────────────────────────────────────────────── */
 .sidebar-response {
   max-height: 380px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--nx-border) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 
 .sidebar-response::-webkit-scrollbar { width: 4px; }
 .sidebar-response::-webkit-scrollbar-track { background: transparent; }
 .sidebar-response::-webkit-scrollbar-thumb {
-  background: var(--nx-border);
+  background: rgba(255, 255, 255, 0.2);
   border-radius: 2px;
 }
 
 .sidebar-response-text {
   font-size: var(--nx-text-sm);
   line-height: 1.5;
-  color: var(--nx-text-primary);
+  /* White text with soft shadow for legibility over any wallpaper */
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   white-space: pre-wrap;
   word-wrap: break-word;
 }
 
-/* ── Thinking indicator ───────────────────────────────────────── */
-.sidebar-thinking {
-  display: flex;
-  align-items: center;
-  gap: var(--nx-space-2);
-  padding: var(--nx-space-3) 0;
-}
-
-.sidebar-thinking-text {
-  font-size: var(--nx-text-sm);
-  color: var(--nx-text-secondary);
-  font-weight: var(--nx-weight-medium);
-}
-
-.sidebar-dots {
-  display: flex;
-  gap: 4px;
-}
-
-.sidebar-dots span {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--nx-accent-blue);
-  animation: dots-bounce 1.4s ease-in-out infinite;
-}
-
-.sidebar-dots span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.sidebar-dots span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes dots-bounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
+/* ── Dismiss hint at the bottom ───────────────────────────────── */
+.sidebar-dismiss-hint {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  padding-top: var(--nx-space-2);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  letter-spacing: 0.02em;
 }

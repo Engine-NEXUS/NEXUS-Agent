@@ -3,22 +3,20 @@ import { create } from "zustand";
 /**
  * Sidebar store — shared between the main orb window and the sidebar window.
  *
- * The main window calls showSidebar() when a server response arrives,
- * and the sidebar window reads the state to display the response.
+ * The main window emits "sidebar:show" { query, text } when a server response
+ * arrives (and only for info/research queries — see shouldShowSidebar()).
+ * The sidebar window listens and renders the response immediately.
  *
- * Since each Tauri window has its own JS context, we use Tauri events
- * to communicate. The main window emits "sidebar:show" / "sidebar:hide"
- * events, and the sidebar window listens for them.
+ * The sidebar stays visible until dismissed via Ctrl+Shift+Space.
+ * There is no auto-hide and no "loading" state — the sidebar appears
+ * fully formed with the response already in hand.
  */
 
 interface SidebarState {
   visible: boolean;
   response: string;
   query: string;
-  loading: boolean;
-  show: (query: string) => void;
-  setResponse: (text: string) => void;
-  setLoading: (loading: boolean) => void;
+  show: (query: string, text: string) => void;
   hide: () => void;
 }
 
@@ -26,9 +24,6 @@ export const useSidebar = create<SidebarState>((set) => ({
   visible: false,
   response: "",
   query: "",
-  loading: true,
-  show: (query: string) => set({ visible: true, query, response: "", loading: true }),
-  setResponse: (text: string) => set({ response: text, loading: false }),
-  setLoading: (loading: boolean) => set({ loading }),
-  hide: () => set({ visible: false, response: "", query: "", loading: false }),
+  show: (query: string, text: string) => set({ visible: true, query, response: text }),
+  hide: () => set({ visible: false, response: "", query: "" }),
 }));

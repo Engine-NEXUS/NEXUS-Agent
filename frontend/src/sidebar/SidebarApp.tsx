@@ -6,21 +6,25 @@ import { useSidebar } from "./sidebarStore";
 /**
  * NEXUS Response Sidebar
  *
- * A transparent window on the right edge of the screen that shows
- * server responses (from n8n/Ollama/Hermes). Only appears when a
- * request was sent to the remote server — not for local commands.
+ * A frosted-glass window on the right edge of the screen that shows
+ * server responses (from n8n/Ollama/Hermes). Only appears when an
+ * info/research query gets a response from the remote server — not for
+ * local commands like "open gmail".
+ *
+ * The sidebar slides in WITH the response already rendered (no loading
+ * state). It stays visible until dismissed via Ctrl+Shift+Space (the
+ * same global hotkey that wakes the orb).
  *
  * Communication:
- *   - Main window emits "sidebar:show" { query } → sidebar slides in, shows loading
- *   - Main window emits "sidebar:response" { text } → sidebar shows the response
+ *   - Main window emits "sidebar:show" { query, text } → sidebar slides in with content
  *   - Main window emits "sidebar:hide" → sidebar slides out
+ *   - Ctrl+Shift+Space → sidebar hides (handled via the hotkey event)
  */
 export function SidebarApp() {
   const visible = useSidebar((s) => s.visible);
   const response = useSidebar((s) => s.response);
-  const loading = useSidebar((s) => s.loading);
+  const query = useSidebar((s) => s.query);
   const show = useSidebar((s) => s.show);
-  const setResponse = useSidebar((s) => s.setResponse);
   const hide = useSidebar((s) => s.hide);
   const responseRef = useRef<HTMLDivElement>(null);
 
@@ -28,12 +32,8 @@ export function SidebarApp() {
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
 
-    listen<{ query: string }>("sidebar:show", (event) => {
-      show(event.payload.query);
-    }).then((u) => unlisteners.push(u));
-
-    listen<{ text: string }>("sidebar:response", (event) => {
-      setResponse(event.payload.text);
+    listen<{ query: string; text: string }>("sidebar:show", (event) => {
+      show(event.payload.query, event.payload.text);
     }).then((u) => unlisteners.push(u));
 
     listen("sidebar:hide", () => {
@@ -43,7 +43,7 @@ export function SidebarApp() {
     return () => {
       unlisteners.forEach((u) => u());
     };
-  }, [show, setResponse, hide]);
+  }, [show, hide]);
 
   // Auto-scroll response to bottom
   useEffect(() => {
@@ -70,28 +70,23 @@ export function SidebarApp() {
         <div className="sidebar-header">
           <div className="sidebar-logo">NEXUS</div>
           <div className="sidebar-status">
-            {loading ? (
-              <span className="sidebar-loading-dot" />
-            ) : (
-              <span className="sidebar-done-dot" />
-            )}
+            <span className="sidebar-done-dot" />
           </div>
         </div>
 
+        {/* Query line — what the user asked */}
+        {query && (
+          <div className="sidebar-query">{query}</div>
+        )}
+
         {/* Response text */}
         <div className="sidebar-response" ref={responseRef}>
-          {loading && !response ? (
-            <div className="sidebar-thinking">
-              <div className="sidebar-thinking-text">Thinking</div>
-              <div className="sidebar-dots">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-            </div>
-          ) : (
-            <div className="sidebar-response-text">{response}</div>
-          )}
+          <div className="sidebar-response-text">{response}</div>
+        </div>
+
+        {/* Dismiss hint */}
+        <div className="sidebar-dismiss-hint">
+          Ctrl+Shift+Space to dismiss
         </div>
       </div>
     </div>
