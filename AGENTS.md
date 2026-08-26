@@ -83,7 +83,14 @@ this — the Vite server serves any HTML file on demand).
 
 - Default feature: `wakeword-oww` (tract-onnx inference in Rust)
 - Models: `src-tauri/resources/oww/{melspectrogram.onnx, embedding_model.onnx, nexus.onnx}`
-- Threshold: 0.5, chunk size: 1280 samples (80ms at 16kHz)
+- Threshold: 0.7, chunk size: 1280 samples (80ms at 16kHz)
+- **Silence gate (2026-08-26):** `detect_chunk` computes RMS of each 80ms
+  chunk and skips the classifier entirely if RMS < 0.005 (~-46dBFS). The
+  `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence
+  (out-of-distribution input), which caused spontaneous false wakes. The
+  gate prevents the model from ever seeing silence. Also raised threshold
+  0.5 -> 0.7 and min positive detections 2 -> 3. Regression test:
+  `test_silence_never_triggers_wake`.
 - **FIXED (2026-08-24):** The wake word now works — probability 0.991 for real
   "NEXUS" speech. The root cause was a 32768x input scaling mismatch: cpal
   produces f32 audio in [-1.0, 1.0] but the openWakeWord melspectrogram model
@@ -99,3 +106,18 @@ this — the Vite server serves any HTML file on demand).
   `train_nexus_commands.ipynb` on Google Colab. Models detect command TYPE,
   then STT extracts the parameter (which app, what query). See
   `src-tauri/resources/oww/commands/command_intents.json`.
+
+## Known limitations (2026-08-26 audit)
+
+- **Speaker verification is NOT wired.** Enrollment works (setup wizard ->
+  embedding -> JSON on disk), but `wakeword_oww::WakeEngine::process`
+  accepts every wake regardless of speaker. The verification API in
+  `voice_profile.rs` is `#[allow(dead_code)]` until an audio ring buffer
+  is added to retain the wake utterance for embedding extraction.
+- **All windows skip the taskbar.** `main`, `setup`, `settings`, and
+  `sidebar` all have `skipTaskbar: true` in `tauri.conf.json`. NEXUS is
+  accessible only via the floating orb, the system tray, the global
+  hotkey, and the wake word.
+- **STT server auto-launcher writes `server/start_stt.cmd`** with an
+  absolute path to the local Python interpreter. This file is gitignored
+  (machine-specific, leaks username).
