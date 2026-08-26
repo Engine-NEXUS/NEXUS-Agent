@@ -429,3 +429,132 @@ async def config_check() -> JSONResponse:
         },
         "redirect_uri": OAUTH_REDIRECT_URI,
     })
+
+
+# ---- Credential handoff for n8n ───────────────────────────────────
+#
+# n8n calls this endpoint to get a short-lived access token for a specific
+# provider + user. The sidecar refreshes the token if expired, then returns
+# it. n8n uses the token for ONE API call, then discards it.
+#
+# Security:
+#   - The sidecar and n8n run on the SAME server, so this is localhost-only.
+#   - The token is already short-lived (Google: 1 hour, GitHub: 8 hours).
+#   - n8n should NOT log or persist the access_token.
+#   - The request_id is for audit logging — correlate with the original
+#     NEXUS request so you can trace which n8n workflow accessed which
+#     credential for which user request.
+
+@router.post("/auth/{provider}")
+async def get_credential_for_n8n(provider: str, request: Request) -> JSONResponse:
+    """
+    Credential handoff endpoint — called by n8n to get an access token
+    for a specific provider and user.
+
+    Body:
+    {
+      "user_id": "user_a1b2c3d4...",
+      "request_id": "req_xxx",          // optional, for audit logging
+      "scopes": ["repo"]                // optional, for scope validation
+    }
+
+    Response (200):
+    {
+      "provider": "github",
+      "access_token": "gho_...",
+      "account_id": "chitkul-lakshya",
+      "scopes": "repo read:org workflow",
+      "expires_in": 28800,              // seconds until expiry (0 = no expiry)
+      "token_type": "bearer"
+    }
+
+    Response (404): user hasn't connected this provider
+    Response (403): token expired and can't be refreshed
+    Response (400): missing user_id
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+    user_id = body.get("user_id", "")
+    request_id = body.get("request_id", "")
+    requested_scopes = body.get("scopes", [])
+
+    if not user_id:
+        return JSONResponse({"error": "user_id is required"}, status_code=400)
+
+    if provider not in ("google", "github"):
+        return JSONResponse({"error": f"unsupported provider: {provider}"}, status_code=400)
+
+    # Look up the stored token
+    token = db.get_oauth_token(user_id, provider)
+    if not token:
+        log.warning(
+            "credential handoff FAILED: user=%s provider=%s not connected (request_id=%s)",
+            user_id, provider, request_id,
+        )
+        return JSONResponse(
+            {"error": f"{provider} not connected for this user", "provider": provider},
+            status_code=404,
+        )
+
+    # Refresh if expired (Google only — GitHub tokens don't expire)
+    access_token = token["access_token"]
+    expires_in = 0
+
+    if db.is_token_expired(token):
+        if provider == "google" and token.get("refresh_token"):
+            try:
+                refreshed = await _refresh_google(token["refresh_token"])
+                access_token = refreshed["access_token"]
+                expires_in = refreshed.get("expires_in", 3600)
+                db.store_oauth_token(
+                    user_id, provider, access_token,
+                    token["refresh_token"], expires_in, token.get("scopes", ""),
+                )
+                log.info(
+                    "credential handoff: refreshed %s token for user=%s (request_id=%s)",
+                    provider, user_id, request_id,
+                )
+            except Exception:
+                log.exception(
+                    "credential handoff FAILED: refresh error for %s user=%s (request_id=%s)",
+                    provider, user_id, request_id,
+                )
+                return JSONResponse(
+                    {"error": f"token expired and refresh failed for {provider}"},
+                    status_code=403,
+                )
+        else:
+            log.warning(
+                "credential handoff FAILED: %s token expired, no refresh token (request_id=%s)",
+                provider, request_id,
+            )
+            return JSONResponse(
+                {"error": f"{provider} token expired and cannot be refreshed"},
+                status_code=403,
+            )
+    else:
+        # Calculate remaining lifetime
+        stored_expiry = token.get("expires_at", 0)
+        if stored_expiry:
+            import time as _time
+            expires_in = max(0, int(stored_expiry - _time.time()))
+
+    # Resolve account_id (GitHub login or Google email)
+    account_id = token.get("account_id", user_id)
+
+    log.info(
+        "credential handoff OK: provider=%s user=%s account=%s request_id=%s",
+        provider, user_id, account_id, request_id,
+    )
+
+    return JSONResponse({
+        "provider": provider,
+        "access_token": access_token,
+        "account_id": account_id,
+        "scopes": token.get("scopes", ""),
+        "expires_in": expires_in,
+        "token_type": "bearer",
+    })

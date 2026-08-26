@@ -452,23 +452,34 @@ pub fn run() {
                 }
             });
 
-            // Check if this is first launch (no server URL configured).
-            // Instead of showing the setup window (which confuses users into
-            // thinking there's a connection error), auto-create the config
-            // with sensible defaults. The setup window can be opened later
-            // via the tray menu "Settings…" if the user wants to change anything.
+            // Check if this is first launch (no config file yet).
+            // Auto-generate a unique user ID and device ID (UUID v4) and use
+            // the server URL baked into the installer. The user never has to
+            // manually enter these — they're system-generated.
+            //
+            // The server URL is determined at build time:
+            //   - Default: ws://127.0.0.1:49152/ws (local dev / same-machine sidecar)
+            //   - Installer override: set NEXUS_SERVER_URL env var before building
+            //     the installer to bake in the user's remote server URL.
             let store_path = app.path().app_data_dir().ok();
             if let Some(dir) = store_path {
                 let config_path = dir.join("nexus-config.json");
                 if !config_path.exists() {
+                    let user_id = format!("user_{}", uuid::Uuid::new_v4().simple());
+                    let device_id = format!("device_{}", uuid::Uuid::new_v4().simple());
+                    let server_url = option_env!("NEXUS_SERVER_URL")
+                        .unwrap_or("ws://127.0.0.1:49152/ws");
                     let default_config = serde_json::json!({
-                        "serverUrl": "ws://127.0.0.1:49152/ws",
-                        "userId": "local-user",
-                        "deviceId": "local-device",
+                        "serverUrl": server_url,
+                        "userId": user_id,
+                        "deviceId": device_id,
                     });
                     let _ = std::fs::create_dir_all(&dir);
                     let _ = std::fs::write(&config_path, default_config.to_string());
-                    tracing::info!("auto-created default config at {:?}", config_path);
+                    tracing::info!(
+                        "auto-created config at {:?} — user={}, device={}, server={}",
+                        config_path, user_id, device_id, server_url
+                    );
                 }
             }
 

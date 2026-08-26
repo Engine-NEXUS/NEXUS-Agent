@@ -14,22 +14,24 @@ import {
 import { VoiceEnrollment } from "./VoiceEnrollment";
 
 /**
- * NEXUS Setup — 4-step onboarding wizard (white theme).
+ * NEXUS Setup — 3-step onboarding wizard (white theme).
  *
- * Step 1: Welcome
- * Step 2: Server Connection
- * Step 3: Voice Enrollment (optional, can skip)
- * Step 4: Connect Accounts (Google, GitHub, API keys)
+ * Step 0: Welcome
+ * Step 1: Voice Enrollment (optional, can skip)
+ * Step 2: Connect Accounts (Google, GitHub, API keys)
+ *
+ * The server URL, user ID, and device ID are auto-generated on first
+ * launch (see lib.rs) — the user never has to enter them manually.
+ * The server URL is baked into the installer at build time.
  */
 
-type Step = 0 | 1 | 2 | 3;
-const STEP_LABELS = ["Welcome", "Server", "Voice", "Accounts"];
+type Step = 0 | 1 | 2;
+const STEP_LABELS = ["Welcome", "Voice", "Accounts"];
 
 export function SetupApp() {
   const [step, setStep] = useState<Step>(0);
   const [serverUrl, setServerUrl] = useState("");
-  const [userId, setUserId] = useState("local-user");
-  const [deviceId, setDeviceId] = useState("local-device");
+  const [userId, setUserId] = useState("");
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [apiKeys, setApiKeys] = useState<string[]>([]);
   const [configCheck, setConfigCheck] = useState<Record<string, { configured: boolean; scopes: string }>>({});
@@ -40,15 +42,25 @@ export function SetupApp() {
   const [newApiKeyValue, setNewApiKeyValue] = useState("");
   const [serverReachable, setServerReachable] = useState<boolean | null>(null);
 
-  // Check server connection
+  // Load the auto-generated config from Rust (server URL + user ID + device ID)
+  useEffect(() => {
+    invoke<{ serverUrl: string; userId: string; deviceId: string }>("get_server_config")
+      .then((cfg) => {
+        setServerUrl(cfg.serverUrl);
+        setUserId(cfg.userId);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Check server connection (auto, using the baked-in config)
   const checkServer = useCallback(async () => {
-    if (!serverUrl) return;
+    if (!serverUrl || !userId) return;
     setSidecarBaseUrl(serverUrl);
     try {
       const [status, keys, config] = await Promise.all([
         getOAuthStatus(userId),
         listApiKeys(userId),
-        fetch(`${serverUrl.replace(/\/+$/, "")}/config/check`).then((r) => r.json()),
+        fetch(`${serverUrl.replace(/\/+$/, "").replace(/^ws/, "http")}/config/check`).then((r) => r.json()),
       ]);
       setOauthStatus(status);
       setApiKeys(keys);
@@ -61,12 +73,12 @@ export function SetupApp() {
   }, [serverUrl, userId]);
 
   useEffect(() => {
-    if (step === 1 || step === 3) checkServer();
+    if (step === 2) checkServer();
   }, [step, checkServer]);
 
   const handleConnect = async (provider: "google" | "github") => {
     if (!serverUrl) {
-      setError("Enter your server URL first");
+      setError("Server not configured");
       return;
     }
     setConnecting(provider);
@@ -113,26 +125,12 @@ export function SetupApp() {
   };
 
   const handleFinish = async () => {
-    if (!serverUrl.trim()) {
-      setError("Server URL is required");
-      return;
-    }
     try {
-      await invoke("save_server_config", {
-        serverUrl: serverUrl.trim(),
-        userId: userId.trim(),
-        deviceId: deviceId.trim(),
-      });
       await invoke("close_setup_window");
       setSaved(true);
     } catch (err) {
-      setError(`Failed to save: ${err instanceof Error ? err.message : String(err)}`);
+      setError(`Failed to finish: ${err instanceof Error ? err.message : String(err)}`);
     }
-  };
-
-  const canProceed = (s: Step): boolean => {
-    if (s === 1) return !!serverUrl.trim();
-    return true;
   };
 
   return (
@@ -165,44 +163,8 @@ export function SetupApp() {
             </div>
           )}
 
-          {/* ── Step 1: Server ── */}
+          {/* ── Step 1: Voice ── */}
           {step === 1 && (
-            <>
-              <StepHeader step={step} />
-              <section className="setup-section">
-                <h2>Server</h2>
-                <label className="setup-label">
-                  Server URL
-                  <input
-                    type="url"
-                    placeholder="https://your-server.com:8443"
-                    value={serverUrl}
-                    onChange={(e) => setServerUrl(e.target.value)}
-                    onBlur={checkServer}
-                  />
-                </label>
-                <div className="setup-row">
-                  <label className="setup-label setup-label--small">
-                    User ID
-                    <input type="text" value={userId} onChange={(e) => setUserId(e.target.value)} />
-                  </label>
-                  <label className="setup-label setup-label--small">
-                    Device ID
-                    <input type="text" value={deviceId} onChange={(e) => setDeviceId(e.target.value)} />
-                  </label>
-                </div>
-                {serverReachable !== null && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", fontSize: "var(--nx-text-sm)" }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: serverReachable ? "var(--nx-success)" : "var(--nx-error)" }} />
-                    {serverReachable ? "Connected to server" : "Can't reach server"}
-                  </div>
-                )}
-              </section>
-            </>
-          )}
-
-          {/* ── Step 2: Voice ── */}
-          {step === 2 && (
             <>
               <StepHeader step={step} />
               <section className="setup-section">
@@ -216,8 +178,8 @@ export function SetupApp() {
             </>
           )}
 
-          {/* ── Step 3: Accounts ── */}
-          {step === 3 && (
+          {/* ── Step 2: Accounts ── */}
+          {step === 2 && (
             <>
               <StepHeader step={step} />
               <section className="setup-section">
@@ -226,6 +188,14 @@ export function SetupApp() {
                   Connect Google and GitHub so NEXUS can manage your email, calendar, repos, and PRs.
                   You can connect both, one, or skip and do it later.
                 </p>
+
+                {/* Server status indicator (auto-configured, not user-entered) */}
+                {serverReachable !== null && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", fontSize: "var(--nx-text-sm)", marginBottom: "var(--nx-space-4)" }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: serverReachable ? "var(--nx-success)" : "var(--nx-error)" }} />
+                    {serverReachable ? "Connected to server" : "Can't reach server — check back later"}
+                  </div>
+                )}
 
                 {/* Google card */}
                 <div className="setup-provider setup-provider--large">
@@ -325,16 +295,15 @@ export function SetupApp() {
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
             {saved && <span className="setup-saved">Saved!</span>}
-            {step < 3 ? (
+            {step < 2 ? (
               <button
                 className="setup-btn setup-btn--primary"
-                disabled={!canProceed(step)}
                 onClick={() => setStep((step + 1) as Step)}
               >
                 Continue →
               </button>
             ) : (
-              <button className="setup-btn setup-btn--primary" onClick={handleFinish} disabled={!serverUrl.trim()}>
+              <button className="setup-btn setup-btn--primary" onClick={handleFinish}>
                 Finish ✓
               </button>
             )}
@@ -352,13 +321,13 @@ function StepHeader({ step }: { step: Step }) {
     <div className="setup-step-header">
       <div className="setup-step-indicator">
         {STEP_LABELS.map((label, i) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", flex: i < 3 ? 1 : undefined }}>
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", flex: i < 2 ? 1 : undefined }}>
             <div className={`setup-step-dot ${i === step ? "setup-step-dot--active" : ""} ${i < step ? "setup-step-dot--completed" : ""}`} />
-            {i < 3 && <div className={`setup-step-bar ${i < step ? "setup-step-bar--completed" : ""}`} />}
+            {i < 2 && <div className={`setup-step-bar ${i < step ? "setup-step-bar--completed" : ""}`} />}
           </div>
         ))}
       </div>
-      <div className="setup-step-label">Step {step + 1} of 4</div>
+      <div className="setup-step-label">Step {step + 1} of 3</div>
       <div className="setup-step-title">{STEP_LABELS[step]}</div>
     </div>
   );
