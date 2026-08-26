@@ -1,4 +1,5 @@
 import { finishCapture, finishCaptureFromVad, getRecordingContext } from "./recorder";
+import { transcribeAudio } from "./stt";
 import { useAssistant } from "../store/assistant";
 
 /**
@@ -41,14 +42,126 @@ const ORT_CDN_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION
 // Silero returns a speech probability 0.0-1.0 per frame.
 const POSITIVE_SPEECH_THRESHOLD = 0.5;  // Above this = speech detected
 const NEGATIVE_SPEECH_THRESHOLD = 0.35; // Below this = silence detected
-const REDEMPTION_MS = 1500;             // Grace period before declaring speech end
+// Grace period before declaring speech end. This is pure end-to-end latency:
+// nothing happens until it expires. 1500ms was far longer than a natural
+// inter-word gap (<200ms) and dominated the ~2.4s command latency.
+// 500ms still comfortably absorbs normal pauses inside a short command.
+const REDEMPTION_MS = 500;
 const PRE_SPEECH_PAD_MS = 500;          // Audio to prepend before speech start
 const MIN_SPEECH_MS = 500;              // Discard segments shorter than this
+
+// ---- Speculative transcription ----
+// Whisper costs ~400-600ms and that cost is fixed (audio length is almost
+// irrelevant: 1.5s and 12s both measure ~550-600ms, because Whisper pads to a
+// 30s window). Waiting for redemption to expire and THEN transcribing makes
+// those two costs add up.
+//
+// Instead we fire a transcription as soon as speech first drops to silence,
+// so the STT call runs *during* the redemption window. By the time
+// onSpeechEnd fires the transcript is usually already resolved.
+//
+// If the user resumes speaking during redemption the speculation is
+// invalidated and we fall back to transcribing the final segment normally —
+// so this can never produce a worse transcript, only a faster one.
+const SPEC_FIRE_SILENCE_MS = 120;   // silence observed before firing
+const SPEC_MIN_SPEECH_MS = 300;     // don't speculate on short blips
+const SPEC_MAX_BUFFER_MS = 15000;   // cap the rolling frame buffer
 
 // ---- State ----
 let micVad: any = null;           // MicVAD instance (Silero) — kept alive between commands
 let micVadStream: MediaStream | null = null;  // Stream associated with the pre-init VAD
 let active = false;
+
+// ---- Speculative transcription state ----
+let specFrames: Float32Array[] = [];
+let specSamples = 0;
+let specSpeechMs = 0;
+let specSilenceMs = 0;
+let specPending: Promise<string> | null = null;
+let specInvalid = false;
+
+function resetSpeculation(): void {
+  specFrames = [];
+  specSamples = 0;
+  specSpeechMs = 0;
+  specSilenceMs = 0;
+  specPending = null;
+  specInvalid = false;
+}
+
+/**
+ * Called for every VAD frame (512 samples @ 16kHz ≈ 32ms).
+ * Buffers audio and decides when to fire the speculative transcription.
+ */
+function onVadFrame(probs: { isSpeech: number }, frame: Float32Array): void {
+  if (!active || !frame || frame.length === 0) return;
+
+  const frameMs = (frame.length / 16000) * 1000;
+
+  // The library may reuse the frame buffer — copy before retaining it.
+  specFrames.push(frame.slice());
+  specSamples += frame.length;
+
+  const maxSamples = (SPEC_MAX_BUFFER_MS / 1000) * 16000;
+  while (specSamples > maxSamples && specFrames.length > 1) {
+    specSamples -= specFrames[0].length;
+    specFrames.shift();
+  }
+
+  if (probs.isSpeech >= POSITIVE_SPEECH_THRESHOLD) {
+    specSpeechMs += frameMs;
+    specSilenceMs = 0;
+    // Speech resumed after we already fired — that transcript is incomplete.
+    if (specPending) specInvalid = true;
+  } else if (probs.isSpeech < NEGATIVE_SPEECH_THRESHOLD) {
+    specSilenceMs += frameMs;
+  }
+
+  if (
+    !specPending &&
+    !specInvalid &&
+    specSpeechMs >= SPEC_MIN_SPEECH_MS &&
+    specSilenceMs >= SPEC_FIRE_SILENCE_MS
+  ) {
+    fireSpeculation();
+  }
+}
+
+/** Kick off an STT call on everything buffered so far (fire and forget). */
+function fireSpeculation(): void {
+  const total = specSamples;
+  if (total === 0) return;
+
+  const merged = new Float32Array(total);
+  let off = 0;
+  for (const f of specFrames) {
+    merged.set(f, off);
+    off += f.length;
+  }
+
+  const pcm = new Int16Array(total);
+  for (let i = 0; i < total; i++) {
+    const s = Math.max(-1, Math.min(1, merged[i]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+
+  console.log(
+    `[NEXUS] VAD: firing speculative STT (${total} samples) — overlapping ${REDEMPTION_MS}ms redemption`,
+  );
+  specPending = transcribeAudio(pcm).catch((err) => {
+    console.warn("[NEXUS] speculative STT failed, will re-transcribe:", err);
+    return "";
+  });
+}
+
+/** Hand the in-flight speculative transcript to the consumer, if still valid. */
+function takeSpeculation(): Promise<string> | null {
+  if (specPending && specInvalid) {
+    console.log("[NEXUS] VAD: speculation invalidated (speech resumed) — full re-transcribe");
+    return null;
+  }
+  return specPending;
+}
 
 // ---- RMS fallback state (used only if Silero fails to load) ----
 const VAD_FALLBACK_RMS = 0.015;
@@ -163,10 +276,12 @@ export async function preloadMicVad(stream: MediaStream): Promise<void> {
       },
       onSpeechEnd: (audio: Float32Array) => {
         console.log(`[NEXUS] VAD: Silero speech end (${audio.length} samples @ 16kHz)`);
+        const spec = takeSpeculation();
         active = false;
-        void finishCaptureFromVad(audio);
+        void finishCaptureFromVad(audio, spec);
       },
-      onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }) => {
+      onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }, frame: Float32Array) => {
+        onVadFrame(probs, frame);
         if (Math.random() < 0.01) {
           console.log(`[NEXUS] VAD: Silero probs speech=${probs.isSpeech.toFixed(3)} silence=${probs.notSpeech.toFixed(3)}`);
         }
@@ -194,6 +309,7 @@ export async function startVad(stream: MediaStream): Promise<void> {
   if (active) return;
   active = true;
   startedAt = performance.now();
+  resetSpeculation();
 
   // ─── Fast path: reuse pre-initialized MicVAD ──────────────────────
   if (micVad && micVadStream === stream) {
@@ -242,6 +358,9 @@ export function stopVad(): void {
     // DON'T set micVad = null — keep it alive for instant resume
   }
   teardownRms();
+  // Drop any buffered frames / in-flight speculation so the next command
+  // starts clean. onSpeechEnd has already captured the promise it needs.
+  resetSpeculation();
 }
 
 // ─── Silero VAD ────────────────────────────────────────────────────────────
@@ -305,10 +424,12 @@ async function startSileroVad(stream: MediaStream): Promise<void> {
       // audio is Float32Array at 16kHz, samples between -1 and 1.
       // This is EXACTLY what STT needs — convert to Int16 and process.
       console.log(`[NEXUS] VAD: Silero speech end (${audio.length} samples @ 16kHz)`);
+      const spec = takeSpeculation();
       active = false;
-      void finishCaptureFromVad(audio);
+      void finishCaptureFromVad(audio, spec);
     },
-    onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }) => {
+    onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }, frame: Float32Array) => {
+      onVadFrame(probs, frame);
       // Optional: debug logging every 500ms
       if (Math.random() < 0.01) { // ~1% of frames to avoid spam
         console.log(`[NEXUS] VAD: Silero probs speech=${probs.isSpeech.toFixed(3)} silence=${probs.notSpeech.toFixed(3)}`);

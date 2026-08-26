@@ -10,7 +10,7 @@ import { parseIntent } from "../intent/parser";
  * AUDIO STAYS LOCAL: Float32 samples are buffered in memory on the device.
  * They are NOT sent to the server. When VAD detects silence, the buffered
  * audio is downsampled to 16kHz, converted to Int16 PCM, and sent to the
- * LOCAL STT server (localhost:8000) for transcription.
+ * LOCAL STT server (127.0.0.1:18765) for transcription.
  * Only the resulting TEXT is sent to the remote NEXUS server.
  *
  * VAD (`vad.ts`) controls start/stop of the recorder.
@@ -242,7 +242,7 @@ export async function finishCapture(): Promise<void> {
   const allPcm = downsampleAndConvert(allFloat, nativeSampleRate, 16000);
   console.log(`[NEXUS] downsampled to ${allPcm.length} Int16 samples @ 16kHz`);
 
-  // 1. Local STT — audio goes to localhost:8000, never to the remote server.
+  // 1. Local STT — audio goes to 127.0.0.1:18765, never to the remote server.
   useAssistant.getState().setState("thinking");
   const transcript = await transcribeAudio(allPcm);
 
@@ -343,7 +343,10 @@ export async function abortCapture(): Promise<void> {
  * This bypasses the ScriptProcessorNode recorder entirely since Silero
  * (via MicVAD) manages its own audio capture with an AudioWorklet.
  */
-export async function finishCaptureFromVad(audio: Float32Array): Promise<void> {
+export async function finishCaptureFromVad(
+  audio: Float32Array,
+  speculative?: Promise<string> | null,
+): Promise<void> {
   if (captureInProgress) return;
   captureInProgress = true;
 
@@ -371,9 +374,31 @@ export async function finishCaptureFromVad(audio: Float32Array): Promise<void> {
   // Release the mic stream — Silero's MicVAD has already captured the audio.
   releaseMicStream();
 
-  // 1. Local STT — audio goes to localhost:8000, never to the remote server.
+  // 1. Local STT — audio goes to 127.0.0.1:18765, never to the remote server.
+  //
+  // If the VAD fired a speculative transcription when speech first dropped to
+  // silence, that request has been running during the redemption window and is
+  // usually already finished — so this resolves immediately instead of costing
+  // another ~500ms. Any empty/failed result falls through to a normal
+  // transcription of the final segment, so this can only be faster, never worse.
   useAssistant.getState().setState("thinking");
-  const transcript = await transcribeAudio(pcm);
+  let transcript = "";
+  if (speculative) {
+    const t0 = performance.now();
+    try {
+      transcript = await speculative;
+    } catch {
+      transcript = "";
+    }
+    if (transcript) {
+      console.log(
+        `[NEXUS] used speculative transcript after ${Math.round(performance.now() - t0)}ms wait`,
+      );
+    }
+  }
+  if (!transcript) {
+    transcript = await transcribeAudio(pcm);
+  }
 
   if (!transcript) {
     console.warn("STT returned empty transcript");

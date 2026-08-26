@@ -1,306 +1,33 @@
 {
-  "open_youtube": {
-    "phrase": "open youtube",
-    "model_file": "open_youtube.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "youtube"
-    }
-  },
-  "open_gmail": {
+  "command_open": {
     "phrase": "open gmail",
-    "model_file": "open_gmail.onnx",
+    "model_file": "command_open.onnx",
     "intent": {
       "action": "open_app",
-      "target": "gmail"
-    }
-  },
-  "open_chrome": {
-    "phrase": "open chrome",
-    "model_file": "open_chrome.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "chrome"
-    }
-  },
-  "open_notepad": {
-    "phrase": "open notepad",
-    "model_file": "open_notepad.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "notepad"
-    }
-  },
-  "open_calculator": {
-    "phrase": "open calculator",
-    "model_file": "open_calculator.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "calculator"
-    }
-  },
-  "open_spotify": {
-    "phrase": "open spotify",
-    "model_file": "open_spotify.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "spotify"
-    }
-  },
-  "open_discord": {
-    "phrase": "open discord",
-    "model_file": "open_discord.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "discord"
-    }
-  },
-  "open_github": {
-    "phrase": "open github",
-    "model_file": "open_github.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "github"
-    }
-  },
-  "open_vscode": {
-    "phrase": "open vs code",
-    "model_file": "open_vscode.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "vscode"
-    }
-  },
-  "open_figma": {
-    "phrase": "open figma",
-    "model_file": "open_figma.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "figma"
-    }
-  },
-  "open_slack": {
-    "phrase": "open slack",
-    "model_file": "open_slack.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "slack"
-    }
-  },
-  "open_notion": {
-    "phrase": "open notion",
-    "model_file": "open_notion.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "notion"
-    }
-  },
-  "open_terminal": {
-    "phrase": "open terminal",
-    "model_file": "open_terminal.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "terminal"
-    }
-  },
-  "open_explorer": {
-    "phrase": "open explorer",
-    "model_file": "open_explorer.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "explorer"
-    }
-  },
-  "open_settings": {
-    "phrase": "open settings",
-    "model_file": "open_settings.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "settings"
-    }
-  },
-  "open_twitter": {
-    "phrase": "open twitter",
-    "model_file": "open_twitter.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "twitter"
-    }
-  },
-  "open_reddit": {
-    "phrase": "open reddit",
-    "model_file": "open_reddit.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "reddit"
-    }
-  },
-  "open_whatsapp": {
-    "phrase": "open whatsapp",
-    "model_file": "open_whatsapp.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "whatsapp"
-    }
-  },
-  "open_netflix": {
-    "phrase": "open netflix",
-    "model_file": "open_netflix.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "netflix"
-    }
-  },
-  "open_claude": {
-    "phrase": "open claude",
-    "model_file": "open_claude.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "claude"
-    }
-  },
-  "open_chatgpt": {
-    "phrase": "open chatgpt",
-    "model_file": "open_chatgpt.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "chatgpt"
-    }
-  },
-  "open_steam": {
-    "phrase": "open steam",
-    "model_file": "open_steam.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "steam"
-    }
-  },
-  "open_outlook": {
-    "phrase": "open outlook",
-    "model_file": "open_outlook.onnx",
-    "intent": {
-      "action": "open_app",
-      "target": "outlook"
-    }
-  },
-  "mute_volume": {
-    "phrase": "mute volume",
-    "model_file": "mute_volume.onnx",
-    "intent": {
-      "action": "volume_mute"
-    }
-  },
-  "take_screenshot": {
-    "phrase": "take screenshot",
-    "model_file": "take_screenshot.onnx",
-    "intent": {
-      "action": "screenshot"
-    }
-  },
-  "lock_screen": {
-    "phrase": "lock screen",
-    "model_file": "lock_screen.onnx",
-    "intent": {
-      "action": "lock"
-    }
-  },
-  "new_tab": {
-    "phrase": "new tab",
-    "model_file": "new_tab.onnx",
-    "intent": {
-      "action": "browser_new_tab"
-    }
-  },
-  "close_tab": {
-    "phrase": "close tab",
-    "model_file": "close_tab.onnx",
-    "intent": {
-      "action": "browser_close_tab"
-    }
-  },
-  "next_tab": {
-    "phrase": "next tab",
-    "model_file": "next_tab.onnx",
-    "intent": {
-      "action": "browser_next_tab"
-    }
-  },
-  "go_back": {
-    "phrase": "go back",
-    "model_file": "go_back.onnx",
-    "intent": {
-      "action": "browser_back"
-    }
-  },
-  "play_spotify": {
-    "phrase": "play song in spotify",
-    "model_file": "play_spotify.onnx",
-    "intent": {
-      "action": "spotify_play",
       "needs_param": true
     }
   },
-  "search_youtube": {
-    "phrase": "search on youtube",
-    "model_file": "search_youtube.onnx",
+  "command_close": {
+    "phrase": "close discord",
+    "model_file": "command_close.onnx",
     "intent": {
-      "action": "youtube_search",
+      "action": "close_app",
       "needs_param": true
     }
   },
-  "search_google": {
-    "phrase": "search on google",
-    "model_file": "search_google.onnx",
+  "command_search": {
+    "phrase": "search for cats",
+    "model_file": "command_search.onnx",
     "intent": {
-      "action": "google_search",
+      "action": "search",
       "needs_param": true
     }
   },
-  "search_github": {
-    "phrase": "search on github",
-    "model_file": "search_github.onnx",
+  "command_play": {
+    "phrase": "play music",
+    "model_file": "command_play.onnx",
     "intent": {
-      "action": "github_search",
-      "needs_param": true
-    }
-  },
-  "play_youtube": {
-    "phrase": "play on youtube",
-    "model_file": "play_youtube.onnx",
-    "intent": {
-      "action": "youtube_play",
-      "needs_param": true
-    }
-  },
-  "send_message": {
-    "phrase": "send message to",
-    "model_file": "send_message.onnx",
-    "intent": {
-      "action": "send_message",
-      "needs_param": true
-    }
-  },
-  "set_timer": {
-    "phrase": "set timer for",
-    "model_file": "set_timer.onnx",
-    "intent": {
-      "action": "set_timer",
-      "needs_param": true
-    }
-  },
-  "set_alarm": {
-    "phrase": "set alarm for",
-    "model_file": "set_alarm.onnx",
-    "intent": {
-      "action": "set_alarm",
-      "needs_param": true
-    }
-  },
-  "create_event": {
-    "phrase": "create event",
-    "model_file": "create_event.onnx",
-    "intent": {
-      "action": "create_event",
+      "action": "play",
       "needs_param": true
     }
   }

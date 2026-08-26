@@ -17,7 +17,7 @@
 //! In production (bundled .exe), the sidecar directory is resolved relative to
 //! the executable. In dev mode, it's resolved relative to the project root.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -28,7 +28,7 @@ use once_cell::sync::Lazy;
 /// This avoids conflicts with common dev ports (3000, 5173, 8000, 8080, 8443).
 /// Override via NEXUS_SIDECAR_PORT in .env.
 const DEFAULT_SIDECAR_PORT: u16 = 49152;
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(40);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
@@ -127,7 +127,7 @@ fn is_sidecar_healthy(port: u16) -> bool {
 }
 
 /// Spawn the sidecar process — no terminal window, logs to file.
-fn spawn_sidecar(sidecar_dir: &PathBuf, python: &str, port: u16) -> std::io::Result<Child> {
+fn spawn_sidecar(sidecar_dir: &Path, python: &str, port: u16) -> std::io::Result<Child> {
     let env_path = sidecar_dir.join(".env");
 
     let mut cmd = Command::new(python);
