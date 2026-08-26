@@ -690,18 +690,20 @@ fn app_to_process_names(target: &str) -> Vec<String> {
 
 // ─── Tier 2: Installed app check + launch ──────────────────────────────────
 
+// Exactly one of the `cfg` blocks below compiles on any given target, so the
+// surviving block is the function's tail expression — no `return` needed.
 fn check_installed_and_launch(target: &str, display_name: &str) -> Option<CommandResult> {
     #[cfg(target_os = "windows")]
     {
-        return check_installed_windows(target, display_name);
+        check_installed_windows(target, display_name)
     }
     #[cfg(target_os = "macos")]
     {
-        return check_installed_macos(target, display_name);
+        check_installed_macos(target, display_name)
     }
     #[cfg(target_os = "linux")]
     {
-        return check_installed_linux(target, display_name);
+        check_installed_linux(target, display_name)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
@@ -808,7 +810,7 @@ fn launch_via_start_apps(target: &str, _display_name: &str) -> Option<CommandRes
                 tracing::info!("launched app via shell:AppsFolder: {}", app_id);
                 Some(CommandResult {
                     success: true,
-                    message: format!("Ok sir."),
+                    message: "Ok sir.".to_string(),
                 })
             }
             Err(e) => {
@@ -951,7 +953,7 @@ fn launch_via_where(target: &str, _display_name: &str) -> Option<CommandResult> 
                 Ok(_) => {
                     Some(CommandResult {
                         success: true,
-                        message: format!("Ok sir."),
+                        message: "Ok sir.".to_string(),
                     })
                 }
                 Err(e) => {
@@ -980,7 +982,7 @@ fn focus_window_by_process(pid: u32, display_name: &str) -> Option<CommandResult
     unsafe extern "system" fn collect_hwnds(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let hwnds = &mut *(lparam.0 as *mut Vec<isize>);
         if IsWindowVisible(hwnd).as_bool() {
-            hwnds.push(hwnd.0 as isize);
+            hwnds.push(hwnd.0);
         }
         BOOL(1)
     }

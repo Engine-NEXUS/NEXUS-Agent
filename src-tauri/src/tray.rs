@@ -48,10 +48,10 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                     } else {
                         "Pause NEXUS"
                     };
-                    if let Some(item) = app.menu().and_then(|m| m.get("pause")) {
-                        if let MenuItemKind::MenuItem(mi) = item {
-                            let _ = mi.set_text(new_label);
-                        }
+                    if let Some(MenuItemKind::MenuItem(mi)) =
+                        app.menu().and_then(|m| m.get("pause"))
+                    {
+                        let _ = mi.set_text(new_label);
                     }
                     if now_paused {
                         tracing::info!("tray: NEXUS paused (manual)");

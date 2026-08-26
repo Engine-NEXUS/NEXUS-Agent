@@ -17,6 +17,21 @@
 //!   - Voice profiles are personalization data, not a security boundary.
 //!   - They never leave the device.
 //!   - They can be deleted at any time.
+//!
+//! # Status: enrollment is wired, verification is NOT
+//!
+//! Enrollment works end-to-end (setup wizard → embedding → JSON on disk) and
+//! `SpeakerVerifier` loads the profile at startup. However, the verification
+//! half is not yet connected: `wakeword_oww::WakeEngine::process` accepts every
+//! wake regardless of speaker (see the `TODO: implement audio ring buffer`
+//! there). Wiring it up requires retaining the ~1.5s of audio preceding the
+//! wake so an embedding can be extracted from the actual utterance — the KWS
+//! path currently discards each 80ms chunk after inference.
+//!
+//! Consequence: enrolling a voice profile does not currently restrict who can
+//! wake NEXUS. The verification API below is therefore unused, and marked
+//! `#[allow(dead_code)]` rather than deleted so the feature can be completed
+//! without rewriting it.
 
 use sherpa_onnx::{
     SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig,
@@ -30,12 +45,16 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_THRESHOLD: f32 = 0.5;
 
 /// Number of enrollment clips recommended for a stable profile.
+/// Referenced by the setup wizard copy; unused in Rust until verification lands.
+#[allow(dead_code)]
 pub const RECOMMENDED_ENROLLMENT_CLIPS: usize = 5;
 
 /// Minimum enrollment clips required to create a profile.
 pub const MIN_ENROLLMENT_CLIPS: usize = 3;
 
 /// Speaker name used for the enrolled user.
+/// Reserved for multi-speaker profiles; unused until verification lands.
+#[allow(dead_code)]
 pub const ENROLLED_SPEAKER_NAME: &str = "owner";
 
 /// Maximum number of wake variants stored in a profile.
@@ -106,6 +125,10 @@ impl VoiceProfile {
     }
 
     /// Compute cosine similarity between this profile and a query embedding.
+    ///
+    /// Unused until wake-word speaker verification is wired — see the module
+    /// docs. Covered by unit tests.
+    #[allow(dead_code)]
     pub fn cosine_similarity(&self, query: &[f32]) -> f32 {
         if query.len() != self.embedding.len() {
             return 0.0;
@@ -113,22 +136,26 @@ impl VoiceProfile {
         let mut dot = 0.0f32;
         let mut norm_a = 0.0f32;
         let mut norm_b = 0.0f32;
-        for i in 0..query.len() {
-            dot += self.embedding[i] * query[i];
-            norm_a += self.embedding[i] * self.embedding[i];
-            norm_b += query[i] * query[i];
+        for (&a, &q) in self.embedding.iter().zip(query.iter()) {
+            dot += a * q;
+            norm_a += a * a;
+            norm_b += q * q;
         }
         let denom = (norm_a.sqrt() * norm_b.sqrt()).max(1e-8);
         dot / denom
     }
 
     /// Verify if a query embedding matches this profile.
+    ///
+    /// Unused until wake-word speaker verification is wired — see module docs.
+    #[allow(dead_code)]
     pub fn verify(&self, query: &[f32]) -> bool {
         let sim = self.cosine_similarity(query);
         sim >= self.threshold
     }
 
     /// Verify with explicit threshold override.
+    #[allow(dead_code)]
     pub fn verify_with_threshold(&self, query: &[f32], threshold: f32) -> bool {
         let sim = self.cosine_similarity(query);
         sim >= threshold
@@ -161,6 +188,10 @@ impl VoiceProfile {
 /// Check if a normalized ASR transcript matches any wake word.
 /// Checks both the user's personalized `wake_variants` and the global `SOUND_ALIKES` list.
 /// Matching is exact substring (no fuzzy/Levenshtein).
+///
+/// Called from the legacy `wakeword.rs` path; unused under the default
+/// `wakeword-oww` feature but kept for the non-oww fallback.
+#[allow(dead_code)]
 pub fn matches_wake_word(transcript: &str, wake_variants: &[String]) -> bool {
     let text = transcript.trim().to_lowercase();
     if text.is_empty() {
@@ -276,6 +307,7 @@ impl SpeakerVerifier {
     }
 
     /// Return the embedding dimension.
+    #[allow(dead_code)]
     pub fn dim(&self) -> i32 {
         self.extractor.dim()
     }
@@ -417,6 +449,7 @@ impl SpeakerVerifier {
     }
 
     /// Add a single clip to an existing profile (incremental enrollment).
+    #[allow(dead_code)]
     pub fn add_clip(&mut self, samples: &[f32]) -> anyhow::Result<()> {
         let new_emb = self.extract_embedding(samples)?;
 
@@ -427,9 +460,8 @@ impl SpeakerVerifier {
 
         // Weighted average: combine the existing average with the new embedding
         let n = profile.num_clips as f32;
-        let dim = profile.embedding.len();
-        for i in 0..dim {
-            profile.embedding[i] = (profile.embedding[i] * n + new_emb[i]) / (n + 1.0);
+        for (avg, &sample) in profile.embedding.iter_mut().zip(new_emb.iter()) {
+            *avg = (*avg * n + sample) / (n + 1.0);
         }
         profile.num_clips += 1;
         profile.updated_at = chrono::Utc::now().timestamp();
@@ -447,6 +479,9 @@ impl SpeakerVerifier {
     /// Verify if audio samples match the enrolled profile.
     /// Returns (matched, similarity_score).
     /// If no profile is enrolled, returns (true, 0.0) — open mode.
+    ///
+    /// Unused until wake-word speaker verification is wired — see module docs.
+    #[allow(dead_code)]
     pub fn verify(&self, samples: &[f32]) -> anyhow::Result<(bool, f32)> {
         if let Some(profile) = &self.profile {
             let emb = self.extract_embedding(samples)?;
@@ -467,6 +502,7 @@ impl SpeakerVerifier {
     }
 
     /// Verify using a pre-extracted embedding.
+    #[allow(dead_code)]
     pub fn verify_embedding(&self, embedding: &[f32]) -> anyhow::Result<(bool, f32)> {
         if let Some(profile) = &self.profile {
             let sim = profile.cosine_similarity(embedding);
@@ -484,6 +520,7 @@ impl SpeakerVerifier {
     }
 
     /// Delete the voice profile.
+    #[allow(dead_code)]
     pub fn delete_profile(&mut self) -> anyhow::Result<()> {
         if self.profile_path.exists() {
             std::fs::remove_file(&self.profile_path)
@@ -495,6 +532,7 @@ impl SpeakerVerifier {
     }
 
     /// Get the profile status for UI display.
+    #[allow(dead_code)]
     pub fn status(&self) -> VoiceProfileStatus {
         let sound_alikes: Vec<String> = SOUND_ALIKES
             .iter()

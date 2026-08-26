@@ -123,6 +123,11 @@ impl MeetingState {
     }
 
     /// Set manual pause explicitly.
+    ///
+    /// Unused in production (the tray uses `toggle_pause`), but exercised by
+    /// the unit tests in this file. Kept for the test suite and as a stable
+    /// API for future callers (e.g. a settings-window toggle).
+    #[allow(dead_code)]
     pub fn set_paused(&self, paused: bool) {
         self.manual_pause.store(paused, Ordering::Relaxed);
     }
@@ -146,10 +151,12 @@ impl Default for MeetingState {
 
 // ─── Meeting detection polling ───────────────────────────────────────
 
-/// Known conferencing application process names (cross-platform).
+/// Known conferencing application process names.
 ///
-/// Used as a fallback when WASAPI is not available (macOS/Linux) or
-/// as additional signal on Windows.
+/// Only used on non-Windows platforms: Windows uses WASAPI session
+/// enumeration (`check_wasapi_microphone_usage`), which detects actual
+/// microphone usage rather than mere process presence.
+#[cfg(not(target_os = "windows"))]
 const MEETING_PROCESS_NAMES: &[&str] = &[
     // Windows
     "Zoom.exe",
@@ -182,23 +189,21 @@ const MEETING_PROCESS_NAMES: &[&str] = &[
 
 /// Check if any known meeting application process is running.
 ///
-/// Uses `sysinfo` crate (already in Cargo.toml).
-/// This is a fallback — WASAPI detection is more precise on Windows
-/// because it detects actual microphone usage, not just process presence.
+/// Uses the `sysinfo` crate. Non-Windows only — this is less precise than
+/// WASAPI because it detects whether a meeting app is *running*, not
+/// whether it is actively using the microphone.
+#[cfg(not(target_os = "windows"))]
 fn check_meeting_processes() -> bool {
     use sysinfo::System;
     let mut sys = System::new_all();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
-    for (_, process) in sys.processes() {
-        let name = process.name().to_string_lossy().to_string();
-        for &meeting_name in MEETING_PROCESS_NAMES {
-            if name.eq_ignore_ascii_case(meeting_name) {
-                return true;
-            }
-        }
-    }
-    false
+    sys.processes().values().any(|process| {
+        let name = process.name().to_string_lossy();
+        MEETING_PROCESS_NAMES
+            .iter()
+            .any(|meeting_name| name.eq_ignore_ascii_case(meeting_name))
+    })
 }
 
 /// Run the meeting detection polling loop.
@@ -379,10 +384,10 @@ unsafe fn wasapi_check_inner() -> bool {
         &iid_iaudiosessionmanager2,
         CLSCTX_ALL,
         std::ptr::null(),
-        &mut ptr as *mut *mut _ as *mut *mut _,
+        &mut ptr as *mut *mut _,
     );
     let mgr: IAudioSessionManager2 = match hr {
-        Ok(()) => std::mem::transmute(ptr),
+        Ok(()) => std::mem::transmute::<*mut std::ffi::c_void, IAudioSessionManager2>(ptr),
         Err(e) => {
             tracing::warn!("meeting detection: Activate IAudioSessionManager2 failed: {e}");
             return false;
