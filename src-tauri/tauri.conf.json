@@ -106,10 +106,8 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/porcupine/*",
-      "resources/sherpa/kws/*",
-      "resources/sherpa/speaker_model.onnx",
-      "resources/sherpa/silero_vad.onnx"
+      "resources/oww/*",
+      "resources/sherpa/speaker_model.onnx"
     ],
     "icon": [
       "icons/32x32.png",

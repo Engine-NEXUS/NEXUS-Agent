@@ -25,8 +25,6 @@ mod stt;
 mod stt_server_manager;
 mod voice_profile;
 mod meeting_detect;
-#[allow(dead_code)]
-mod sidecar_manager;
 mod mic_permissions;
 
 use tauri::{Emitter, Listener, Manager};
