@@ -62,7 +62,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             server_url: option_env!("NEXUS_SERVER_URL")
-                .unwrap_or("ws://127.0.0.1:49152/ws")
+                .unwrap_or("https://nexus-worker.example.workers.dev")
                 .to_string(),
             user_id: String::new(),
             device_id: String::new(),
@@ -71,7 +71,7 @@ impl Default for ServerConfig {
 }
 
 /// IPC: Get the saved server config (or defaults if not yet configured).
-/// The frontend calls this at startup to get the WebSocket URL, user ID,
+/// The frontend calls this at startup to get the Worker URL, user ID,
 /// and device ID — instead of relying on build-time env vars.
 #[tauri::command]
 pub fn get_server_config<R: Runtime>(
@@ -580,7 +580,7 @@ impl Default for NexusSettings {
             suppress_tts_in_meetings: true,
             local_stt_only: true,
             server_url: option_env!("NEXUS_SERVER_URL")
-                .unwrap_or("ws://127.0.0.1:49152/ws")
+                .unwrap_or("https://nexus-worker.example.workers.dev")
                 .to_string(),
             user_id: String::new(),
             device_id: String::new(),

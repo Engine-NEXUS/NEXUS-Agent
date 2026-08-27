@@ -25,6 +25,7 @@ mod stt;
 mod stt_server_manager;
 mod voice_profile;
 mod meeting_detect;
+#[allow(dead_code)]
 mod sidecar_manager;
 mod mic_permissions;
 
@@ -421,14 +422,11 @@ pub fn run() {
                 })
                 .ok();
 
-            // Network bridge (WSS) listens for server events and forwards to frontend.
-            // The sidecar (Python FastAPI on port 49152) must be running for this to work.
-            // Auto-spawn it in a BACKGROUND THREAD so a slow Python cold-start
-            // (3-8s on boot) doesn't block app startup. The frontend's WebSocket
-            // retry logic (1s→2s→4s→8s backoff) connects once it's ready.
-            std::thread::spawn(sidecar_manager::init);
+            // Network bridge (HTTP) sends transcripts to the Cloudflare Worker.
+            // No sidecar, no server, no WebSocket — fully serverless.
+            // The Worker URL is baked into the installer via NEXUS_SERVER_URL.
 
-            // STT server (faster-whisper on port 8000) transcribes audio locally.
+            // STT server (faster-whisper on port 18765) transcribes audio locally.
             // Without it, no commands can be executed — every transcript is empty.
             // Auto-spawn it in a BACKGROUND THREAD — model loading takes 10-20s on CPU
             // and must not block app startup. The first transcription will wait for it.
@@ -468,7 +466,7 @@ pub fn run() {
                     let user_id = format!("user_{}", uuid::Uuid::new_v4().simple());
                     let device_id = format!("device_{}", uuid::Uuid::new_v4().simple());
                     let server_url = option_env!("NEXUS_SERVER_URL")
-                        .unwrap_or("ws://127.0.0.1:49152/ws");
+                        .unwrap_or("https://nexus-worker.example.workers.dev");
                     let default_config = serde_json::json!({
                         "serverUrl": server_url,
                         "userId": user_id,

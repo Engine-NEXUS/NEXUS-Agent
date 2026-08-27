@@ -1,35 +1,35 @@
 /**
- * OAuth2 PKCE client for NEXUS desktop app.
+ * OAuth2 PKCE client for NEXUS desktop app (serverless — Cloudflare Worker).
  *
  * Flow:
  *  1. Generate PKCE verifier + challenge (SHA-256, base64url).
- *  2. Ask sidecar for the provider's authorization URL (includes our challenge).
+ *  2. Ask the Worker for the provider's authorization URL (includes our challenge).
  *  3. Open the system browser to that URL.
  *  4. User logs in → provider redirects to nexus://oauth/callback?code=XXX.
  *  5. Tauri deep-link plugin catches the redirect and emits an event.
- *  6. We extract the code + state, send code + verifier to sidecar /oauth/exchange.
- *  7. Sidecar exchanges code for tokens (using client secret stored server-side).
- *  8. Tokens are stored per-user on the server. Client gets "connected" confirmation.
+ *  6. We extract the code + state, send code + verifier to Worker /oauth/exchange.
+ *  7. Worker exchanges code for tokens (using client secret stored as Worker secret).
+ *  8. Tokens are stored per-user in Cloudflare D1. Client gets "connected" confirmation.
  *
  * For API keys (Claude, Devin, etc.) — no OAuth needed. User pastes the key,
- * we POST it to sidecar /apikeys/add.
+ * we POST it to Worker /apikeys/add.
  */
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 
-// The sidecar base URL. In production this comes from the saved config.
-// The setup page sets this from the user's input.
-let sidecarBaseUrl = "";
+// The Worker base URL. In production this comes from the saved config.
+// The setup page sets this from the server config.
+let workerBaseUrl = "";
 
 export function setSidecarBaseUrl(url: string): void {
   // Strip trailing slash.
-  sidecarBaseUrl = url.replace(/\/+$/, "");
+  workerBaseUrl = url.replace(/\/+$/, "");
 }
 
 export function getSidecarBaseUrl(): string {
-  return sidecarBaseUrl;
+  return workerBaseUrl;
 }
 
 // ---- PKCE utilities ----
@@ -82,7 +82,7 @@ export async function connectOAuth(
   provider: "google" | "github",
   userId: string,
 ): Promise<boolean> {
-  if (!sidecarBaseUrl) {
+  if (!workerBaseUrl) {
     throw new Error("Server URL not configured. Enter your server URL first.");
   }
 
@@ -92,7 +92,7 @@ export async function connectOAuth(
 
   // 1. Ask sidecar for the authorization URL.
   const authUrlResp = await fetch(
-    `${sidecarBaseUrl}/oauth/auth-url?provider=${provider}&user_id=${encodeURIComponent(userId)}&code_challenge=${codeChallenge}`,
+    `${workerBaseUrl}/oauth/auth-url?provider=${provider}&user_id=${encodeURIComponent(userId)}&code_challenge=${codeChallenge}`,
   );
   if (!authUrlResp.ok) {
     const err = await authUrlResp.json().catch(() => ({}));
@@ -160,7 +160,7 @@ async function handleOAuthRedirect(rawUrl: string): Promise<void> {
 
   // Exchange the code for tokens via the sidecar.
   try {
-    const resp = await fetch(`${sidecarBaseUrl}/oauth/exchange`, {
+    const resp = await fetch(`${workerBaseUrl}/oauth/exchange`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -190,8 +190,8 @@ async function handleOAuthRedirect(rawUrl: string): Promise<void> {
 
 /** Store an API key for a third-party service (Claude, Devin, etc.). */
 export async function addApiKey(userId: string, provider: string, apiKey: string): Promise<void> {
-  if (!sidecarBaseUrl) throw new Error("Server URL not configured");
-  const resp = await fetch(`${sidecarBaseUrl}/apikeys/add`, {
+  if (!workerBaseUrl) throw new Error("Server URL not configured");
+  const resp = await fetch(`${workerBaseUrl}/apikeys/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, provider, api_key: apiKey }),
@@ -204,8 +204,8 @@ export async function addApiKey(userId: string, provider: string, apiKey: string
 
 /** Remove a stored API key. */
 export async function removeApiKey(userId: string, provider: string): Promise<void> {
-  if (!sidecarBaseUrl) throw new Error("Server URL not configured");
-  const resp = await fetch(`${sidecarBaseUrl}/apikeys/remove`, {
+  if (!workerBaseUrl) throw new Error("Server URL not configured");
+  const resp = await fetch(`${workerBaseUrl}/apikeys/remove`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, provider }),
@@ -215,8 +215,8 @@ export async function removeApiKey(userId: string, provider: string): Promise<vo
 
 /** List which API key providers are stored (does NOT return the keys). */
 export async function listApiKeys(userId: string): Promise<string[]> {
-  if (!sidecarBaseUrl) return [];
-  const resp = await fetch(`${sidecarBaseUrl}/apikeys/list?user_id=${encodeURIComponent(userId)}`);
+  if (!workerBaseUrl) return [];
+  const resp = await fetch(`${workerBaseUrl}/apikeys/list?user_id=${encodeURIComponent(userId)}`);
   if (!resp.ok) return [];
   const data = await resp.json();
   return data.providers || [];
@@ -232,8 +232,8 @@ export interface OAuthStatus {
 
 /** Check which OAuth providers are connected for a user. */
 export async function getOAuthStatus(userId: string): Promise<Record<string, OAuthStatus>> {
-  if (!sidecarBaseUrl) return {};
-  const resp = await fetch(`${sidecarBaseUrl}/oauth/status?user_id=${encodeURIComponent(userId)}`);
+  if (!workerBaseUrl) return {};
+  const resp = await fetch(`${workerBaseUrl}/oauth/status?user_id=${encodeURIComponent(userId)}`);
   if (!resp.ok) return {};
   const data = await resp.json();
   return data.providers || {};
@@ -241,8 +241,8 @@ export async function getOAuthStatus(userId: string): Promise<Record<string, OAu
 
 /** Disconnect an OAuth provider. */
 export async function disconnectOAuth(userId: string, provider: string): Promise<void> {
-  if (!sidecarBaseUrl) throw new Error("Server URL not configured");
-  const resp = await fetch(`${sidecarBaseUrl}/oauth/disconnect`, {
+  if (!workerBaseUrl) throw new Error("Server URL not configured");
+  const resp = await fetch(`${workerBaseUrl}/oauth/disconnect`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, provider }),
