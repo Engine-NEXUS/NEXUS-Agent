@@ -1,0 +1,26 @@
+name = "nexus-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ---- Workers AI binding ----
+# This gives the Worker access to Cloudflare's AI models (free tier: 10K neurons/day).
+# No API key needed — the binding handles auth automatically.
+[ai]
+binding = "AI"
+
+# ---- Environment variables ----
+# These are NOT secrets — they're visible in the Cloudflare dashboard.
+# For secrets (like tokens), use: npx wrangler secret put SIDECAR_TOKEN
+[vars]
+SIDECAR_URL = "http://100.71.60.31:8443"
+
+# ---- Routes (optional) ----
+# Uncomment after deploying to bind to a custom domain:
+# [[routes]]
+# pattern = "nexus.yourdomain.com/*"
+# zone_name = "yourdomain.com"
+
+# ---- Observability ----
+[observability]
+enabled = true
