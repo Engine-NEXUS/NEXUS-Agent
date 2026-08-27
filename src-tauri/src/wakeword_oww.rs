@@ -433,10 +433,12 @@ mod engine {
                 None
             };
 
+            let threshold = 0.6f32;
             tracing::info!(
                 "openWakeWord KWS engine initialized \
-                 (wake word: NEXUS, 80ms sliding window, threshold: 0.7, \
-                 silence gate: RMS < 0.002 = skip, AGC: target RMS 0.03)"
+                 (wake word: NEXUS, 80ms sliding window, threshold: {}, \
+                 silence gate: RMS < 0.002 = skip, AGC: target RMS 0.03)",
+                threshold
             );
 
             // --- Tier 3: Load command classifiers (optional) ---
@@ -1011,17 +1013,216 @@ fn start_audio_capture(
 ) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use cpal::Sample;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no input device".to_string())?;
 
+    // ─── Enumerate ALL input devices and log them ───────────────────
+    let devices: Vec<cpal::Device> = match host.input_devices() {
+        Ok(iter) => iter.collect(),
+        Err(e) => {
+            tracing::error!("audio: failed to enumerate input devices: {e}");
+            // Fall back to default device only
+            host.default_input_device()
+                .map(|d| vec![d])
+                .ok_or_else(|| format!("no input devices: {e}"))?
+        }
+    };
+    tracing::info!("audio: found {} input device(s):", devices.len());
+    for (i, d) in devices.iter().enumerate() {
+        let name = d.name().unwrap_or_else(|_| "unknown".into());
+        let cfg = d.default_input_config().ok();
+        let sr = cfg.as_ref().map(|c| c.sample_rate().0).unwrap_or(0);
+        let ch = cfg.as_ref().map(|c| c.channels()).unwrap_or(0);
+        tracing::info!("  [{}] '{}' ({}Hz, {}ch)", i, name, sr, ch);
+    }
+
+    // Try the default device first, then fall back to others.
+    // The Intel SST "Digital Microphones" driver sometimes returns silence
+    // in WASAPI shared mode, so we need to try ALL devices.
+    let default_device = host.default_input_device();
+    let mut try_order: Vec<cpal::Device> = Vec::new();
+    if let Some(ref d) = default_device {
+        try_order.push(d.clone());
+    }
+    for d in &devices {
+        let name = d.name().unwrap_or_default();
+        let is_default = default_device
+            .as_ref()
+            .and_then(|dd| dd.name().ok())
+            .map(|dn| dn == name)
+            .unwrap_or(false);
+        if !is_default {
+            try_order.push(d.clone());
+        }
+    }
+
+    if try_order.is_empty() {
+        return Err("no input devices available".to_string());
+    }
+
+    // Try each device until we find one that produces non-zero audio.
+    // We start the stream, wait 5 seconds, and check the RMS.
+    // If the device produces silence (Intel SST bug), try the next device.
+    let mut last_err = String::new();
+    let mut best_device: Option<(cpal::Device, f32)> = None; // (device, rms)
+
+    for (attempt, device) in try_order.iter().enumerate() {
+        let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
+        tracing::info!(
+            "audio: trying device [{}] '{}' (attempt {}/{})",
+            attempt, dev_name, attempt + 1, try_order.len()
+        );
+
+        match try_device(device, engine.clone()) {
+            Ok(()) => {
+                tracing::info!("audio: device '{}' accepted", dev_name);
+                return Ok(());
+            }
+            Err(e) => {
+                // Extract RMS from error message if present
+                let rms = e
+                    .strip_prefix("device produces silence (RMS=")
+                    .and_then(|s| s.strip_suffix(")"))
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                if rms > best_device.as_ref().map(|(_, r)| *r).unwrap_or(0.0) {
+                    best_device = Some((device.clone(), rms));
+                }
+                tracing::warn!("audio: device '{}' failed: {}", dev_name, e);
+                last_err = e;
+            }
+        }
+    }
+
+    // All devices produced silence. Fall back to the best (highest RMS) device
+    // instead of giving up entirely. The mic may start working later (driver
+    // recovery, user unmutes, headset reconnects, etc.).
+    if let Some((device, rms)) = best_device {
+        let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
+        tracing::warn!(
+            "audio: ALL devices produced silence! Falling back to '{}' (RMS={:.6}). \
+             The mic may be muted or the Intel SST driver may be broken. \
+             Wake word will not work until the mic produces audio.",
+            dev_name, rms
+        );
+        // Try one more time without the silence check — just start the stream
+        match try_device_silent(&device, engine.clone()) {
+            Ok(()) => {
+                tracing::info!("audio: fallback device '{}' started (no silence check)", dev_name);
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::error!("audio: fallback device also failed: {e}");
+            }
+        }
+    }
+
+    Err(format!("all input devices failed: {}", last_err))
+}
+
+/// Start audio capture on a device WITHOUT the silence probe.
+/// Used as a fallback when all devices produce silence — the mic may
+/// start working later (driver recovery, user unmutes, etc.).
+#[cfg(not(feature = "mock-wake"))]
+fn try_device_silent(
+    device: &cpal::Device,
+    engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
+) -> Result<(), String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    use cpal::Sample;
+
+    let default_config = device
+        .default_input_config()
+        .map_err(|e| format!("default_input_config: {e}"))?;
+
+    let target_sr = engine.lock().sample_rate as u32;
+    let native_sr = default_config.sample_rate().0;
+    let native_channels = default_config.channels() as usize;
+    let sample_format = default_config.sample_format();
+    let stream_config = cpal::StreamConfig {
+        channels: default_config.channels(),
+        sample_rate: default_config.sample_rate(),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let chunk_size = engine::OWW_CHUNK_SIZE;
+
+    let state = std::sync::Arc::new(parking_lot::Mutex::new(engine::ResampleState::new(
+        native_sr, target_sr,
+    )));
+    let out_buf = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<f32>::with_capacity(2560)));
+    let engine_cb = engine;
+    let wake_tx = WAKE_TX.get().cloned();
+    let err_cb = |err| tracing::error!("audio stream error: {err}");
+
+    let build_result = match sample_format {
+        cpal::SampleFormat::I16 => device.build_input_stream::<i16, _, _>(
+            &stream_config,
+            {
+                let state = state.clone();
+                let out_buf = out_buf.clone();
+                let wake_tx = wake_tx.clone();
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if let Some(tx) = &wake_tx {
+                        engine::on_audio(data, native_channels, &state, &out_buf,
+                            &engine_cb, chunk_size, |s: i16| s.to_sample::<f32>(), tx);
+                    }
+                }
+            }, err_cb, None,
+        ),
+        cpal::SampleFormat::I32 => device.build_input_stream::<i32, _, _>(
+            &stream_config,
+            {
+                let state = state.clone();
+                let out_buf = out_buf.clone();
+                let wake_tx = wake_tx.clone();
+                move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                    if let Some(tx) = &wake_tx {
+                        engine::on_audio(data, native_channels, &state, &out_buf,
+                            &engine_cb, chunk_size, |s: i32| s.to_sample::<f32>(), tx);
+                    }
+                }
+            }, err_cb, None,
+        ),
+        cpal::SampleFormat::F32 => device.build_input_stream::<f32, _, _>(
+            &stream_config,
+            {
+                let state = state.clone();
+                let out_buf = out_buf.clone();
+                let wake_tx = wake_tx.clone();
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if let Some(tx) = &wake_tx {
+                        engine::on_audio(data, native_channels, &state, &out_buf,
+                            &engine_cb, chunk_size, |s: f32| s, tx);
+                    }
+                }
+            }, err_cb, None,
+        ),
+        other => return Err(format!("unsupported sample format: {other:?}")),
+    };
+
+    let stream = build_result.map_err(|e| format!("build stream: {e}"))?;
+    stream.play().map_err(|e| format!("play stream: {e}"))?;
     tracing::info!(
-        "audio: input device = '{}', host = '{}'",
-        device.name().unwrap_or_else(|_| "unknown".into()),
-        host.id().name()
+        "audio: stream started on '{}', OWW KWS listening for 'nexus'...",
+        device.name().unwrap_or_else(|_| "unknown".into())
     );
+    std::mem::forget(stream);
+    Ok(())
+}
+
+/// Try to start audio capture on a single device.
+/// Starts the stream, waits 5 seconds, and checks the RMS of the captured
+/// audio. If the device produces silence (Intel SST bug), returns an error
+/// so the caller can try the next device.
+#[cfg(not(feature = "mock-wake"))]
+fn try_device(
+    device: &cpal::Device,
+    engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
+) -> Result<(), String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    use cpal::Sample;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let default_config = device
         .default_input_config()
@@ -1055,6 +1256,13 @@ fn start_audio_capture(
     let engine_cb = engine;
     let wake_tx = WAKE_TX.get().cloned();
 
+    // Track sum-of-squares and sample count for RMS computation.
+    // The Intel SST driver sends a few non-zero samples at startup then goes
+    // silent, so we compute RMS over the FULL 5-second window, not just check
+    // for any non-zero sample.
+    let sum_sq = std::sync::Arc::new(AtomicU64::new(0)); // sum of squares * 1e9 (fixed-point)
+    let total_samples = std::sync::Arc::new(AtomicU64::new(0));
+
     let err_cb = |err| tracing::error!("audio stream error: {err}");
 
     let build_result = match sample_format {
@@ -1064,7 +1272,23 @@ fn start_audio_capture(
                 let state = state.clone();
                 let out_buf = out_buf.clone();
                 let wake_tx = wake_tx.clone();
+                let sum_sq = sum_sq.clone();
+                let total_samples = total_samples.clone();
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let ch = native_channels.max(1);
+                    let frames = data.len() / ch;
+                    let mut sq_sum = 0.0f64;
+                    for i in 0..frames {
+                        let mut sum = 0.0f32;
+                        for c in 0..ch {
+                            sum += data[i * ch + c].to_sample::<f32>();
+                        }
+                        let mono = sum / ch as f32;
+                        sq_sum += (mono as f64) * (mono as f64);
+                    }
+                    // Store as fixed-point (multiply by 1e9 to preserve precision)
+                    sum_sq.fetch_add((sq_sum * 1e9) as u64, Ordering::Relaxed);
+                    total_samples.fetch_add(frames as u64, Ordering::Relaxed);
                     if let Some(tx) = &wake_tx {
                         engine::on_audio(
                             data,
@@ -1088,7 +1312,22 @@ fn start_audio_capture(
                 let state = state.clone();
                 let out_buf = out_buf.clone();
                 let wake_tx = wake_tx.clone();
+                let sum_sq = sum_sq.clone();
+                let total_samples = total_samples.clone();
                 move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                    let ch = native_channels.max(1);
+                    let frames = data.len() / ch;
+                    let mut sq_sum = 0.0f64;
+                    for i in 0..frames {
+                        let mut sum = 0.0f32;
+                        for c in 0..ch {
+                            sum += data[i * ch + c].to_sample::<f32>();
+                        }
+                        let mono = sum / ch as f32;
+                        sq_sum += (mono as f64) * (mono as f64);
+                    }
+                    sum_sq.fetch_add((sq_sum * 1e9) as u64, Ordering::Relaxed);
+                    total_samples.fetch_add(frames as u64, Ordering::Relaxed);
                     if let Some(tx) = &wake_tx {
                         engine::on_audio(
                             data,
@@ -1112,7 +1351,22 @@ fn start_audio_capture(
                 let state = state.clone();
                 let out_buf = out_buf.clone();
                 let wake_tx = wake_tx.clone();
+                let sum_sq = sum_sq.clone();
+                let total_samples = total_samples.clone();
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let ch = native_channels.max(1);
+                    let frames = data.len() / ch;
+                    let mut sq_sum = 0.0f64;
+                    for i in 0..frames {
+                        let mut sum = 0.0f32;
+                        for c in 0..ch {
+                            sum += data[i * ch + c];
+                        }
+                        let mono = sum / ch as f32;
+                        sq_sum += (mono as f64) * (mono as f64);
+                    }
+                    sum_sq.fetch_add((sq_sum * 1e9) as u64, Ordering::Relaxed);
+                    total_samples.fetch_add(frames as u64, Ordering::Relaxed);
                     if let Some(tx) = &wake_tx {
                         engine::on_audio(
                             data,
@@ -1135,7 +1389,43 @@ fn start_audio_capture(
 
     let stream = build_result.map_err(|e| format!("build stream: {e}"))?;
     stream.play().map_err(|e| format!("play stream: {e}"))?;
-    tracing::info!("audio: stream started, OWW KWS listening for 'nexus'...");
+
+    // Wait 5 seconds and compute RMS over the full window.
+    // The Intel SST driver may send a few non-zero samples at startup then
+    // go silent, so we need a longer window and RMS (not just any-non-zero).
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    let samples = total_samples.load(Ordering::Relaxed);
+    let sq = sum_sq.load(Ordering::Relaxed) as f64 / 1e9;
+
+    if samples == 0 {
+        tracing::warn!(
+            "audio: device produced 0 samples in 5s — no audio callback fired, trying next device"
+        );
+        drop(stream);
+        return Err("no audio callbacks received".to_string());
+    }
+
+    let rms = (sq / samples as f64).sqrt() as f32;
+    tracing::info!("audio: 5s probe RMS = {:.6} ({} samples)", rms, samples);
+
+    // If RMS is below 0.0001 (effectively silence), try the next device.
+    // A working mic in a quiet room has RMS ~0.001-0.01.
+    // The Intel SST silence bug produces RMS ~0.0000-0.00005.
+    if rms < 0.0001 {
+        tracing::warn!(
+            "audio: device RMS {:.6} is below silence threshold (0.0001) — \
+             likely Intel SST silence bug, trying next device",
+            rms
+        );
+        drop(stream);
+        return Err(format!("device produces silence (RMS={:.6})", rms));
+    }
+
+    tracing::info!(
+        "audio: stream started on '{}', OWW KWS listening for 'nexus'...",
+        device.name().unwrap_or_else(|_| "unknown".into())
+    );
     std::mem::forget(stream);
     Ok(())
 }
