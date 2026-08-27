@@ -57,10 +57,12 @@ const GOOGLE_SCOPES = [
 const GITHUB_SCOPES = "repo read:org workflow";
 
 // ---- Intent classification ----
+// Models confirmed available on Cloudflare Workers AI (Aug 2026).
+// Small model for fast intent classification, larger for summarization.
 
-const INTENT_MODEL = "@cf/qwen/qwen1.5-0.5b-chat";
-const SUMMARY_MODEL = "@cf/qwen/qwen1.5-14b-chat-awq";
-const SMALL_SUMMARY_MODEL = "@cf/qwen/qwen1.5-1.8b-chat";
+const INTENT_MODEL = "@cf/meta/llama-3.2-1b-instruct";
+const SUMMARY_MODEL = "@cf/mistral/mistral-small-3.1-24b-instruct";
+const SMALL_SUMMARY_MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 async function classifyIntent(transcript: string, env: Env): Promise<string> {
   const prompt = `You are an intent classifier. Read the user request and respond with exactly one word from this list:
@@ -75,7 +77,7 @@ User request: "${transcript}"
 Intent:`;
 
   try {
-    const response = await env.AI.run(INTENT_MODEL, {
+    const response = await env.AI.run(INTENT_MODEL as any, {
       messages: [{ role: "user", content: prompt }],
       max_tokens: 5,
     });
@@ -100,7 +102,7 @@ function keywordFallback(transcript: string): string {
 async function summarize(prompt: string, env: Env, useLarge = true): Promise<string> {
   const model = useLarge ? SUMMARY_MODEL : SMALL_SUMMARY_MODEL;
   try {
-    const response = await env.AI.run(model, {
+    const response = await env.AI.run(model as any, {
       messages: [{ role: "user", content: prompt }],
       max_tokens: 300,
     });

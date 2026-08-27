@@ -16,7 +16,7 @@ binding = "AI"
 [[d1_databases]]
 binding = "DB"
 database_name = "nexus-db"
-database_id = "YOUR_D1_DATABASE_ID_HERE"  # replace after running wrangler d1 create
+database_id = "4bca5d1b-55e1-4a30-bbf9-ca28cf96e3ea"
 
 # ---- Environment variables (non-secret) ----
 [vars]
