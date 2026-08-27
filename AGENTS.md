@@ -115,14 +115,22 @@ pwsh ./scripts/build.ps1
 
 - Default feature: `wakeword-oww` (tract-onnx inference in Rust)
 - Models: `src-tauri/resources/oww/{melspectrogram.onnx, embedding_model.onnx, nexus.onnx}`
-- Threshold: 0.7, chunk size: 1280 samples (80ms at 16kHz)
-- **Silence gate (2026-08-26):** `detect_chunk` computes RMS of each 80ms
-  chunk and skips the classifier entirely if RMS < 0.005 (~-46dBFS). The
-  `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence
+- Threshold: 0.6, chunk size: 1280 samples (80ms at 16kHz)
+- **Silence gate + AGC (2026-08-27):** `detect_chunk` computes RMS of each
+  80ms chunk and skips the classifier entirely if RMS < 0.002 (~-54dBFS).
+  The `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence
   (out-of-distribution input), which caused spontaneous false wakes. The
   gate prevents the model from ever seeing silence. Also raised threshold
   0.5 -> 0.7 and min positive detections 2 -> 3. Regression test:
   `test_silence_never_triggers_wake`.
+  - **AGC (Automatic Gain Control):** If RMS passes the gate but is below
+    TARGET_RMS (0.03), the chunk is amplified up to 30x before feeding the
+    classifier. This makes quiet/whispered "NEXUS" produce the same model
+    input as loud "NEXUS", so the model (trained on normal-volume TTS)
+    recognizes low-volume speech without retraining.
+  - Gate lowered 0.005 -> 0.002 and threshold 0.7 -> 0.6 to allow quiet
+    speech through. Pure silence (RMS=0) and mic noise floor (~0.0005)
+    are still blocked.
 - **FIXED (2026-08-24):** The wake word now works — probability 0.991 for real
   "NEXUS" speech. The root cause was a 32768x input scaling mismatch: cpal
   produces f32 audio in [-1.0, 1.0] but the openWakeWord melspectrogram model
