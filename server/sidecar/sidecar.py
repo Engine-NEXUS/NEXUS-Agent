@@ -1,8 +1,8 @@
 """
 NEXUS WSS Bridge — FastAPI WebSocket sidecar (TEXT-ONLY protocol).
 
-Bridges the thin client's persistent WebSocket to n8n supervisor for
-intent routing + canvas execution.
+Bridges the thin client's persistent WebSocket to the Cloudflare Worker
+for intent routing + API calls.
 
 TEXT-ONLY: The client performs STT and TTS locally. Audio never crosses
 the network. The client sends only transcribed text, and the server
@@ -14,7 +14,7 @@ Flow:
   3. Client sends {type:"transcript", data:"check the 76 PR"}.
   4. This sidecar:
        a. Sends {type:"ack", data:"On it, sir."} immediately.
-       b. Calls n8n supervisor with transcript + user credentials.
+       b. Calls the Cloudflare Worker with transcript + user credentials.
        c. Sends {type:"result", data:"PR #76 is approved..."}.
        d. Sends {type:"done"}.
   5. Client may send {type:"cancel"} at any time for barge-in.
@@ -22,7 +22,7 @@ Flow:
 Binary frames are REJECTED — no audio is accepted on this endpoint.
 
 OAuth endpoints (/oauth/*, /apikeys/*) let the client exchange authorization
-codes for tokens, which are stored per-user and injected into n8n calls.
+codes for tokens, which are stored per-user and injected into Worker calls.
 
 Run:
   uvicorn sidecar:app --host 0.0.0.0 --port 8443
@@ -41,7 +41,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 
 from . import db
@@ -334,7 +334,7 @@ async def _process_transcript(sess: Session, transcript: str) -> None:
         with suppress(Exception):
             await sess.ws.send_text(json.dumps({"type": "ack", "data": ack_text}))
 
-    # 3. Call n8n supervisor with the transcript text.
+    # 3. Call the Cloudflare Worker with the transcript text.
     n8n_task = asyncio.create_task(
         call_supervisor(
             session_id=sess.session_id,
@@ -346,7 +346,7 @@ async def _process_transcript(sess: Session, transcript: str) -> None:
     )
     sess.n8n_task = n8n_task
 
-    # 4. Wait for n8n result.
+    # 4. Wait for the Worker result.
     if sess.cancelled:
         n8n_task.cancel()
         return
