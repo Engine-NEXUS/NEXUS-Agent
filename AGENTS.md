@@ -115,20 +115,20 @@ pwsh ./scripts/build.ps1
 
 - Default feature: `wakeword-oww` (tract-onnx inference in Rust)
 - Models: `src-tauri/resources/oww/{melspectrogram.onnx, embedding_model.onnx, nexus.onnx}`
-- Threshold: 0.6, chunk size: 1280 samples (80ms at 16kHz)
-- **Silence gate + AGC (2026-08-27):** `detect_chunk` computes RMS of each
-  80ms chunk and skips the classifier entirely if RMS < 0.002 (~-54dBFS).
+- Threshold: 0.45, chunk size: 1280 samples (80ms at 16kHz)
+- **Silence gate + AGC (2026-08-28):** `detect_chunk` computes RMS of each
+  80ms chunk and skips the classifier entirely if RMS < 0.0005 (~-66dBFS).
   The `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence
   (out-of-distribution input), which caused spontaneous false wakes. The
   gate prevents the model from ever seeing silence. Min positive detections
-  = 3. Regression test: `test_silence_never_triggers_wake`.
+  = 2. Regression test: `test_silence_never_triggers_wake`.
   - **AGC (Automatic Gain Control):** If RMS passes the gate but is below
-    TARGET_RMS (0.03), the chunk is amplified up to 30x before feeding the
+    TARGET_RMS (0.03), the chunk is amplified up to 50x before feeding the
     classifier. This makes quiet/whispered "NEXUS" produce the same model
     input as loud "NEXUS", so the model (trained on normal-volume TTS)
     recognizes low-volume speech without retraining.
-  - Gate: 0.002, threshold: 0.6. Pure silence (RMS=0) and mic noise floor
-    (~0.0005) are still blocked.
+  - Gate: 0.0005, threshold: 0.45. Pure silence (RMS=0) is blocked.
+  - Model: trained on Kaggle (v22), accuracy 78.6%, recall 58.2%, FP/hr 1.33.
 - **Mic device enumeration (2026-08-27):** `start_audio_capture` enumerates
   ALL input devices, probes each for 5 seconds, and picks the first one
   that produces non-silent audio (RMS > 0.0001). If all devices are silent

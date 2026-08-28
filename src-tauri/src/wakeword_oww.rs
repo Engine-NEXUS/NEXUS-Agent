@@ -107,8 +107,9 @@ mod engine {
     const DETECTION_BUFFER_SIZE: usize = 12;
 
     /// Minimum positive detections before triggering
-    /// (3 frames = 240ms of consistent detection — filters transient spikes)
-    const MIN_POSITIVE_DETECTIONS: f32 = 3.0;
+    /// (2 frames = 160ms of consistent detection — filters transient spikes
+    /// but is lenient enough for the 78.6% accuracy model)
+    const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
 
     /// Refractory period after a detection (ms)
     const NO_DETECTION_MS: u64 = 2000;
@@ -433,11 +434,11 @@ mod engine {
                 None
             };
 
-            let threshold = 0.6f32;
+            let threshold = 0.45f32;
             tracing::info!(
                 "openWakeWord KWS engine initialized \
                  (wake word: NEXUS, 80ms sliding window, threshold: {}, \
-                 silence gate: RMS < 0.002 = skip, AGC: target RMS 0.03)",
+                 silence gate: RMS < 0.0005 = skip, AGC: target RMS 0.03)",
                 threshold
             );
 
@@ -463,7 +464,7 @@ mod engine {
                 speaker,
                 sample_rate: 16000,
                 chunk_buffer: Vec::with_capacity(OWW_CHUNK_SIZE),
-                threshold: 0.6,
+                threshold: 0.45,
                 detections_buffer: CircularBuffer::<DETECTION_BUFFER_SIZE, f32>::new(),
                 last_detection_time: std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(10))
@@ -498,9 +499,14 @@ mod engine {
             //   makes quiet and loud "NEXUS" produce the same model input, so the
             //   model (trained on normal-volume TTS) recognizes whispered speech.
             //   The gain is capped at 30x to avoid amplifying pure noise.
-            const SILENCE_RMS_THRESHOLD: f32 = 0.002;
+            // Silence gate: lowered to 0.0005 to catch very quiet/whispered
+            // "nexus" calls. Pure digital silence (RMS=0) is still blocked.
+            // The Intel SST driver often produces RMS=0.0000 even when the
+            // mic is working, so we can't set this too high or we block
+            // everything. The AGC step compensates for low input.
+            const SILENCE_RMS_THRESHOLD: f32 = 0.0005;
             const TARGET_RMS: f32 = 0.03; // Normal speech RMS (~-30dBFS)
-            const MAX_GAIN: f32 = 30.0; // Cap to avoid amplifying noise
+            const MAX_GAIN: f32 = 50.0; // Cap to avoid amplifying noise
 
             let rms = if chunk.is_empty() {
                 0.0
@@ -519,11 +525,18 @@ mod engine {
                 return (false, 0.0, None);
             }
 
+            // Log when audio passes the gate (for debugging mic issues)
+            tracing::debug!(
+                "wake: audio passed gate (RMS={:.6}), running classifier...",
+                rms
+            );
+
             // AGC: amplify quiet speech to target RMS so the model sees
             // consistent-volume input regardless of how loud the user spoke.
             // This is the key fix for "low voice and high voice the same".
             let chunk: Vec<f32> = if rms < TARGET_RMS {
                 let gain = (TARGET_RMS / rms).min(MAX_GAIN);
+                tracing::debug!("wake: AGC gain={:.1}x (RMS {:.6} → {:.6})", gain, rms, TARGET_RMS);
                 chunk.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect()
             } else {
                 chunk
@@ -572,6 +585,21 @@ mod engine {
                 Ok(arr) => arr.as_slice().unwrap_or(&[0.0])[0],
                 Err(_) => 0.0,
             };
+
+            // Log every classifier output so we can see if the model is
+            // producing any signal at all. This is critical for debugging
+            // "nexus is not waking up" issues.
+            if probability > 0.1 {
+                tracing::info!(
+                    "wake: model probability={:.3} (threshold={:.3}, buffer_avg will be computed)",
+                    probability, self.threshold
+                );
+            } else if probability > 0.01 {
+                tracing::debug!(
+                    "wake: model probability={:.3} (below threshold {:.3})",
+                    probability, self.threshold
+                );
+            }
 
             self.detections_buffer.push_back(probability);
 
@@ -788,30 +816,56 @@ mod engine {
         use std::sync::atomic::{AtomicU64, Ordering};
         static CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
         static SAMPLE_COUNT: AtomicU64 = AtomicU64::new(0);
+        static LAST_NONSILENT_CB: AtomicU64 = AtomicU64::new(0);
+        static MAX_RMS_SEEN: AtomicU64 = AtomicU64::new(0); // RMS * 1e6 as u64
 
         let n = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
         let samples_in = data.len() / native_channels.max(1);
         SAMPLE_COUNT.fetch_add(samples_in as u64, Ordering::Relaxed);
 
+        // Compute RMS of this callback's audio
+        let ch = native_channels.max(1);
+        let frames = data.len() / ch;
+        let mut sum_sq = 0.0f32;
+        for i in 0..frames {
+            let mut sum = 0.0f32;
+            for c in 0..ch {
+                sum += to_f32(data[i * ch + c]);
+            }
+            let mono = sum / ch as f32;
+            sum_sq += mono * mono;
+        }
+        let rms = if frames > 0 { (sum_sq / frames as f32).sqrt() } else { 0.0 };
+
+        // Track when we last saw non-silent audio
+        if rms > 0.001 {
+            LAST_NONSILENT_CB.store(n, Ordering::Relaxed);
+            let rms_scaled = (rms * 1e6) as u64;
+            let prev = MAX_RMS_SEEN.load(Ordering::Relaxed);
+            if rms_scaled > prev {
+                MAX_RMS_SEEN.store(rms_scaled, Ordering::Relaxed);
+            }
+        }
+
         if n % 1000 == 0 && n > 0 {
             let total = SAMPLE_COUNT.load(Ordering::Relaxed);
-            // Compute RMS of this callback's audio to verify mic is picking up sound
-            let ch = native_channels.max(1);
-            let frames = data.len() / ch;
-            let mut sum_sq = 0.0f32;
-            for i in 0..frames {
-                let mut sum = 0.0f32;
-                for c in 0..ch {
-                    sum += to_f32(data[i * ch + c]);
-                }
-                let mono = sum / ch as f32;
-                sum_sq += mono * mono;
-            }
-            let rms = if frames > 0 { (sum_sq / frames as f32).sqrt() } else { 0.0 };
+            let last_nonsilent = LAST_NONSILENT_CB.load(Ordering::Relaxed);
+            let max_rms = MAX_RMS_SEEN.load(Ordering::Relaxed) as f32 / 1e6;
+            let silence_secs = (n - last_nonsilent) as f64 * 0.03; // approx seconds of silence
             tracing::debug!(
-                "audio: {} callbacks, ~{:.1}s processed, RMS={:.4}",
-                n, total as f64 / 16000.0, rms
+                "audio: {} callbacks, ~{:.1}s processed, RMS={:.6}, max_RMS_seen={:.6}, silent_for~{:.0}s",
+                n, total as f64 / 16000.0, rms, max_rms, silence_secs
             );
+
+            // Warn if mic has been silent for more than 60 seconds
+            if n - last_nonsilent > 2000 && n > 2000 {
+                tracing::warn!(
+                    "audio: mic has been silent for ~{:.0}s (callbacks {}-{}, max RMS ever seen: {:.6}). \
+                     Intel SST driver may need a restart. Try: 1) Unmute mic in Windows settings, \
+                     2) Disable 'Audio Enhancements' in mic properties, 3) Restart the app.",
+                    silence_secs, last_nonsilent, n, max_rms
+                );
+            }
         }
 
         // 1. Downmix to mono f32
