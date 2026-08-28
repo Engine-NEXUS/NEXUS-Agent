@@ -52,6 +52,9 @@ chrono = { version = "0.4.45", features = ["serde"] }
 # Cross-platform app/URL launching (open::that, open::with)
 open = "5"
 
+# Native window blur/vibrancy for the sidebar (acrylic on Win, vibrancy on Mac)
+window-vibrancy = "0.8"
+
 # Platform-agnostic user dirs (for app_registry disk cache path)
 dirs-next = "2"
 
