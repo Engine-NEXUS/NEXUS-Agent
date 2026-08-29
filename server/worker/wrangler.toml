@@ -4,22 +4,27 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 # ---- Workers AI binding ----
-# This gives the Worker access to Cloudflare's AI models (free tier: 10K neurons/day).
-# No API key needed — the binding handles auth automatically.
+# Free tier: 10K neurons/day. No API key needed.
 [ai]
 binding = "AI"
 
-# ---- Environment variables ----
-# These are NOT secrets — they're visible in the Cloudflare dashboard.
-# For secrets (like tokens), use: npx wrangler secret put SIDECAR_TOKEN
-[vars]
-SIDECAR_URL = "http://100.71.60.31:8443"
+# ---- D1 Database binding ----
+# Free tier: 5GB storage, 5M reads/day, 100K writes/day.
+# Create the database first:
+#   npx wrangler d1 create nexus-db
+# Then paste the database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "nexus-db"
+database_id = "YOUR_D1_DATABASE_ID_HERE"  # replace after running wrangler d1 create
 
-# ---- Routes (optional) ----
-# Uncomment after deploying to bind to a custom domain:
-# [[routes]]
-# pattern = "nexus.yourdomain.com/*"
-# zone_name = "yourdomain.com"
+# ---- Environment variables (non-secret) ----
+[vars]
+# No non-secret vars needed. OAuth client IDs/secrets are set as secrets:
+#   npx wrangler secret put GOOGLE_CLIENT_ID
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+#   npx wrangler secret put GITHUB_CLIENT_ID
+#   npx wrangler secret put GITHUB_CLIENT_SECRET
 
 # ---- Observability ----
 [observability]
