@@ -15,6 +15,9 @@ use crate::app_registry;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 /// Intent received from the frontend intent parser.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "action")]
@@ -162,7 +165,9 @@ fn spotify_play(query: &str) -> Result<CommandResult, String> {
     // Try the Spotify URI scheme first (opens desktop app if installed)
     #[cfg(target_os = "windows")]
     {
-        if Command::new("cmd").args(["/c", "start", "", &url]).spawn().is_ok() {
+        if Command::new("cmd").args(["/c", "start", "", &url])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn().is_ok() {
             tracing::info!("spotify play: {} (desktop app)", query);
             return Ok(CommandResult {
                 success: true,
@@ -357,12 +362,14 @@ fn volume_mute() -> Result<CommandResult, String> {
         let _ = Command::new("powershell")
             .args(["-NoProfile", "-Command",
                 "(New-Object Media.SoundPlayer).PlaySync()"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn();
         // Actually use the keyboard mute key via nircmd or SendMessage
         // For now, use the Windows mute key via keybd_event
         let ps = "$signature = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);'; $key = Add-Type -MemberDefinition $signature -Name 'Win32' -Namespace 'Native' -PassThru; $key::keybd_event(0xAD, 0, 0, 0); $key::keybd_event(0xAD, 0, 2, 0)";
         let _ = Command::new("powershell")
             .args(["-NoProfile", "-Command", ps])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn();
     }
     #[cfg(target_os = "macos")]
@@ -390,6 +397,7 @@ fn take_screenshot() -> Result<CommandResult, String> {
         let ps = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{%}P')";
         let _ = Command::new("powershell")
             .args(["-NoProfile", "-Command", ps])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn();
     }
     #[cfg(target_os = "macos")]
@@ -451,6 +459,7 @@ fn browser_key(keys: &str, label: &str) -> Result<CommandResult, String> {
             );
             let _ = Command::new("powershell")
                 .args(["-NoProfile", "-Command", &ps])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
                 .spawn();
         }
     }
@@ -731,6 +740,7 @@ fn launch_via_start_apps(target: &str, _display_name: &str) -> Option<CommandRes
     let ps_script = "Get-StartApps | ConvertTo-Json -Compress";
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", ps_script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output();
 
     let json_str = match output {
@@ -790,6 +800,7 @@ fn launch_via_start_apps(target: &str, _display_name: &str) -> Option<CommandRes
         let shell_path = format!("shell:AppsFolder\\{}", app_id);
         let result = Command::new("cmd")
             .args(["/c", "start", "", &shell_path])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn();
 
         match result {
@@ -920,6 +931,7 @@ fn launch_via_where(target: &str, _display_name: &str) -> Option<CommandResult> 
 
     let output = Command::new("where")
         .args([&exe_name])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output();
 
     match output {
@@ -932,6 +944,7 @@ fn launch_via_where(target: &str, _display_name: &str) -> Option<CommandResult> 
 
             let result = Command::new("cmd")
                 .args(["/c", "start", "", &path])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
                 .spawn();
 
             match result {
