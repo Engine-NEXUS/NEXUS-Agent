@@ -96,7 +96,7 @@
       "id": "NEXUS-tray"
     },
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' wss: https: ipc: http://ipc.localhost; media-src 'self' blob: data:; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "csp": "default-src 'self'; connect-src 'self' wss: https: ipc: http://ipc.localhost; media-src 'self' blob: data:; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:",
       "capabilities": ["main-cap"],
       "assetProtocol": { "enable": false }
     },

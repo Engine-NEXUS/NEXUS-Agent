@@ -49,7 +49,8 @@ function shouldShowSidebar(query: string, response: string): boolean {
   if (localVerbs.test(query.trim())) return false;
 
   // Gate 3: info/research/server intent markers
-  const infoIntent = /\b(check|show|list|find|search|look up|what|who|when|where|why|how|explain|summar|review|status|pr|pull request|issue|repo|commit|branch|deploy|log|error|analyz|tell me|give me|get|fetch|read|display)\b/i;
+  // Note: "analyz" matches "analyze" (American), "analys" matches "analyse"/"analysis" (British)
+  const infoIntent = /\b(check|show|list|find|search|look up|what|who|when|where|why|how|explain|summar|review|status|pr|pull request|issue|repo|commit|branch|deploy|log|error|analyz|analys|tell me|give me|get|fetch|read|display)\b/i;
   return infoIntent.test(query);
 }
 
