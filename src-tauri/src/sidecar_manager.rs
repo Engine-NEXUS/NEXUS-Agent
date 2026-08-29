@@ -5,10 +5,14 @@
 //! the server.
 //!
 //! This module:
-//!   1. Checks if the sidecar is already running (GET /health on port 8443).
+//!   1. Checks if the sidecar is already running (TCP connect on configured port).
 //!   2. If not, spawns `python -m uvicorn sidecar:app` in the sidecar directory.
 //!   3. Waits up to 15 seconds for it to become healthy.
-//!   4. Monitors the process and logs if it exits unexpectedly.
+//!   4. On Windows, uses CREATE_NO_WINDOW so no terminal pops up.
+//!   5. Redirects stdout/stderr to a log file in the app data directory.
+//!
+//! Port: Default 49152 (IANA dynamic/private range — avoids dev conflicts).
+//!       Override with NEXUS_SIDECAR_PORT env var in .env.
 //!
 //! In production (bundled .exe), the sidecar directory is resolved relative to
 //! the executable. In dev mode, it's resolved relative to the project root.
@@ -20,11 +24,36 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 
-const SIDECAR_PORT: u16 = 8443;
+/// Default port — IANA dynamic/private range (49152-65535).
+/// This avoids conflicts with common dev ports (3000, 5173, 8000, 8080, 8443).
+/// Override via NEXUS_SIDECAR_PORT in .env.
+const DEFAULT_SIDECAR_PORT: u16 = 49152;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 static SIDECAR_CHILD: Lazy<Mutex<Option<Child>>> = Lazy::new(|| Mutex::new(None));
+
+/// Get the sidecar port — from env var or default.
+fn sidecar_port() -> u16 {
+    std::env::var("NEXUS_SIDECAR_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_SIDECAR_PORT)
+}
+
+/// Resolve the log file path in the app data directory.
+/// On Windows: %LOCALAPPDATA%\com.nexus.assistant\sidecar.log
+/// On macOS:   ~/Library/Application Support/com.nexus.assistant/sidecar.log
+/// On Linux:   ~/.local/share/com.nexus.assistant/sidecar.log
+fn resolve_log_path() -> PathBuf {
+    if let Some(dir) = dirs_next::data_dir() {
+        let app_dir = dir.join("com.nexus.assistant");
+        let _ = std::fs::create_dir_all(&app_dir);
+        app_dir.join("sidecar.log")
+    } else {
+        PathBuf::from("sidecar.log")
+    }
+}
 
 /// Resolve the sidecar directory.
 ///
@@ -58,9 +87,21 @@ fn resolve_sidecar_dir() -> Option<PathBuf> {
 }
 
 /// Find a usable Python executable.
+/// Uses CREATE_NO_WINDOW on Windows so no console pops up during detection.
 fn find_python() -> Option<String> {
     for name in &["python", "python3", "py"] {
-        if let Ok(output) = Command::new(name).arg("--version").output() {
+        let mut cmd = Command::new(name);
+        cmd.arg("--version");
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.stdin(Stdio::null());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 return Some(name.to_string());
             }
@@ -71,18 +112,18 @@ fn find_python() -> Option<String> {
 
 /// Check if the sidecar is already running by attempting a TCP connect.
 /// If the port is open, something is listening — good enough for a health check.
-fn is_sidecar_healthy() -> bool {
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], SIDECAR_PORT));
+fn is_sidecar_healthy(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
 }
 
-/// Spawn the sidecar process.
-fn spawn_sidecar(sidecar_dir: &PathBuf, python: &str) -> std::io::Result<Child> {
+/// Spawn the sidecar process — no terminal window, logs to file.
+fn spawn_sidecar(sidecar_dir: &PathBuf, python: &str, port: u16) -> std::io::Result<Child> {
     let env_path = sidecar_dir.join(".env");
 
     let mut cmd = Command::new(python);
-    cmd.current_dir(sidecar_dir);
-    cmd.args(["-m", "uvicorn", "sidecar:app", "--host", "0.0.0.0", "--port", &SIDECAR_PORT.to_string()]);
+    cmd.current_dir(sidecar_dir.parent().unwrap_or(sidecar_dir));
+    cmd.args(["-m", "uvicorn", "sidecar.sidecar:app", "--host", "127.0.0.1", "--port", &port.to_string()]);
 
     // Load .env file manually (uvicorn doesn't auto-load .env)
     if env_path.exists() {
@@ -99,20 +140,32 @@ fn spawn_sidecar(sidecar_dir: &PathBuf, python: &str) -> std::io::Result<Child> 
         }
     }
 
-    // Inherit stdout/stderr so logs are visible (dev mode).
-    // In production, these could be piped to a log file.
-    cmd.stdout(Stdio::inherit());
-    cmd.stderr(Stdio::inherit());
+    // Redirect stdout/stderr to a log file (truncated on each startup).
+    // This prevents a terminal window from appearing and keeps logs for debugging.
+    let log_path = resolve_log_path();
+    let log_file = std::fs::File::create(&log_path)?;
+    let log_stderr = log_file.try_clone()?;
+    cmd.stdout(Stdio::from(log_file));
+    cmd.stderr(Stdio::from(log_stderr));
     cmd.stdin(Stdio::null());
+
+    // Windows: CREATE_NO_WINDOW — prevents a console window from popping up.
+    // This is the critical flag for silent background operation.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     cmd.spawn()
 }
 
 /// Wait for the sidecar to become healthy.
-fn wait_for_health() -> bool {
+fn wait_for_health(port: u16) -> bool {
     let start = Instant::now();
     while start.elapsed() < HEALTH_TIMEOUT {
-        if is_sidecar_healthy() {
+        if is_sidecar_healthy(port) {
             return true;
         }
         std::thread::sleep(HEALTH_POLL_INTERVAL);
@@ -126,9 +179,11 @@ fn wait_for_health() -> bool {
 /// 2. If not → spawn it and wait for health.
 /// 3. Store the child handle so we can kill it on exit.
 pub fn init() {
+    let port = sidecar_port();
+
     // 1. Check if already running
-    if is_sidecar_healthy() {
-        tracing::info!("sidecar: already running on port {}", SIDECAR_PORT);
+    if is_sidecar_healthy(port) {
+        tracing::info!("sidecar: already running on port {}", port);
         return;
     }
 
@@ -137,7 +192,7 @@ pub fn init() {
         Some(d) => d,
         None => {
             tracing::warn!("sidecar: could not locate server/sidecar/ directory — skipping auto-spawn");
-            tracing::warn!("sidecar: start it manually: cd server/sidecar && uvicorn sidecar:app --port {}", SIDECAR_PORT);
+            tracing::warn!("sidecar: start it manually: cd server/sidecar && uvicorn sidecar:app --port {}", port);
             return;
         }
     };
@@ -153,8 +208,8 @@ pub fn init() {
     };
 
     // 4. Spawn
-    tracing::info!("sidecar: spawning in {} using {}", sidecar_dir.display(), python);
-    let child = match spawn_sidecar(&sidecar_dir, &python) {
+    tracing::info!("sidecar: spawning in {} using {} on port {}", sidecar_dir.display(), python, port);
+    let child = match spawn_sidecar(&sidecar_dir, &python, port) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("sidecar: failed to spawn: {e}");
@@ -167,10 +222,15 @@ pub fn init() {
     tracing::info!("sidecar: spawned (PID {}), waiting for health...", pid);
 
     // 5. Wait for health
-    if wait_for_health() {
-        tracing::info!("sidecar: healthy on port {}", SIDECAR_PORT);
+    if wait_for_health(port) {
+        tracing::info!("sidecar: healthy on port {}", port);
     } else {
-        tracing::error!("sidecar: did not become healthy within {}s — check logs", HEALTH_TIMEOUT.as_secs());
+        let log_path = resolve_log_path();
+        tracing::error!(
+            "sidecar: did not become healthy within {}s — check logs at {}",
+            HEALTH_TIMEOUT.as_secs(),
+            log_path.display()
+        );
     }
 }
 
