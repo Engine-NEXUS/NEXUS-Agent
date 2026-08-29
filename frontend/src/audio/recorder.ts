@@ -37,8 +37,10 @@ function processNextQueuedCommand(): void {
 /**
  * Handle a long-running transcript when one is already in flight.
  *
- * - SAME command → say "on it sir" + hide, do NOT send again (dedup)
- * - DIFFERENT command → say "on it sir" + hide, add to queue
+ * - SAME command → say "on it sir", do NOT send again (dedup)
+ * - DIFFERENT command → say "on it sir", add to queue
+ *
+ * The orb stays visible with the thinking animation in both cases.
  */
 async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<void> {
   if (isDuplicateLongRunning(transcript)) {
@@ -47,7 +49,6 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     void speak("On it sir");
-    useAssistant.getState().setVisible(false);
     useAssistant.getState().setState("thinking");
   } else {
     // Different long-running command — queue it
@@ -56,7 +57,6 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     void speak("On it sir");
-    useAssistant.getState().setVisible(false);
     useAssistant.getState().setState("thinking");
   }
 }
@@ -171,15 +171,16 @@ function correctSttTranscript(transcript: string): string {
 
 /**
  * Give an immediate "On it sir" acknowledgment for long-running queries,
- * then hide the orb. The result handler in wsBridge will show the sidebar
- * and speak "Here is the analysis sir" when the response arrives.
+ * then keep the orb visible with the thinking animation while the Worker
+ * processes. The result handler in wsBridge will show the sidebar and
+ * speak "Here is the analysis sir" when the response arrives.
  */
 async function ackLongRunningQuery(): Promise<void> {
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("On it sir.");
   await speak("On it sir");
-  // Hide the orb — it will reappear briefly when the result arrives
-  useAssistant.getState().setVisible(false);
+  // Keep the orb visible with the thinking (loading circles) animation
+  // so the user sees NEXUS is actively processing their request.
   useAssistant.getState().setState("thinking");
 }
 
