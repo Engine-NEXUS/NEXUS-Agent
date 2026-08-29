@@ -49,6 +49,45 @@ pub fn save_server_config<R: Runtime>(
     Ok(())
 }
 
+/// Serialized server config returned by `get_server_config`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerConfig {
+    pub server_url: String,
+    pub user_id: String,
+    pub device_id: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            server_url: "ws://127.0.0.1:49152/ws".to_string(),
+            user_id: "local-user".to_string(),
+            device_id: "local-device".to_string(),
+        }
+    }
+}
+
+/// IPC: Get the saved server config (or defaults if not yet configured).
+/// The frontend calls this at startup to get the WebSocket URL, user ID,
+/// and device ID — instead of relying on build-time env vars.
+#[tauri::command]
+pub fn get_server_config<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<ServerConfig, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_path = dir.join("nexus-config.json");
+    if !config_path.exists() {
+        return Ok(ServerConfig::default());
+    }
+    let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(ServerConfig {
+        server_url: json["serverUrl"].as_str().unwrap_or("ws://127.0.0.1:49152/ws").to_string(),
+        user_id: json["userId"].as_str().unwrap_or("local-user").to_string(),
+        device_id: json["deviceId"].as_str().unwrap_or("local-device").to_string(),
+    })
+}
+
 /// IPC: Get the current voice profile status (enrolled or not, number of clips, threshold).
 #[tauri::command]
 pub fn get_voice_profile_status<R: Runtime>(
@@ -258,6 +297,41 @@ pub fn delete_voice_profile<R: Runtime>(
         tracing::info!("Voice profile deleted");
     }
     Ok(())
+}
+
+// ─── Boot greeting ─────────────────────────────────────────────────────────
+
+/// Seconds of system uptime below which a launch counts as a fresh boot.
+/// If NEXUS starts while uptime < 15 min, it was almost certainly launched by
+/// Windows autostart after a restart — greet the user.
+const FRESH_BOOT_UPTIME_SECS: u64 = 15 * 60;
+
+/// IPC: the frontend calls this once it has loaded. Returns true if the
+/// frontend should greet ("Hello sir, how can I assist you today?").
+///
+/// Conditions: fresh boot (uptime < 15 min) AND no meeting active AND not
+/// manually paused. The frontend signals readiness instead of Rust pushing on
+/// a timer, so the greeting can't fire before speechSynthesis is usable.
+#[tauri::command]
+pub fn frontend_ready<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let uptime = sysinfo::System::uptime();
+    let fresh_boot = uptime < FRESH_BOOT_UPTIME_SECS;
+
+    let (meeting, paused) = match app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+    {
+        Some(state) => (state.is_meeting_active(), state.is_paused()),
+        None => (false, false),
+    };
+
+    let should_greet = fresh_boot && !meeting && !paused;
+    tracing::info!(
+        "frontend ready: uptime={}s fresh_boot={} meeting={} paused={} → greet={}",
+        uptime, fresh_boot, meeting, paused, should_greet
+    );
+    Ok(should_greet)
 }
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────

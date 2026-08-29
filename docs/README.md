@@ -1,110 +1,169 @@
 # NEXUS Documentation Index
 
 > Complete technical documentation for the NEXUS floating desktop assistant.
+> A cross-platform, Siri-like, thin-client assistant that talks to a fat server (n8n + Ollama).
 > All documentation reflects the current state of the codebase as of 2026-08-19.
+
+---
+
+## Start Here
+
+If you're new to the project, read in this order:
+
+1. **[architecture/01-system-overview.md](./architecture/01-system-overview.md)** — the mental model (thin client + fat server, text-only protocol, 3 trigger paths, 3 response paths).
+2. **[architecture/02-data-flow-graphs.md](./architecture/02-data-flow-graphs.md)** — sequence diagrams for every major flow.
+3. **[architecture/03-component-map.md](./architecture/03-component-map.md)** — which file does what.
+4. **[credentials/01-credential-architecture.md](./credentials/01-credential-architecture.md)** — where secrets live and how they flow.
+5. **[features/01-wake-word.md](./features/01-wake-word.md)** — how the always-listening ear works.
+6. **[changes/CHANGELOG.md](./changes/CHANGELOG.md)** — what changed and why, per commit.
 
 ---
 
 ## Table of Contents
 
-### Top-Level Architecture
+### Architecture (How the system is built)
 
-| Document | Description |
-|----------|-------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | High-level system architecture (thin client + fat server) |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) | Server deployment guide |
+| # | Document | Description |
+|---|----------|-------------|
+| 01 | [system-overview.md](./architecture/01-system-overview.md) | High-level architecture map: thin client + fat server, 5 golden rules, 3 trigger paths, 3 response paths, runtime process topology |
+| 02 | [data-flow-graphs.md](./architecture/02-data-flow-graphs.md) | ASCII sequence diagrams for: general request, Tier 3 fixed command, Tier 3 parameterized command, boot greeting, sleep/wake greeting, meeting suppression, OAuth flow, API key flow, sidecar auto-spawn, cancel/barge-in |
+| 03 | [component-map.md](./architecture/03-component-map.md) | Every source file mapped to its purpose, key exports, and what it talks to (Rust, frontend, Python sidecar, config, models, notebooks) |
+| 04 | [tech-stack.md](./architecture/04-tech-stack.md) | Every crate, library, and tool chosen for NEXUS, with the reason it was picked over alternatives + feature flags + port allocation |
+| 05 | [state-machine.md](./architecture/05-state-machine.md) | Frontend Zustand state machine: states, transitions, side effects per transition, barge-in, Tier 3 bypass, boot greeting bypass, meeting override |
 
-### Wake Word Detection (Detailed)
+### Features (What each feature does and how)
 
-The wake word system went through a major architectural change. These documents
-explain the full journey: research, decision-making, old approach, new approach,
-training, validation, and every component in detail.
+| # | Document | Description |
+|---|----------|-------------|
+| 01 | [wake-word.md](./features/01-wake-word.md) | openWakeWord KWS engine: 3-stage ONNX pipeline, sound-alikes, speaker verification, meeting suppression |
+| 02 | [tier3-commands.md](./features/02-tier3-commands.md) | Acoustic command classifiers that skip STT for ~200ms latency. 39 commands (30 fixed + 9 parameterized). Type 1 vs Type 2 flow |
+| 03 | [meeting-privacy-mode.md](./features/03-meeting-privacy-mode.md) | 4-layer suppression: manual pause, WASAPI detection, process scan, TTS muting. What gets suppressed, hysteresis, frontend integration |
+| 04 | [boot-greeting.md](./features/04-boot-greeting.md) | "Hello sir, how can I assist you today?" on fresh boot (uptime < 15 min) or sleep/wake. Suppression conditions, non-blocking design |
+| 05 | [sidecar-manager.md](./features/05-sidecar-manager.md) | Auto-spawn Python FastAPI sidecar in background. pythonw.exe, port 49152, log redirection, sidecar reuse, package-qualified invocation |
+| 06 | [mic-permissions.md](./features/06-mic-permissions.md) | WebView2 permission handler: auto-approve mic/camera for NEXUS-owned origins only. No more permission dialog on restart |
+| 07 | [app-registry.md](./features/07-app-registry.md) | Pre-indexed app launcher (Raycast/Alfred style). Disk cache + in-memory HashMap + fuzzy match. ~1ms per command |
+| 08 | [voice-enrollment.md](./features/08-voice-enrollment.md) | Speaker verification: 5 enrollment clips, sherpa-onnx embeddings, cosine similarity, wake variants, sound-alikes |
+| 09 | [audio-pipeline.md](./features/09-audio-pipeline.md) | Complete local audio chain: ScriptProcessorNode capture → Silero VAD → faster-whisper STT (127.0.0.1) → Web Speech API TTS |
+| 10 | [window-overlay.md](./features/10-window-overlay.md) | Transparent, frameless, always-on-top orb. Region-aware click-through. Bottom-center positioning. Slide animation. macOS accessory app |
+| 11 | [system-tray.md](./features/11-system-tray.md) | Tray menu: show, pause/resume, settings, quit. Autostart. Single instance. Deep-link forwarding |
+
+### Credentials (How API keys, OAuth, and device tokens work)
+
+| # | Document | Description |
+|---|----------|-------------|
+| 01 | [credential-architecture.md](./credentials/01-credential-architecture.md) | Master doc: 3 credential types (OAuth tokens, API keys, device tokens), where secrets live, credential flow at request time, security properties |
+| 02 | [oauth-flow.md](./credentials/02-oauth-flow.md) | OAuth2 PKCE flow step-by-step for Google + GitHub. Token exchange, refresh, disconnect. Scopes requested |
+| 03 | [api-keys.md](./credentials/03-api-keys.md) | API key management: add/remove/list endpoints. Fernet encryption at rest. How keys are used at request time. Google API keys vs OAuth |
+| 04 | [google-integrations.md](./credentials/04-google-integrations.md) | Which Google APIs NEXUS uses, how each is authenticated (OAuth vs API key), scopes, quotas, setup instructions |
+| 05 | [github-integration.md](./credentials/05-github-integration.md) | GitHub OAuth flow, scopes (repo read:org workflow), token characteristics, what NEXUS can do with GitHub |
+| 06 | [device-registration.md](./credentials/06-device-registration.md) | Device registration and validation. Database schema. Local config. Future hardening plans |
+| 07 | [security-best-practices.md](./credentials/07-security-best-practices.md) | Threat model, secret hygiene rules, production deployment checklist, incident response (if secrets exposed), text-only protocol as security property |
+| 08 | [setup-page-guide.md](./credentials/08-setup-page-guide.md) | UI walkthrough of the setup page: server config, Google/GitHub OAuth, API keys, voice enrollment, save & continue |
+
+### Changes (What changed and why, per commit)
+
+| # | Document | Description |
+|---|----------|-------------|
+| — | [CHANGELOG.md](./changes/CHANGELOG.md) | All commits in reverse chronological order, organized by feature area |
+| 01 | [browser-suppression.md](./changes/01-browser-suppression.md) | Disabled Windows restartable apps + removed Edge auto-launch (no browser on boot) |
+| 02 | [non-blocking-sidecar.md](./changes/02-non-blocking-sidecar.md) | Moved sidecar spawn to background thread (5s → 0.2s to orb visible) |
+| 03 | [boot-greeting.md](./changes/03-boot-greeting.md) | "Hello sir" greeting on fresh boot (uptime < 15 min) |
+| 04 | [sleep-wake-detection.md](./changes/04-sleep-wake-detection.md) | Wall-clock time-jump detection for sleep/wake greeting |
+| 05 | [mic-permission-handler.md](./changes/05-mic-permission-handler.md) | WebView2 permission handler (no more mic prompt on restart) |
+| 06 | [sidecar-port-change.md](./changes/06-sidecar-port-change.md) | Port 8443 → 49152 (IANA dynamic range, no dev conflicts) |
+| 07 | [silent-sidecar.md](./changes/07-silent-sidecar.md) | pythonw.exe instead of python.exe (no terminal window) |
+| 08 | [connection-restart-fix.md](./changes/08-connection-restart-fix.md) | 3 root causes of "connection not found" on restart fixed |
+| 09 | [frontend-embedding.md](./changes/09-frontend-embedding.md) | Frontend not embedded in .exe (ERR_CONNECTION_REFUSED) fixed |
+| 10 | [auto-spawn-sidecar.md](./changes/10-auto-spawn-sidecar.md) | Sidecar auto-spawns on NEXUS startup |
+| 11 | [tier3-commands.md](./changes/11-tier3-commands.md) | Acoustic command classifiers (skip STT, ~200ms latency) |
+| 12 | [expanded-commands.md](./changes/12-expanded-commands.md) | 39 commands (30 fixed + 9 parameterized) |
+| 13 | [colab-training.md](./changes/13-colab-training.md) | Colab notebook fixes (melspectrogram path, disk cleanup, Drive checkpointing, download retries) |
+| 14 | [meeting-privacy-mode.md](./changes/14-meeting-privacy-mode.md) | Meeting detection + wake/TTS suppression |
+| 15 | [oww-kws.md](./changes/15-oww-kws.md) | Migrated from VAD+ASR (~30% recall) to openWakeWord KWS (~100% recall) |
+| 16 | [tts-fixes.md](./changes/16-tts-fixes.md) | Removed comma pause in "Didn't catch that sir" TTS |
+
+### Wake Word Detection (Detailed Deep Dive)
+
+The wake word system went through a major architectural change. These 20 documents explain the full journey: research, decision-making, old approach, new approach, training, validation, and every component in detail.
 
 #### Research & Decisions
 
 | # | Document | Description |
 |---|----------|-------------|
-| 01 | [wake-word-research.md](./wake-word/01-wake-word-research.md) | Research into how Alexa, Google, Siri, and open-source projects do wake word detection (2024-2026 data) |
-| 02 | [wake-word-architecture-decision.md](./wake-word/02-wake-word-architecture-decision.md) | Why we chose openWakeWord over VAD+ASR, Porcupine, and other options — with comparison tables |
+| 01 | [wake-word-research.md](./wake-word/01-wake-word-research.md) | Research into how Alexa, Google, Siri, and open-source projects do wake word detection |
+| 02 | [wake-word-architecture-decision.md](./wake-word/02-wake-word-architecture-decision.md) | Why we chose openWakeWord over VAD+ASR, Porcupine, and other options |
 
 #### Old Approach (Deprecated)
 
 | # | Document | Description |
 |---|----------|-------------|
-| 03 | [vad-asr-old-approach.md](./wake-word/03-vad-asr-old-approach.md) | Detailed explanation of the original VAD + ASR pipeline and why it failed |
+| 03 | [vad-asr-old-approach.md](./wake-word/03-vad-asr-old-approach.md) | The original VAD + ASR pipeline and why it failed |
 
 #### New Approach (Current)
 
 | # | Document | Description |
 |---|----------|-------------|
-| 04 | [oww-kws-new-approach.md](./wake-word/04-oww-kws-new-approach.md) | Detailed explanation of the new openWakeWord KWS pipeline |
-| 05 | [oww-3-stage-pipeline.md](./wake-word/05-oww-3-stage-pipeline.md) | Deep dive: melspectrogram → embedding → classifier (the 3-stage ONNX pipeline) |
+| 04 | [oww-kws-new-approach.md](./wake-word/04-oww-kns-new-approach.md) | The new openWakeWord KWS pipeline |
+| 05 | [oww-3-stage-pipeline.md](./wake-word/05-oww-3-stage-pipeline.md) | Deep dive: melspectrogram → embedding → classifier |
 
 #### Model Training & Validation
 
 | # | Document | Description |
 |---|----------|-------------|
-| 06 | [model-training.md](./wake-word/06-model-training.md) | How the custom "nexus" ONNX model was trained (Colab notebook, Piper TTS, synthetic data, full hyperparameters) |
-| 13 | [colab-training-notebook.md](./wake-word/13-colab-training-notebook.md) | Cell-by-cell breakdown of `train_nexus_oww.ipynb` — what each cell does, why, and what it produces |
-| 14 | [model-validation-results.md](./wake-word/14-model-validation-results.md) | Runtime validation results from 2026-08-19 — all tests passed, 7/7 detections, 0 false positives |
+| 06 | [model-training.md](./wake-word/06-model-training.md) | How the custom "nexus" ONNX model was trained |
+| 13 | [colab-training-notebook.md](./wake-word/13-colab-training-notebook.md) | Cell-by-cell breakdown of the training notebook |
+| 14 | [model-validation-results.md](./wake-word/14-model-validation-results.md) | Runtime validation results — 7/7 detections, 0 false positives |
 
 #### Speaker & Variants
 
 | # | Document | Description |
 |---|----------|-------------|
-| 07 | [speaker-verification.md](./wake-word/07-speaker-verification.md) | Voice profile system: speaker embeddings, enrollment, verification, threshold calibration |
-| 08 | [wake-variants-soundalikes.md](./wake-word/08-wake-variants-soundalikes.md) | The wake_variants + sound_alikes system for pronunciation tolerance |
+| 07 | [speaker-verification.md](./wake-word/07-speaker-verification.md) | Voice profile system: embeddings, enrollment, verification |
+| 08 | [wake-variants-soundalikes.md](./wake-word/08-wake-variants-soundalikes.md) | Wake variants + sound-alikes for pronunciation tolerance |
 
 #### Implementation
 
 | # | Document | Description |
 |---|----------|-------------|
 | 09 | [audio-pipeline.md](./wake-word/09-audio-pipeline.md) | Audio capture: cpal, downmixing, resampling, chunking |
-| 10 | [rust-integration.md](./wake-word/10-rust-integration.md) | Rust integration: tract-onnx, Cargo features, module wiring, feature flags |
+| 10 | [rust-integration.md](./wake-word/10-rust-integration.md) | Rust integration: tract-onnx, Cargo features, module wiring |
 
 #### Testing & Performance
 
 | # | Document | Description |
 |---|----------|-------------|
 | 11 | [testing-strategy.md](./wake-word/11-testing-strategy.md) | Test plan: what to verify, how to test, expected results |
-| 12 | [performance-expectations.md](./wake-word/12-performance-expectations.md) | Performance: RAM, CPU, latency comparisons between old and new approaches |
+| 12 | [performance-expectations.md](./wake-word/12-performance-expectations.md) | Performance: RAM, CPU, latency comparisons |
 
-#### Tier 3: Direct Command Classification (Skip ASR)
-
-Tier 3 extends the OWW pipeline to detect spoken commands directly from
-audio — no Whisper, no transcript, no 27-second delay. When a command
-classifier fires, NEXUS executes the action in ~200ms.
+#### Tier 3: Direct Command Classification
 
 | # | Document | Description |
 |---|----------|-------------|
-| 15 | [tier3-command-classifiers.md](./wake-word/15-tier3-command-classifiers.md) | Tier 3 architecture: how command classifiers work, integration plan, safety |
-| 16 | [tier3-decision-comparison.md](./wake-word/16-tier3-decision-comparison.md) | All 6 options considered for latency reduction, comparison matrix, why OWW classifiers were chosen |
-| 17 | [tier3-resource-analysis.md](./wake-word/17-tier3-resource-analysis.md) | Measured RAM/CPU/latency breakdown, projected usage after Tier 3, GPU considerations |
-| 18 | [tier3-training-approach.md](./wake-word/18-tier3-training-approach.md) | 4 training approaches compared, why per-command OWW classifiers + Colab was chosen |
-| 19 | [tier3-testing-strategy.md](./wake-word/19-tier3-testing-strategy.md) | Test plan for Tier 3: functional, latency, false positive, cross-command, fallback, resource |
+| 15 | [tier3-command-classifiers.md](./wake-word/15-tier3-command-classifiers.md) | Tier 3 architecture: how command classifiers work |
+| 16 | [tier3-decision-comparison.md](./wake-word/16-tier3-decision-comparison.md) | All 6 options considered for latency reduction |
+| 17 | [tier3-resource-analysis.md](./wake-word/17-tier3-resource-analysis.md) | Measured RAM/CPU/latency breakdown |
+| 18 | [tier3-training-approach.md](./wake-word/18-tier3-training-approach.md) | 4 training approaches compared |
+| 19 | [tier3-testing-strategy.md](./wake-word/19-tier3-testing-strategy.md) | Test plan for Tier 3 |
+| 20 | [expanded-command-system.md](./wake-word/20-expanded-command-system.md) | The 39-command system |
 
-### Document Reading Order
+### Meeting Protection
 
-If you're new to the project, read in this order:
+| # | Document | Description |
+|---|----------|-------------|
+| 01 | [meeting-detection.md](./meeting-protection/01-meeting-detection.md) | Meeting detection architecture and implementation |
 
-1. **01-wake-word-research.md** — understand the landscape
-2. **02-wake-word-architecture-decision.md** — understand why we chose this path
-3. **03-vad-asr-old-approach.md** — understand what we had before
-4. **04-oww-kws-new-approach.md** — understand what we have now
-5. **05-oww-3-stage-pipeline.md** — understand how the model works internally
-6. **06-model-training.md** — understand how the model was created
-7. **13-colab-training-notebook.md** — understand the training notebook in detail
-8. **14-model-validation-results.md** — see the validation test results
-9. **16-tier3-decision-comparison.md** — understand the latency problem and all options
-10. **15-tier3-command-classifiers.md** — understand the Tier 3 solution
-11. **17-tier3-resource-analysis.md** — see the resource measurements
-12. **18-tier3-training-approach.md** — understand the training approach
-13. **19-tier3-testing-strategy.md** — see the test plan
-14. The rest can be read in any order
+### Top-Level Docs
+
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Original principal architecture & implementation specification |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) | Server deployment guide |
 
 ---
 
 ## Quick Reference
+
+### Architecture Comparison
 
 | Aspect | Old (VAD+ASR) | New (openWakeWord KWS) | Tier 3 (Command Classifiers) |
 |--------|---------------|------------------------|------------------------------|
@@ -113,31 +172,30 @@ If you're new to the project, read in this order:
 | Latency | 500-1000ms | ~80ms (wake) | **~200ms (command → action)** |
 | Command latency | 27,000ms (Whisper base) | 27,000ms (still uses Whisper) | **~200ms (skips Whisper entirely)** |
 | RAM | ~143 MB | ~30-50 MB | **~5 MB per command** (shared features) |
-| Background noise | Poor | Robust | Robust (same pipeline) |
-| Start of word | Clipped by VAD | Never missed | Never missed |
-| Custom wake word | Text matching only | Trained acoustic model | Trained per command |
-| Rust runtime | sherpa-onnx (native) | tract-onnx (pure Rust) | tract-onnx (pure Rust, same pipeline) |
-| Model file | N/A | nexus.onnx (772 KB) | ~800 KB per command |
 | False positives | Frequent | 0 observed | Controlled by threshold + negatives |
-| STT fallback | N/A | Always used | **Only for unknown commands** |
 
----
-
-## Model Files
+### Model Files
 
 | File | Size | Role |
 |------|------|------|
 | `src-tauri/resources/oww/nexus.onnx` | 790 KB | Custom trained wake word classifier |
 | `src-tauri/resources/oww/melspectrogram.onnx` | 1.1 MB | Pre-trained mel spectrogram extractor |
 | `src-tauri/resources/oww/embedding_model.onnx` | 1.3 MB | Pre-trained embedding extractor |
-| `src-tauri/resources/oww/commands/*.onnx` | ~800 KB each | Tier 3 command classifiers (trained via Colab) |
-| `src-tauri/resources/oww/commands/command_intents.json` | — | Intent mapping for command classifiers |
-| `train_nexus_oww.ipynb` | — | Wake word training notebook (run in Google Colab) |
-| `train_nexus_commands.ipynb` | — | Command classifier training notebook (run in Google Colab) |
+| `src-tauri/resources/oww/commands/*.onnx` | ~800 KB each | Tier 3 command classifiers |
+| `command_intents.json` | — | Intent mapping for command classifiers |
+| `train_nexus_oww.ipynb` | — | Wake word training notebook (Colab) |
+| `train_nexus_commands.ipynb` | — | Command classifier training notebook (Colab) |
 
----
+### Ports
 
-## Current Status (2026-08-19)
+| Port | Service |
+|------|---------|
+| 49152 | Python sidecar (FastAPI) |
+| 8000 | Local STT server (faster-whisper) |
+| 5678 | n8n (on the server) |
+| 11434 | Ollama (on the server) |
+
+### Current Status (2026-08-19)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
@@ -151,7 +209,13 @@ If you're new to the project, read in this order:
 | Tier 3: Command classifiers (Rust) | IMPLEMENTED | Multi-classifier support in wakeword_oww.rs |
 | Tier 3: Command event listener (frontend) | IMPLEMENTED | main.tsx listens for command-detected events |
 | Tier 3: Training notebook | CREATED | train_nexus_commands.ipynb (run in Colab) |
-| Tier 3: Command models | PENDING | Need to run Colab notebook to train 10 models |
+| Tier 3: Command models | PENDING | Need to run Colab notebook to train 39 models |
 | Tier 3: Testing | PENDING | Need trained models first, then run test plan |
-| Extended testing | PENDING | Multi-speaker, noise, long-running |
+| Meeting/privacy mode | IMPLEMENTED | WASAPI + process detection, 4-layer suppression |
+| Boot greeting | IMPLEMENTED | Fresh boot + sleep/wake, non-blocking |
+| Sidecar auto-spawn | IMPLEMENTED | pythonw.exe, port 49152, non-blocking |
+| Mic permission handler | IMPLEMENTED | WebView2 auto-allow for NEXUS origins |
+| App registry | IMPLEMENTED | Pre-indexed, ~1ms per command |
+| Browser suppression | IMPLEMENTED | RestartApps=0, Edge auto-launch removed |
+| Extended testing | PENDING | Multi-speaker, noise, long-running, real reboot |
 | Installer | NOT STARTED | Deferred until all testing complete |
