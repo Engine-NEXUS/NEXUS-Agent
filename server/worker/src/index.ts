@@ -370,15 +370,16 @@ function parsePRRequest(transcript: string): { prNumber: number | null; repoName
   const prNumMatch = tLower.match(/(?:pr|pull\s*request)\s*#?\s*(\d+)/);
   const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
 
-  // "in zync", "of zync", "in owner/repo", "from owner/repo"
+  // "in zync", "of zync", "in owner/repo", "from owner/repo",
+  // "in ledger ai", "in ledger-ai" — support multi-word repo names
   // Exclude "of PR" and "of pull" — those are not repo names
   // Also exclude common English words that follow "of/in/from"
-  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+)/);
+  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
   if (!repoMatch || !repoMatch[1]) {
     return { prNumber, repoName: null };
   }
   // Extract from original transcript to preserve case
-  const repoLower = repoMatch[1];
+  const repoLower = repoMatch[1].trim();
   const idx = tLower.indexOf(repoLower);
   const repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
 
@@ -407,7 +408,8 @@ async function resolveRepo(token: string, repoName: string | null): Promise<stri
     );
     if (!resp.ok) return null;
     const repos = await resp.json() as Array<Record<string, unknown>>;
-    const target = repoName.toLowerCase();
+    // Normalize: "ledger ai" → "ledger-ai" for matching (GitHub repos use hyphens)
+    const target = repoName.toLowerCase().replace(/\s+/g, "-");
 
     // 1. Try exact match first
     const exact = repos.find(r => (r["name"] as string)?.toLowerCase() === target);
@@ -733,11 +735,16 @@ ${context}
       return `I fetched PR #${actualPrNumber} in ${repo} but couldn't generate an analysis. The PR has ${(context.match(/---/g) || []).length} changed files. Try asking a more specific question about it.`;
     }
 
+    // Prefix with the resolved repo name so the user sees what NEXUS understood
+    // (e.g. "PR #63 in ledger-ai" instead of the misheard "lageria")
+    const repoShort = repo.includes("/") ? repo.split("/")[1] : repo;
+    const understoodPrefix = `PR #${actualPrNumber} in ${repoShort}\n\n`;
+
     // Prefix deep reviews so the user knows which model was used
     if (useDeepModel) {
-      return `[${modelLabel}] ${analysis}`;
+      return `${understoodPrefix}[${modelLabel}] ${analysis}`;
     }
-    return analysis;
+    return `${understoodPrefix}${analysis}`;
   } catch (err) {
     return `I had trouble analysing the PR. Error: ${(err as Error).message}`;
   }
