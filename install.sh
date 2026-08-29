@@ -18,8 +18,13 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# 1. Check tools
-echo -e "${CYAN}==> [1/4] Checking build environment...${NC}"
+# 1. Stop any currently running instance
+echo -e "${CYAN}==> [1/5] Stopping previous NEXUS instances...${NC}"
+pkill -f "/nexus" || true
+sleep 1
+
+# 2. Check tools
+echo -e "${CYAN}==> [2/5] Checking build environment...${NC}"
 if ! command -v node &> /dev/null; then
   echo -e "${RED}Error: Node.js is not installed. Please install Node.js (v18+).${NC}"
   exit 1
@@ -29,7 +34,7 @@ if ! command -v cargo &> /dev/null; then
   exit 1
 fi
 
-# 2. Check Linux dependencies
+# 3. Check Linux dependencies
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
   if command -v apt-get &> /dev/null; then
     MISSING_PKGS=()
@@ -45,19 +50,19 @@ if [[ "$OSTYPE" == "linux-gnu"* ]]; then
   fi
 fi
 
-# 3. Build frontend
-echo -e "${CYAN}==> [2/4] Building UI assets...${NC}"
+# 4. Build frontend
+echo -e "${CYAN}==> [3/5] Building UI assets...${NC}"
 npm --prefix frontend install
 npm --prefix frontend run build
 
-# 4. Build release binary
-echo -e "${CYAN}==> [3/4] Compiling NEXUS release binary...${NC}"
+# 5. Build release binary
+echo -e "${CYAN}==> [4/5] Compiling NEXUS release binary...${NC}"
 cd src-tauri
 cargo build --release --features custom-protocol
 cd ..
 
-# 5. Create Desktop Launcher & CLI Symlink
-echo -e "${CYAN}==> [4/4] Setting up launcher and commands...${NC}"
+# 6. Create Desktop Launcher & CLI Symlink
+echo -e "${CYAN}==> [5/5] Setting up launcher and commands...${NC}"
 mkdir -p ~/.local/bin ~/.local/share/applications
 ln -sf "$SCRIPT_DIR/src-tauri/target/release/nexus" ~/.local/bin/nexus
 
@@ -85,4 +90,5 @@ echo -e "• Wake Word: \"NEXUS\""
 echo -e "${GREEN}═════════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "${CYAN}Launching NEXUS Setup Wizard...${NC}"
-nohup "$SCRIPT_DIR/src-tauri/target/release/nexus" > /dev/null 2>&1 &
+nohup "$SCRIPT_DIR/src-tauri/target/release/nexus" --setup > /dev/null 2>&1 &
+echo -e "${GREEN}Done! The Setup Wizard is now open on your screen.${NC}"

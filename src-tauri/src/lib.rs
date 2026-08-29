@@ -472,9 +472,11 @@ pub fn run() {
             //   - Installer override: set NEXUS_SERVER_URL env var before building
             //     the installer to bake in the user's remote server URL.
             let store_path = app.path().app_data_dir().ok();
+            let mut should_open_setup = std::env::args().any(|arg| arg == "--setup" || arg == "-s");
             if let Some(dir) = store_path {
                 let config_path = dir.join("nexus-config.json");
                 if !config_path.exists() {
+                    should_open_setup = true;
                     let user_id = format!("user_{}", uuid::Uuid::new_v4().simple());
                     let device_id = format!("device_{}", uuid::Uuid::new_v4().simple());
                     let server_url = option_env!("NEXUS_SERVER_URL")
@@ -490,6 +492,13 @@ pub fn run() {
                         "auto-created config at {:?} — user={}, device={}, server={}",
                         config_path, user_id, device_id, server_url
                     );
+                }
+            }
+
+            if should_open_setup {
+                if let Some(win) = app.get_webview_window("setup") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
                 }
             }
 
