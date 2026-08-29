@@ -15,6 +15,17 @@ export interface VoiceOption {
 
 export const CURATED_VOICES: VoiceOption[] = [
   {
+    id: "ethan",
+    name: "Ethan (Fish Audio)",
+    provider: "fish_audio",
+    accent: "Conversational (US)",
+    description: "Ultra-realistic male voice powered by Fish Audio s2.1-pro model.",
+    fishModelId: "536d3a5e000945adb7038665781a4aca",
+    locale: "en-US",
+    gender: "male",
+    sampleText: "Hello sir. I'm Ethan, running on Fish Audio s2.1-pro.",
+  },
+  {
     id: "jarvis",
     name: "Jarvis",
     provider: "neural",
@@ -314,6 +325,51 @@ async function playElevenLabs(
 }
 
 /**
+ * Stream speech from Fish Audio API (s2.1-pro model).
+ */
+export async function playFishAudio(
+  text: string,
+  referenceId: string,
+  apiKey: string,
+  onEnd?: () => void,
+): Promise<void> {
+  stopTts();
+  void emitTtsEvent("tts-started");
+
+  try {
+    const response = await fetch("https://api.fish.audio/v1/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        text,
+        reference_id: referenceId,
+        format: "mp3",
+        latency: "normal",
+        model: "s2.1-pro",
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Fish Audio API error: ${response.status} ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    return playAudioUrl(blobUrl, () => {
+      URL.revokeObjectURL(blobUrl);
+      onEnd?.();
+    });
+  } catch (err) {
+    console.warn("[TTS] Fish Audio API failed, falling back to WebSpeech:", err);
+    const fallbackVoice = CURATED_VOICES.find((v) => v.fishModelId === referenceId) || CURATED_VOICES[0];
+    return playWebSpeech(text, fallbackVoice, onEnd);
+  }
+}
+
+/**
  * Preview / test a voice sample instantly (from Setup Wizard or Settings).
  */
 export async function previewVoice(
@@ -322,6 +378,15 @@ export async function previewVoice(
   onEnd?: () => void,
 ): Promise<void> {
   stopTts();
+
+  const settings = await getSavedSettings();
+
+  if (voice.provider === "fish_audio" && voice.fishModelId) {
+    const apiKey = customApiKey || settings?.fishAudioApiKey;
+    if (apiKey) {
+      return playFishAudio(voice.sampleText, voice.fishModelId, apiKey, onEnd);
+    }
+  }
 
   if (customApiKey && voice.elevenVoiceId) {
     return playElevenLabs(voice.sampleText, voice.elevenVoiceId, customApiKey, onEnd);
@@ -343,10 +408,15 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
   }
 
   const settings = await getSavedSettings();
-  const voiceId = settings?.ttsVoice || "jarvis";
+  const voiceId = settings?.ttsVoice || "ethan";
   const elevenKey = settings?.elevenlabsApiKey;
+  const fishKey = settings?.fishAudioApiKey;
 
   const curated = CURATED_VOICES.find((v) => v.id === voiceId) || CURATED_VOICES[0];
+
+  if (curated?.fishModelId && fishKey) {
+    return playFishAudio(text, curated.fishModelId, fishKey, onEnd);
+  }
 
   if (elevenKey && curated?.elevenVoiceId) {
     return playElevenLabs(text, curated.elevenVoiceId, elevenKey, onEnd);
