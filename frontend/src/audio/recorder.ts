@@ -92,8 +92,9 @@ function correctSttTranscript(transcript: string): string {
   let t = transcript;
   const logFixes: string[] = [];
 
-  // Fix "analyse" mishearings: "unless", "analyze" (without s), "and let's"
-  // These are common when the user says "analyse" but STT mishears it
+  // Fix "analyse" mishearings: "unless", "analyze", "and let's", "anlsys",
+  // "anlyss", "anlys", "anlss", "analis", "analys" (without trailing e)
+  // tiny.en often drops or garbles the "analyse" word
   if (/^unless\b/i.test(t)) {
     t = t.replace(/^unless\b/i, "analyse");
     logFixes.push("unless→analyse");
@@ -106,6 +107,26 @@ function correctSttTranscript(transcript: string): string {
     t = t.replace(/^and let's\b/i, "analyse");
     logFixes.push("and let's→analyse");
   }
+  // "anlsys", "anlyss", "anlys", "anlss", "analis" → "analyse"
+  if (/^an(?:l|n)?s[yi]?s\b/i.test(t)) {
+    t = t.replace(/^an(?:l|n)?s[yi]?s\b/i, "analyse");
+    logFixes.push("anlsys→analyse");
+  }
+  // "analys" without trailing "e" → "analyse"
+  if (/^analys\b/i.test(t) && !/^analyse\b/i.test(t)) {
+    t = t.replace(/^analys\b/i, "analyse");
+    logFixes.push("analys→analyse");
+  }
+  // "check the PR" / "check PR" → "analyse PR" (user says "check" meaning "analyse")
+  if (/^check\s+(?:the\s+)?pr\b/i.test(t)) {
+    t = t.replace(/^check\s+(?:the\s+)?pr\b/i, "analyse PR");
+    logFixes.push("check→analyse");
+  }
+  // "review the PR" / "review PR" → "analyse PR"
+  if (/^review\s+(?:the\s+)?pr\b/i.test(t)) {
+    t = t.replace(/^review\s+(?:the\s+)?pr\b/i, "analyse PR");
+    logFixes.push("review→analyse");
+  }
 
   // Fix "PR" mishearings: "pf", "p r", "pe" when followed by a number
   // "pf5" → "PR 5", "p r 5" → "PR 5", "pe5" → "PR 5"
@@ -115,12 +136,30 @@ function correctSttTranscript(transcript: string): string {
   // "pr5" → "PR 5" (no space)
   t = t.replace(/\bpr(\d+)\b/gi, "PR $1");
 
-  // Fix "servx" mishearings: "cervix", "service", "weeks", "serve x", "ser fixes"
-  // These are common phonetic mishearings of "servx"
-  // Only fix when preceded by "in" (context: "in servx")
-  t = t.replace(/\bin\s+(?:cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks)\b/gi, " in servx");
-  // Also fix "of servx" and "from servx"
-  t = t.replace(/\b(?:of|from)\s+(?:cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks)\b/gi, (m, _g) => m.replace(/cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks/i, "servx"));
+  // Fix known repo name mishearings.
+  // tiny.en (39M params) struggles with multi-word and hyphenated repo names.
+  // This map covers common phonetic mishearings for the user's repos.
+  // The Worker also does fuzzy matching, but fixing client-side means the
+  // user sees the corrected name in the orb/sidebar instead of the misheard one.
+  const repoCorrections: Array<[RegExp, string]> = [
+    // "ledger ai" mishearings: "lageria", "ledger a", "ledger i", "ledgeria", "leg daria"
+    [/\b(?:in|of|from)\s+(lageria|ledgeria|ledger\s*a|ledger\s*i|leg\s*daria|lager\s*ai|ledger\s*are)\b/gi, " in ledger-ai"],
+    // "servx" mishearings (existing)
+    [/\b(?:in|of|from)\s+(?:cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks)\b/gi, " in servx"],
+    // "zync" mishearings: "zinc", "sink", "sync", "zinck"
+    [/\b(?:in|of|from)\s+(zinc|sink|sync|zinck|zin)\b/gi, " in zync"],
+    // "nexus" mishearings: "nexus", "nexa", "nexis", "nexus agent"
+    [/\b(?:in|of|from)\s+(nexa|nexis|nexus\s*agent)\b/gi, " in nexus"],
+  ];
+  for (const [pattern, replacement] of repoCorrections) {
+    const before = t;
+    t = t.replace(pattern, replacement);
+    if (t !== before) {
+      // Extract the repo name from the replacement for logging
+      const repoName = replacement.trim().replace(/^(?:in|of|from)\s+/, "");
+      logFixes.push(`repo→${repoName}`);
+    }
+  }
 
   if (logFixes.length > 0 || t !== transcript) {
     console.log(`[NEXUS] STT correction: "${transcript}" → "${t}"`);
