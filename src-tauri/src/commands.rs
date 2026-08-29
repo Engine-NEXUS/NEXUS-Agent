@@ -95,6 +95,7 @@ pub fn save_server_config<R: Runtime>(
 
 /// Serialized server config returned by `get_server_config`.
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerConfig {
     pub server_url: String,
     pub user_id: String,
