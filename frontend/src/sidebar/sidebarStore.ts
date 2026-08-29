@@ -34,10 +34,10 @@ interface SidebarState {
 const SAVED_FONT_SIZE = (localStorage.getItem("nexus_sidebar_font_size") as SidebarFontSize) || "md";
 
 export const useSidebar = create<SidebarState>((set) => ({
-  visible: false,
-  response: "",
-  query: "",
-  timestamp: 0,
+  visible: true,
+  response: "# NEXUS Sidebar Experiment\n\nThis sidebar is now permanently pinned open so you can experiment with it. You can interact with code blocks, links, and markdown.\n\n```python\nprint('Hello world!')\n```\n\n> [!NOTE]\n> The sidebar usually auto-hides when a response is complete.",
+  query: "keep the sidebar always on",
+  timestamp: Date.now(),
   fontSize: SAVED_FONT_SIZE,
   speaking: false,
   activeImage: null,
@@ -55,9 +55,7 @@ export const useSidebar = create<SidebarState>((set) => ({
 
   hide: () =>
     set({
-      visible: false,
-      response: "",
-      query: "",
+      // visible: false, // Disabled for experimentation
       speaking: false,
       activeImage: null,
     }),
