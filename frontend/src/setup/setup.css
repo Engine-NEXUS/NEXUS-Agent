@@ -1,0 +1,257 @@
+/* ULTRON Setup page styles */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0f1117;
+  color: #e7ecff;
+  -webkit-font-smoothing: antialiased;
+}
+
+.setup-root {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+  min-height: 100%;
+}
+
+.setup-header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.setup-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  background: linear-gradient(135deg, #6aa8ff, #a855f7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.setup-header p {
+  font-size: 13px;
+  color: #8892b0;
+  margin-top: 6px;
+}
+
+.setup-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #fca5a5;
+  margin-bottom: 20px;
+}
+
+.setup-section {
+  margin-bottom: 24px;
+}
+
+.setup-section h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #a8b3cf;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
+}
+
+.setup-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.setup-label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #8892b0;
+  margin-bottom: 12px;
+}
+
+.setup-label--small {
+  flex: 1;
+}
+
+.setup-label input {
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: #1a1d28;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  color: #e7ecff;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.setup-label input:focus {
+  border-color: #6aa8ff;
+}
+
+.setup-row {
+  display: flex;
+  gap: 12px;
+}
+
+.setup-provider {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  background: #1a1d28;
+  border: 1px solid #2a2f3e;
+  border-radius: 12px;
+}
+
+.setup-provider-info p {
+  font-size: 12px;
+  color: #8892b0;
+  margin-top: 2px;
+}
+
+.setup-connected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.setup-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.setup-badge--ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.setup-btn {
+  padding: 8px 18px;
+  background: #2a2f3e;
+  border: 1px solid #3a4053;
+  border-radius: 8px;
+  color: #e7ecff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.setup-btn:hover:not(:disabled) {
+  background: #353b4d;
+  border-color: #6aa8ff;
+}
+
+.setup-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.setup-btn--small {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.setup-btn--primary {
+  width: 100%;
+  padding: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #6aa8ff, #a855f7);
+  border: none;
+  color: white;
+}
+
+.setup-btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.setup-btn--danger {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.setup-btn--danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.setup-hint {
+  font-size: 12px;
+  color: #8892b0;
+  margin-bottom: 12px;
+}
+
+.setup-apikey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.setup-apikey-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #1a1d28;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+}
+
+.setup-apikey-add {
+  display: flex;
+  gap: 8px;
+}
+
+.setup-apikey-add input {
+  flex: 1;
+  padding: 9px 12px;
+  background: #1a1d28;
+  border: 1px solid #2a2f3e;
+  border-radius: 8px;
+  color: #e7ecff;
+  font-size: 13px;
+  outline: none;
+}
+
+.setup-apikey-add input:focus {
+  border-color: #6aa8ff;
+}
+
+.setup-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 20px;
+  background: rgba(15, 17, 23, 0.95);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid #2a2f3e;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.setup-saved {
+  color: #4ade80;
+  font-size: 13px;
+  font-weight: 600;
+}

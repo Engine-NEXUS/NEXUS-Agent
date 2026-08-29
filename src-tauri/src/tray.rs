@@ -26,8 +26,10 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                 }
             }
             "settings" => {
-                if let Some(w) = app.get_webview_window("main") {
+                if let Some(w) = app.get_webview_window("setup") {
                     let _ = w.show();
+                    let _ = w.set_focus();
+                } else {
                     let _ = app.emit("assistant:settings", ());
                 }
             }

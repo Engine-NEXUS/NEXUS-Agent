@@ -1,7 +1,8 @@
 //! Ultron — Tauri v2 main process.
 //!
 //! Wires up: window manager (click-through), global hotkey, autostart, tray,
-//! wake-word engine, and the WSS network bridge that proxies server events to the frontend.
+//! wake-word engine, the WSS network bridge, deep-link (OAuth redirects),
+//! and window positioning (bottom-center sidebar).
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -10,9 +11,12 @@ mod hotkey;
 mod wakeword;
 mod network;
 mod tray;
+mod commands;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_positioner::{Position, WindowExt};
 use tracing_subscriber::EnvFilter;
 
 /// Shared app state held across async tasks.
@@ -28,8 +32,12 @@ pub fn run() {
         .init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Focus the existing window if a second instance is attempted.
+            // Also handle deep-link redirects on Windows/Linux (passed as CLI arg).
+            if let Some(url) = args.iter().find(|a| a.starts_with("ultron://")) {
+                let _ = app.emit("deep-link://oauth-callback", url.clone());
+            }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.set_focus();
@@ -42,12 +50,19 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_positioner::init())
         .setup(|app| {
             // macOS: hide from the Dock and Cmd+Tab switcher (accessory/background app).
-            // LSUIElement in Info.plist handles this when launched via Finder, but
-            // set_activation_policy is the reliable runtime approach and covers dev mode.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Register the ultron:// deep-link scheme (Windows + Linux runtime registration).
+            // macOS uses Info.plist CFBundleURLTypes (already configured).
+            #[cfg(desktop)]
+            {
+                let _ = app.deep_link().register("ultron");
+            }
 
             // Autostart on by default.
             let autostart = app.autolaunch();
@@ -58,6 +73,11 @@ pub fn run() {
 
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
+
+            // Position the main window at bottom-center.
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.move_window(Position::BottomCenter);
+            }
 
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
@@ -78,6 +98,31 @@ pub fn run() {
                 }
             });
 
+            // Listen for deep-link events (macOS emits these; Windows/Linux use single-instance).
+            let handle = app.handle().clone();
+            let _ = app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let url_str = url.as_str();
+                    if url_str.starts_with("ultron://oauth/") {
+                        let _ = handle.emit("deep-link://oauth-callback", url_str);
+                    }
+                }
+            });
+
+            // Check if this is first launch (no server URL configured) → show setup.
+            let store_path = app.path().app_data_dir().ok();
+            let needs_setup = if let Some(dir) = store_path {
+                !dir.join("ultron-config.json").exists()
+            } else {
+                true
+            };
+            if needs_setup {
+                if let Some(setup_win) = app.get_webview_window("setup") {
+                    let _ = setup_win.show();
+                    let _ = setup_win.set_focus();
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +132,9 @@ pub fn run() {
             network::end_audio,
             network::cancel_session,
             network::close_session,
+            commands::open_setup_window,
+            commands::close_setup_window,
+            commands::save_server_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ultron application");
