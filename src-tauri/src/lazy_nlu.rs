@@ -74,6 +74,69 @@ fn is_nlu_responsive() -> bool {
     .is_ok()
 }
 
+/// Find a working Python interpreter.
+///
+/// Search order:
+/// 1. `python`, `python3`, `py` on PATH (fast, works if PATH is updated)
+/// 2. Windows registry: HKCU/HKLM PythonCore\3.12\InstallPath, 3.11, 3.10
+/// 3. Common per-user install: %LOCALAPPDATA%\Programs\Python\Python3XX\python.exe
+///
+/// This is needed because the NSIS installer installs Python with
+/// PrependPath=1, but the PATH update doesn't reach processes spawned
+/// from the installer process (the app is launched immediately after).
+fn find_python() -> Option<String> {
+    // 1. Try PATH-based commands — verify each actually works
+    for cmd in &["python", "python3", "py"] {
+        if let Ok(output) = std::process::Command::new(cmd).arg("--version").output() {
+            if output.status.success() {
+                return Some(cmd.to_string());
+            }
+        }
+    }
+
+    // 2. Check Windows registry for Python install paths
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        use winreg::RegKey;
+        let hives = [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE];
+        for &hive in &hives {
+            for ver in &["3.13", "3.12", "3.11", "3.10"] {
+                let key_path = format!("SOFTWARE\\Python\\PythonCore\\{}\\InstallPath", ver);
+                if let Ok(key) = RegKey::predef(hive).open_subkey(&key_path) {
+                    if let Ok(install_dir) = key.get_value::<String, _>("") {
+                        let exe = std::path::Path::new(&install_dir).join("python.exe");
+                        if exe.exists() {
+                            tracing::info!("[lazy_nlu] found Python {} via registry: {}", ver, exe.display());
+                            return Some(exe.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check common per-user install location
+    #[cfg(windows)]
+    {
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            for ver in &["Python313", "Python312", "Python311", "Python310"] {
+                let exe = std::path::Path::new(&local_appdata)
+                    .join("Programs")
+                    .join("Python")
+                    .join(ver)
+                    .join("python.exe");
+                if exe.exists() {
+                    tracing::info!("[lazy_nlu] found Python at {}", exe.display());
+                    return Some(exe.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// Ensure the NLU server is running. Spawns it if not.
 pub fn ensure_nlu_running() {
     // Already running?
@@ -98,20 +161,24 @@ pub fn ensure_nlu_running() {
 
     tracing::info!("[lazy_nlu] starting NLU server: {:?}", script);
 
-    // Try python, then python3, then py — verify each actually exists
-    let python_cmd = if std::process::Command::new("python").arg("--version").output().is_ok() {
-        "python"
-    } else if std::process::Command::new("python3").arg("--version").output().is_ok() {
-        "python3"
-    } else if std::process::Command::new("py").arg("--version").output().is_ok() {
-        "py"
-    } else {
-        tracing::error!("[lazy_nlu] no Python interpreter found (tried python, python3, py). Install Python 3.12+ and run: pip install numpy onnxruntime fastapi uvicorn pydantic transformers");
-        return;
+    // Find a working Python interpreter.
+    // On Windows, the NSIS installer installs Python 3.12 with PrependPath=1,
+    // but the PATH update doesn't propagate to processes spawned from the
+    // installer (the app is launched right after Python installation).
+    // So we also check the registry and common install locations.
+    let python_cmd = match find_python() {
+        Some(p) => p,
+        None => {
+            tracing::error!(
+                "[lazy_nlu] no Python interpreter found. Install Python 3.12+ and run: \
+                 pip install numpy onnxruntime fastapi uvicorn pydantic transformers"
+            );
+            return;
+        }
     };
 
     // Spawn: python nlu_server.py
-    let child = Command::new(python_cmd)
+    let child = Command::new(&python_cmd)
         .arg(&script)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())

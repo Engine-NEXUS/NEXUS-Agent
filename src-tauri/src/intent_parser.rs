@@ -47,6 +47,10 @@ pub enum ParsedIntent {
     MediaPrevious,
     #[serde(rename = "media_stop")]
     MediaStop,
+    /// Local conversational reply (greetings, thanks, etc.) — handled
+    /// entirely locally, no Cloudflare Worker round-trip needed.
+    #[serde(rename = "greeting")]
+    Greeting { reply: String },
     /// NLU server result — used when the deterministic parser is uncertain
     /// and the NLU server returns a classification.
     #[serde(rename = "nlu_result")]
@@ -105,6 +109,11 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
             confidence: 1.0,
             source: "deterministic".to_string(),
         });
+    }
+
+    // --- Greetings / conversational replies (local, no Worker round-trip) ---
+    if let Some(result) = parse_greeting(&text) {
+        return Some(result);
     }
 
     // --- Analyse commands ---
@@ -612,6 +621,160 @@ fn parse_search_command(text: &str) -> Option<ParseResult> {
 }
 
 // ─── Media control ─────────────────────────────────────────────────────────
+
+// ─── Greetings / conversational replies ─────────────────────────────────────
+//
+// These are handled entirely locally — no Cloudflare Worker round-trip.
+// This saves ~1-3s of latency and avoids using GLM-4.7 Flash tokens for
+// trivial conversational replies.
+
+/// Parse greetings, farewells, and other conversational pleasantries.
+/// Returns a `Greeting` intent with a pre-written reply.
+fn parse_greeting(text: &str) -> Option<ParseResult> {
+    // Hello / Hi / Hey
+    if regex_match(text, r"^(?:hello|hi|hey|yo|sup|what'?s\s+up|howdy|greetings|hi\s+ya|hiya|hey\s+(?:there|nexus)|hello\s+nexus|hi\s+nexus)$") {
+        let replies = [
+            "Hello, sir.",
+            "Hi, sir. How can I help?",
+            "Hey, sir. What can I do for you?",
+            "At your service, sir.",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // How are you
+    if regex_match(text, r"^(?:how\s+(?:are\s+you|are\s+ya|r\s+u)|how'?s\s+it\s+going|how\s+are\s+things|how\s+do\s+you\s+do|how\s+are\s+you\s+doing|how\s+is\s+it\s+going)$") {
+        let replies = [
+            "Fully operational, sir. How can I assist?",
+            "Running smoothly, sir. What do you need?",
+            "All systems green, sir. Ready when you are.",
+            "Doing well, sir. How can I help?",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // Bye / Goodbye / See you
+    if regex_match(text, r"^(?:bye|goodbye|good\s+bye|see\s+you|see\s+ya|see\s+u|catch\s+you\s+later|catch\s+ya\s+later|later|farewell|bye\s+bye|bye\s+nexus|goodbye\s+nexus)$") {
+        let replies = [
+            "Goodbye, sir.",
+            "Until next time, sir.",
+            "See you, sir.",
+            "Farewell, sir.",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // Thanks
+    if regex_match(text, r"^(?:thanks|thank\s+you|thank\s+u|thx|ty|thanks\s+nexus|thank\s+you\s+nexus|appreciate\s+it|much\s+obliged)$") {
+        let replies = [
+            "You're welcome, sir.",
+            "My pleasure, sir.",
+            "Anytime, sir.",
+            "Glad to help, sir.",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // What is your name / Who are you
+    if regex_match(text, r"^(?:what(?:'?s|\s+is)\s+your\s+name|who\s+are\s+you|what\s+are\s+you|your\s+name|who\s+is\s+nexus)$") {
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting {
+                reply: "I'm NEXUS, your desktop assistant, sir.".to_string(),
+            },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // What can you do
+    if regex_match(text, r"^(?:what\s+can\s+you\s+do|what\s+do\s+you\s+do|what\s+are\s+you\s+capable\s+of|help\s+me|what\s+commands\s+(?:do\s+you\s+(?:know|have)|can\s+you\s+(?:do|handle)))$") {
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting {
+                reply: "I can open apps, search the web, analyse repositories and PRs, control media, and answer questions, sir.".to_string(),
+            },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // Good morning / afternoon / evening
+    if regex_match(text, r"^good\s+(?:morning|afternoon|evening|night)(?:\s+nexus)?$") {
+        let reply = if text.contains("morning") {
+            "Good morning, sir. How can I help?"
+        } else if text.contains("afternoon") {
+            "Good afternoon, sir. What can I do for you?"
+        } else if text.contains("evening") {
+            "Good evening, sir. At your service."
+        } else {
+            "Good night, sir."
+        };
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // Yes / OK / Alright (acknowledgements)
+    if regex_match(text, r"^(?:yes|yeah|yep|yup|sure|ok|okay|alright|sounds\s+good|got\s+it|understood|roger|affirmative)$") {
+        let replies = [
+            "Understood, sir.",
+            "Very good, sir.",
+            "Acknowledged, sir.",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // No / Nope / No thanks
+    if regex_match(text, r"^(?:no|nope|nah|no\s+thanks|never\s+mind|forget\s+it|cancel|disregard)$") {
+        let replies = [
+            "Very well, sir.",
+            "As you wish, sir.",
+            "Noted, sir.",
+        ];
+        let reply = pick(&replies, text);
+        return Some(ParseResult {
+            intent: ParsedIntent::Greeting { reply: reply.to_string() },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    None
+}
+
+/// Pick a reply from a list, deterministically based on a hash of the input
+/// text. This gives variety (different replies for different inputs) while
+/// remaining deterministic (same input → same reply, no randomness).
+fn pick<'a>(replies: &[&'a str], text: &str) -> &'a str {
+    let hash: u32 = text.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    replies[(hash as usize) % replies.len()]
+}
 
 fn parse_media(text: &str) -> Option<ParsedIntent> {
     if regex_match(text, r"^(?:pause|pause\s+music|pause\s+media|play|resume|resume\s+music|play\s*[/\s]*pause|toggle\s+media)$") {

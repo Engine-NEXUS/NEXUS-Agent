@@ -664,12 +664,16 @@ Var PythonExe
 Function InstallPythonAndDeps
   StrCpy $PythonExe ""
 
-  ; Check if python.exe is already on PATH via 'where' command
+  ; Check if python.exe is already on PATH via 'where' command.
+  ; NOTE: 'where python.exe' on Windows 10/11 can return the Windows Store
+  ; stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe — that's NOT a
+  ; real Python, it just opens the Store. We filter it out.
   nsExec::ExecToStack 'where python.exe'
   Pop $0
   Pop $1
   ${If} $0 == 0
     ${If} $1 != ""
+    ${AndNot} $1 == "$LOCALAPPDATA\Microsoft\WindowsApps\python.exe"
       DetailPrint "Python already installed: $1"
       StrCpy $PythonExe "python"
       Goto install_pip_deps
@@ -708,7 +712,29 @@ Function InstallPythonAndDeps
     ${If} $1 == 0
       DetailPrint "Python 3.12 installed successfully"
       Delete "$TEMP\python-3.12-installer.exe"
-      StrCpy $PythonExe "python"
+      ; Don't rely on PATH (the installer process env won't have the update).
+      ; Resolve python.exe from the registry instead.
+      ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
+      ${If} $0 != ""
+        StrCpy $PythonExe "$0python.exe"
+        DetailPrint "Python 3.12 resolved from registry: $PythonExe"
+      ${Else}
+        ReadRegStr $0 HKLM "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
+        ${If} $0 != ""
+          StrCpy $PythonExe "$0python.exe"
+          DetailPrint "Python 3.12 resolved from HKLM registry: $PythonExe"
+        ${Else}
+          ; Fallback: check %LOCALAPPDATA%\Programs\Python\Python312
+          StrCpy $0 "$LOCALAPPDATA\Programs\Python\Python312\python.exe"
+          ${If} ${FileExists} $0
+            StrCpy $PythonExe $0
+            DetailPrint "Python 3.12 resolved from LOCALAPPDATA: $PythonExe"
+          ${Else}
+            StrCpy $PythonExe "python"
+            DetailPrint "Python 3.12 path not found in registry or LOCALAPPDATA — using 'python' (may fail)"
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
     ${Else}
       DetailPrint "Python installation failed (exit code $1) — STT/NLU will not work"
       MessageBox MB_ICONEXCLAMATION|MB_OK "Python installation failed.$\r$\n$\r$\nSTT and NLU features will not work.$\r$\nPlease install Python 3.12+ manually from python.org and run:$\r$\n  pip install faster-whisper fastapi uvicorn python-multipart$\r$\n  pip install numpy onnxruntime fastapi uvicorn pydantic transformers"
