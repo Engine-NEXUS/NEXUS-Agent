@@ -59,12 +59,35 @@ const GITHUB_SCOPES = "repo read:org workflow";
 // ---- Intent classification ----
 // Models confirmed available on Cloudflare Workers AI (Aug 2026).
 // Small model for fast intent classification, larger for summarization.
+// GLM-5.2 requires Workers Paid plan — used for deep code analysis.
 
 const INTENT_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const SUMMARY_MODEL = "@cf/mistral/mistral-small-3.1-24b-instruct";
 const SMALL_SUMMARY_MODEL = "@cf/meta/llama-3.2-3b-instruct";
+const ANALYSIS_MODEL = "@cf/zai-org/glm-5.2";  // 262K context, reasoning, function calling
+
+/**
+ * Extract text from any Workers AI model response format.
+ * - Older models (llama, mistral): { response: "text" }
+ * - OpenAI-compatible (GLM-5.2): { choices: [{ message: { content: "text" } }] }
+ */
+function extractText(response: any): string {
+  if (response?.response) return response.response.trim();
+  if (response?.choices?.[0]?.message?.content) return response.choices[0].message.content.trim();
+  if (response?.choices?.[0]?.text) return response.choices[0].text.trim();
+  if (response?.result?.response) return response.result.response.trim();
+  return "";
+}
 
 async function classifyIntent(transcript: string, env: Env): Promise<string> {
+  // Check keyword fallback FIRST for reliable intent detection.
+  // The LLM classifier is a secondary signal — keywords are more reliable
+  // for the analyse vs. check distinction.
+  const keywordIntent = keywordFallback(transcript);
+  if (keywordIntent !== "general") {
+    return keywordIntent;
+  }
+
   const prompt = `You are an intent classifier. Read the user request and respond with exactly one word from this list:
 - github (for GitHub PRs, issues, repos, code)
 - gmail (for email, inbox, messages)
@@ -81,17 +104,31 @@ Intent:`;
       messages: [{ role: "user", content: prompt }],
       max_tokens: 5,
     });
-    const text = (response as { response?: string }).response?.trim().toLowerCase() || "";
+    const text = extractText(response).toLowerCase();
     const word = text.split(/\s+/)[0].replace(/[^a-z]/g, "");
     if (["github", "gmail", "calendar", "search", "general"].includes(word)) return word;
-    return keywordFallback(transcript);
+    return "general";
   } catch {
-    return keywordFallback(transcript);
+    return "general";
   }
 }
 
 function keywordFallback(transcript: string): string {
   const t = transcript.toLowerCase();
+
+  // Deep analysis intent — keywords like "analyse", "analyze", "review", "deep dive"
+  // Must match BEFORE the generic github check
+  if (/\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine)\b/.test(t)
+      && /\b(pr|pull\s*request|repo|repository|code|commit|branch|merge|github|diff|patch|change)\b/.test(t)) {
+    return "github_analyse";
+  }
+
+  // Also catch "analyse the PR" / "review the PR" even without explicit github keyword
+  if (/\b(analy[sz]e|review|deep\s*dive|critique|evaluate)\b/.test(t)
+      && /\b(pr|pull\s*request)\b/.test(t)) {
+    return "github_analyse";
+  }
+
   if (/\b(pr|pull request|repo|repository|commit|issue|branch|merge|github)\b/.test(t)) return "github";
   if (/\b(email|inbox|mail|message|gmail|send to)\b/.test(t)) return "gmail";
   if (/\b(calendar|schedule|meeting|event|appointment|today|tomorrow)\b/.test(t)) return "calendar";
@@ -106,7 +143,7 @@ async function summarize(prompt: string, env: Env, useLarge = true): Promise<str
       messages: [{ role: "user", content: prompt }],
       max_tokens: 300,
     });
-    return (response as { response?: string }).response?.trim() || "I couldn't summarize that.";
+    return extractText(response) || "I couldn't summarize that.";
   } catch {
     if (useLarge) return summarize(prompt, env, false);
     return "I couldn't process that request.";
@@ -189,22 +226,39 @@ async function getValidGithubToken(env: Env, userId: string): Promise<string | n
 // ---- GitHub handler ----
 
 async function handleGitHub(req: NexusRequest, env: Env, token: string): Promise<string> {
-  const transcript = req.task.request.toLowerCase();
+  const transcriptLower = req.task.request.toLowerCase();
+  const transcriptOrig = req.task.request;  // preserve case for repo names
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${token}`,
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "NEXUS-Worker",
   };
 
-  const prMatch = transcript.match(/(?:pr|pull request)\s*#?\s*(\d+)\s*(?:of|in|from)?\s*(?:repo\s+)?([\w\-./]+)?/);
-  const listPrMatch = transcript.match(/(?:list|show|open)\s+(?:open\s+)?(?:prs|pull requests?)(?:\s+(?:in|of|from)\s+([\w\-./]+))?/);
-  const issueMatch = transcript.match(/(?:issue|bug)\s*#?\s*(\d+)\s*(?:in|of|from)?\s*(?:repo\s+)?([\w\-./]+)?/);
+  // Match on lowercased transcript for keywords, but extract repo from original
+  const prMatch = transcriptLower.match(/(?:pr|pull request)\s*#?\s*(\d+)\s*(?:of|in|from)?\s*(?:repo\s+)?([\w\-./]+)?/);
+  const listPrMatch = transcriptLower.match(/(?:list|show|open)\s+(?:open\s+)?(?:prs|pull requests?)(?:\s+(?:in|of|from)\s+([\w\-./]+))?/);
+  const issueMatch = transcriptLower.match(/(?:issue|bug)\s*#?\s*(\d+)\s*(?:in|of|from)?\s*(?:repo\s+)?([\w\-./]+)?/);
+
+  // Extract repo name from the original transcript (preserves case)
+  function extractRepo(lowerMatch: RegExpMatchArray | null): string | null {
+    if (!lowerMatch || !lowerMatch[2]) return null;
+    // Find the repo name in the original transcript at the same position
+    const repoLower = lowerMatch[2];
+    const idx = transcriptLower.indexOf(repoLower);
+    if (idx >= 0) return transcriptOrig.substr(idx, repoLower.length);
+    return repoLower;
+  }
 
   try {
     if (prMatch) {
       const prNum = prMatch[1];
-      let repo = prMatch[2] || "zync";
-      if (!repo.includes("/")) repo = `chitkul-lakshya/${repo}`;
+      let repo = extractRepo(prMatch) || "zync";
+      if (!repo.includes("/")) {
+        // Try to resolve via user's repos
+        const resolved = await resolveRepo(token, repo);
+        if (resolved) repo = resolved;
+      }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}`, { headers });
       if (!resp.ok) return `I couldn't find PR #${prNum} in ${repo}. Error: ${resp.status}`;
@@ -222,8 +276,11 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
     }
 
     if (listPrMatch) {
-      let repo = listPrMatch[1] || "zync";
-      if (!repo.includes("/")) repo = `chitkul-lakshya/${repo}`;
+      let repo = extractRepo(listPrMatch) || "zync";
+      if (!repo.includes("/")) {
+        const resolved = await resolveRepo(token, repo);
+        if (resolved) repo = resolved;
+      }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=open&per_page=10`, { headers });
       if (!resp.ok) return `I couldn't fetch PRs from ${repo}. Error: ${resp.status}`;
@@ -241,8 +298,11 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
 
     if (issueMatch) {
       const issueNum = issueMatch[1];
-      let repo = issueMatch[2] || "zync";
-      if (!repo.includes("/")) repo = `chitkul-lakshya/${repo}`;
+      let repo = extractRepo(issueMatch) || "zync";
+      if (!repo.includes("/")) {
+        const resolved = await resolveRepo(token, repo);
+        if (resolved) repo = resolved;
+      }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNum}`, { headers });
       if (!resp.ok) return `I couldn't find issue #${issueNum} in ${repo}. Error: ${resp.status}`;
@@ -261,6 +321,265 @@ Body: ${(issue["body"] as string || "").slice(0, 500)}`;
     );
   } catch (err) {
     return `I had trouble reaching GitHub. Error: ${(err as Error).message}`;
+  }
+}
+
+// ---- GitHub deep analysis handler (GLM-5.2) ----
+
+/**
+ * Parse a PR number and repo from the transcript.
+ * Patterns:
+ *   "analyse PR 24 in zync"        → pr=24, repo=zync
+ *   "analyse the PR of zync"       → latest PR, repo=zync
+ *   "review PR 76 in owner/repo"   → pr=76, repo=owner/repo
+ *   "analyse the pull request"     → latest PR, default repo
+ */
+function parsePRRequest(transcript: string): { prNumber: number | null; repoName: string | null } {
+  const tLower = transcript.toLowerCase();
+
+  // "PR 24", "PR #24", "pull request 24"
+  const prNumMatch = tLower.match(/(?:pr|pull\s*request)\s*#?\s*(\d+)/);
+  const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
+
+  // "in zync", "of zync", "in owner/repo", "from owner/repo"
+  const repoMatch = tLower.match(/(?:in|of|from)\s+([\w\-./]+)/);
+  if (!repoMatch || !repoMatch[1]) {
+    return { prNumber, repoName: null };
+  }
+  // Extract from original transcript to preserve case
+  const repoLower = repoMatch[1];
+  const idx = tLower.indexOf(repoLower);
+  const repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
+
+  return { prNumber, repoName };
+}
+
+/**
+ * Resolve a repo name to a full owner/repo string by searching the user's repos.
+ * If the name already contains "/", use it as-is.
+ * Otherwise, search the user's repos for a case-insensitive match.
+ */
+async function resolveRepo(token: string, repoName: string | null): Promise<string | null> {
+  if (!repoName) {
+    // No repo specified — return null (caller will handle)
+    return null;
+  }
+  if (repoName.includes("/")) {
+    return repoName;
+  }
+
+  // Search user's repos for a case-insensitive match
+  try {
+    const resp = await fetch(
+      `https://api.github.com/user/repos?per_page=100&sort=updated`,
+      { headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json", "User-Agent": "NEXUS-Worker" } },
+    );
+    if (!resp.ok) return null;
+    const repos = await resp.json() as Array<Record<string, unknown>>;
+    // Try exact match first, then case-insensitive
+    const exact = repos.find(r => (r["name"] as string)?.toLowerCase() === repoName.toLowerCase());
+    if (exact) return exact["full_name"] as string;
+    // Try partial match
+    const partial = repos.find(r => (r["name"] as string)?.toLowerCase().includes(repoName.toLowerCase()));
+    if (partial) return partial["full_name"] as string;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch full PR context via GitHub REST API (no cloning needed).
+ * Returns: metadata, files with diffs, commits, and review comments.
+ */
+async function fetchPRContext(
+  token: string,
+  repo: string,
+  prNumber: number,
+): Promise<string> {
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "NEXUS-Worker",
+  };
+
+  // 1. PR metadata
+  const prResp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, { headers });
+  if (!prResp.ok) {
+    if (prResp.status === 404) return `__ERROR__: PR #${prNumber} not found in ${repo}.`;
+    return `__ERROR__: GitHub API returned ${prResp.status} for PR #${prNumber}.`;
+  }
+  const pr = await prResp.json() as Record<string, unknown>;
+
+  // 2. Files with diffs (parallel with commits + comments)
+  const [filesResp, commitsResp, commentsResp, reviewsResp] = await Promise.all([
+    fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}/files?per_page=100`, { headers }),
+    fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}/commits?per_page=100`, { headers }),
+    fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}/comments?per_page=50`, { headers }),
+    fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews?per_page=50`, { headers }),
+  ]);
+
+  const files = filesResp.ok ? await filesResp.json() as Array<Record<string, unknown>> : [];
+  const commits = commitsResp.ok ? await commitsResp.json() as Array<Record<string, unknown>> : [];
+  const comments = commentsResp.ok ? await commentsResp.json() as Array<Record<string, unknown>> : [];
+  const reviews = reviewsResp.ok ? await reviewsResp.json() as Array<Record<string, unknown>> : [];
+
+  // 3. Assemble context (truncate to stay under 250K tokens)
+  const meta = `PR #${pr["number"]}: ${pr["title"]}
+Repository: ${repo}
+State: ${pr["state"]} | Draft: ${pr["draft"] ? "yes" : "no"} | Mergeable: ${pr["mergeable_state"] || "unknown"}
+Author: ${(pr["user"] as Record<string, string>)?.login || "unknown"}
+Created: ${pr["created_at"]} | Updated: ${pr["updated_at"]}
+Branch: ${pr["head"] ? (pr["head"] as Record<string, string>).ref : "unknown"} → ${pr["base"] ? (pr["base"] as Record<string, string>).ref : "unknown"}
+Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} files
+Commits: ${pr["commits"]}
+
+Description:
+${(pr["body"] as string || "(no description provided)").slice(0, 2000)}`;
+
+  // Files with diffs — keep patches but truncate very long ones
+  const MAX_PATCH_PER_FILE = 3000;
+  const MAX_TOTAL_PATCH = 200000;  // ~50K tokens
+  let totalPatchLen = 0;
+  const fileSections: string[] = [];
+
+  for (const file of files) {
+    const filename = file["filename"] as string;
+    const status = file["status"] as string;
+    const additions = file["additions"] as number;
+    const deletions = file["deletions"] as number;
+    let patch = (file["patch"] as string) || "(binary file or no patch available)";
+
+    if (patch.length > MAX_PATCH_PER_FILE) {
+      patch = patch.slice(0, MAX_PATCH_PER_FILE) + "\n... (truncated)";
+    }
+
+    if (totalPatchLen + patch.length > MAX_TOTAL_PATCH) {
+      fileSections.push(`--- ${filename} (${status}, +${additions} -${deletions})\n(diff truncated — too many changes)`);
+      continue;
+    }
+    totalPatchLen += patch.length;
+
+    fileSections.push(`--- ${filename} (${status}, +${additions} -${deletions})
+${patch}`);
+  }
+
+  // Commits
+  const commitList = commits.slice(0, 30).map((c) => {
+    const msg = (c["commit"] as Record<string, { message?: string }>)?.commit?.message || "";
+    const author = (c["commit"] as Record<string, { author?: { name?: string } }>)?.commit?.author?.name || "unknown";
+    return `  ${c["sha"]?.toString().slice(0, 7)} ${msg.split("\n")[0]} (${author})`;
+  }).join("\n");
+
+  // Review comments (inline code comments)
+  const commentList = comments.slice(0, 30).map((c) => {
+    const user = (c["user"] as Record<string, string>)?.login || "unknown";
+    const body = (c["body"] as string || "").slice(0, 500);
+    const path = c["path"] as string;
+    const line = c["line"] || c["original_line"] || "?";
+    return `  ${user} on ${path}:${line}: ${body}`;
+  }).join("\n");
+
+  // Reviews
+  const reviewList = reviews.slice(0, 20).map((r) => {
+    const user = (r["user"] as Record<string, string>)?.login || "unknown";
+    const state = r["state"] as string;
+    const body = (r["body"] as string || "").slice(0, 500);
+    return `  ${user}: ${state}${body ? ` — ${body}` : ""}`;
+  }).join("\n");
+
+  return `${meta}
+
+=== FILES CHANGED (${files.length}) ===
+${fileSections.join("\n\n")}
+
+=== COMMITS (${commits.length}) ===
+${commitList || "(none)"}
+
+=== REVIEW COMMENTS (${comments.length}) ===
+${commentList || "(none)"}
+
+=== REVIEWS (${reviews.length}) ===
+${reviewList || "(none)"}`;
+}
+
+/**
+ * Deep PR analysis using GLM-5.2.
+ * Fetches PR data via GitHub API, sends to GLM-5.2 for analysis.
+ */
+async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): Promise<string> {
+  const { prNumber, repoName } = parsePRRequest(req.task.request);
+
+  try {
+    // Resolve the repo name to a full owner/repo
+    const repo = await resolveRepo(token, repoName);
+    if (!repo) {
+      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse PR 24 in owner/repo".`;
+    }
+
+    let actualPrNumber = prNumber;
+
+    // If no PR number specified, get the most recent PR (open or closed)
+    if (!actualPrNumber) {
+      const headers: Record<string, string> = {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": "NEXUS-Worker",
+      };
+      const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=all&per_page=1&sort=created&direction=desc`, { headers });
+      if (!resp.ok) {
+        return `I couldn't find any pull requests in ${repo}. Error: ${resp.status}. Try saying "analyse PR 24 in ${repo}".`;
+      }
+      const prs = await resp.json() as Array<Record<string, unknown>>;
+      if (!prs || prs.length === 0) {
+        return `There are no pull requests in ${repo}. Try specifying a PR number, like "analyse PR 24".`;
+      }
+      actualPrNumber = prs[0]["number"] as number;
+    }
+
+    // Fetch full PR context
+    const context = await fetchPRContext(token, repo, actualPrNumber);
+
+    if (context.startsWith("__ERROR__:")) {
+      return context.replace("__ERROR__:", "");
+    }
+
+    // Send to GLM-5.2 for deep analysis
+    const analysisPrompt = `You are a senior software engineer performing a thorough code review. Analyse this pull request and provide a detailed review.
+
+Cover these areas:
+1. **Summary**: What does this PR do? (1-2 sentences)
+2. **Risk Assessment**: Are there bugs, security issues, or breaking changes?
+3. **Code Quality**: Is the code clean, well-structured, and maintainable?
+4. **Suggestions**: What would you improve before merging?
+5. **Verdict**: Is this safe to merge? (approve / request changes / block)
+
+Be specific — reference file names and line numbers when pointing out issues.
+If the PR is small or straightforward, keep the review concise.
+
+=== PULL REQUEST CONTEXT ===
+${context}
+
+=== YOUR ANALYSIS ===`;
+
+    const response = await env.AI.run(ANALYSIS_MODEL as any, {
+      messages: [
+        { role: "system", content: "You are a senior software engineer with expertise in code review, security, and software architecture. You provide thorough, actionable code reviews." },
+        { role: "user", content: analysisPrompt },
+      ],
+      max_tokens: 2000,
+    });
+
+    const analysis = extractText(response);
+    if (!analysis) {
+      return `I fetched PR #${actualPrNumber} in ${repo} but couldn't generate an analysis. The PR has ${(context.match(/---/g) || []).length} changed files. Try asking a more specific question about it.`;
+    }
+
+    return analysis;
+  } catch (err) {
+    return `I had trouble analysing the PR. Error: ${(err as Error).message}`;
   }
 }
 
@@ -406,6 +725,11 @@ export default {
       return handleAuthUrl(url, env, json);
     }
 
+    // ---- OAuth: browser callback (for testing — exchanges code automatically) ----
+    if (path === "/oauth/callback" && method === "GET") {
+      return handleOAuthBrowserCallback(url, env, json);
+    }
+
     // ---- OAuth: exchange code for tokens ----
     if (path === "/oauth/exchange" && method === "POST") {
       return handleOAuthExchange(request, env, json);
@@ -529,6 +853,88 @@ async function handleAuthUrl(
   }
 
   return json({ error: `unsupported provider: ${provider}` }, 400);
+}
+
+// ---- OAuth browser callback handler (for testing/manual flow) ----
+
+async function handleOAuthBrowserCallback(
+  url: URL,
+  env: Env,
+  json: (d: unknown, s?: number) => Response,
+): Promise<Response> {
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "test_user";
+  const error = url.searchParams.get("error");
+
+  if (error) {
+    return new Response(`<html><body><h2>OAuth Error</h2><p>${error}</p></body></html>`, {
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+
+  if (!code) {
+    return new Response("<html><body><h2>Missing code</h2></body></html>", {
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+
+  // Exchange the code for tokens using the GitHub OAuth app
+  // Note: redirect_uri must match what was used in the auth URL
+  try {
+    const resp = await fetch(GITHUB_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        client_id: env.GITHUB_CLIENT_ID,
+        client_secret: env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: "https://nexus-worker.chitkullakshya.workers.dev/oauth/callback",
+      }),
+    });
+
+    if (!resp.ok) {
+      return new Response(`<html><body><h2>Exchange failed</h2><p>${resp.status}</p></body></html>`, {
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+
+    const tokens = await resp.json() as any;
+    if (!tokens.access_token) {
+      return new Response(`<html><body><h2>No token</h2><p>${JSON.stringify(tokens)}</p></body></html>`, {
+        headers: { "Content-Type": "text/html" },
+      });
+    }
+
+    // Get GitHub username
+    let accountId = state;
+    try {
+      const ghResp = await fetch("https://api.github.com/user", {
+        headers: { "Authorization": `Bearer ${tokens.access_token}` },
+      });
+      if (ghResp.ok) {
+        const ghUser = await ghResp.json() as any;
+        accountId = ghUser.login || state;
+      }
+    } catch { /* ignore */ }
+
+    // Store in D1
+    const now = Date.now() / 1000;
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO oauth_tokens (user_id, provider, access_token, refresh_token, expires_at, scopes, account_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    ).bind(
+      state, "github", tokens.access_token,
+      null, 0, GITHUB_SCOPES, accountId, now
+    ).run();
+
+    return new Response(
+      `<html><body><h2>GitHub connected!</h2><p>User: ${state}</p><p>Account: ${accountId}</p><p>You can close this tab.</p></body></html>`,
+      { headers: { "Content-Type": "text/html" } },
+    );
+  } catch (err) {
+    return new Response(`<html><body><h2>Error</h2><p>${(err as Error).message}</p></body></html>`, {
+      headers: { "Content-Type": "text/html" },
+    });
+  }
 }
 
 // ---- OAuth exchange handler ----
@@ -739,7 +1145,14 @@ async function handleTranscript(
   let replyText: string;
 
   try {
-    if (intent === "github") {
+    if (intent === "github_analyse") {
+      const token = await getValidGithubToken(env, userId);
+      if (!token) {
+        replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup to analyse PRs.";
+      } else {
+        replyText = await handleGitHubAnalyse(req, env, token);
+      }
+    } else if (intent === "github") {
       const token = await getValidGithubToken(env, userId);
       if (!token) {
         replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup.";
