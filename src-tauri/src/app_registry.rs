@@ -18,6 +18,9 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -718,6 +721,7 @@ fn discover_start_apps(entries: &mut Vec<AppEntry>) {
 
     let output = Command::new("powershell")
         .args(["-NoProfile", "-Command", "Get-StartApps | ConvertTo-Json -Compress"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output();
 
     let json_str = match output {
@@ -1097,6 +1101,7 @@ fn resolve_lnk_target(lnk_path: &std::path::Path) -> Option<String> {
     );
     let output = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .output()
         .ok()?;
 
