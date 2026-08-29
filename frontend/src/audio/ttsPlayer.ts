@@ -1,88 +1,110 @@
 import { useAssistant } from "../store/assistant";
 
 /**
- * TTS stream player.
+ * Local Text-to-Speech via the Web Speech API (SpeechSynthesis).
  *
- * The server (via the sidecar) streams 16-bit 16 kHz mono PCM chunks as base64 over
- * the WebSocket. We feed them into a WebAudio `AudioBufferSourceNode` chain scheduled
- * back-to-back so playback is gapless. The avatar mouth animation is driven by the
- * chunk sequence number.
+ * The browser's built-in speech synthesizer is used to speak text aloud
+ * on the device. No audio is sent from the server — only text. The server
+ * returns result text, and this module speaks it locally.
  *
- * Format: raw 16-bit LE mono PCM @ 16 kHz ONLY. The sidecar calls piper which returns
- * exactly this format; no Opus decode is needed. If a future server sends Opus, add a
- * decode step here (e.g. `opus-decoder`) and branch on a format header frame.
+ * Two moments of audio output:
+ *   1. Acknowledgement: "On it, sir." — spoken immediately when transcript
+ *      is sent to the server.
+ *   2. Result: the actual answer — spoken when the server returns the
+ *      result text.
+ *
+ * Barge-in: stopTts() cancels any in-progress speech immediately.
  */
 
-let audioCtx: AudioContext | null = null;
-let nextStartAt = 0; // scheduling cursor in seconds
-let sources: AudioBufferSourceNode[] = []; // track for stopTts()
+let voicesLoaded = false;
 
-const TTS_SAMPLE_RATE = 16000;
-
-export function ensureAudio(): AudioContext {
-  if (!audioCtx) {
-    audioCtx = new AudioContext({ sampleRate: TTS_SAMPLE_RATE, latencyHint: "interactive" });
-    nextStartAt = audioCtx.currentTime;
-    sources = [];
-  }
-  return audioCtx;
+// Web Speech API voices load asynchronously. Wait for them.
+function ensureVoices(): Promise<void> {
+  return new Promise((resolve) => {
+    if (voicesLoaded || typeof speechSynthesis === "undefined") {
+      voicesLoaded = true;
+      resolve();
+      return;
+    }
+    const voices = speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      voicesLoaded = true;
+      resolve();
+      return;
+    }
+    // Voices not loaded yet — wait for the voiceschanged event.
+    speechSynthesis.addEventListener(
+      "voiceschanged",
+      () => {
+        voicesLoaded = true;
+        resolve();
+      },
+      { once: true },
+    );
+  });
 }
 
-export function resetTts(): void {
-  nextStartAt = ensureAudio().currentTime;
-}
-
-/** Play a base64-encoded PCM frame (16-bit LE mono @ 16 kHz). */
-export async function playTtsChunk(seq: number, b64: string): Promise<void> {
-  const ctx = ensureAudio();
-  const bytes = base64ToBytes(b64);
-  // Guard against odd-length payloads (truncated frame).
-  const sampleCount = Math.floor(bytes.length / 2);
-  if (sampleCount === 0) return;
-  const i16 = new Int16Array(bytes.buffer, bytes.byteOffset, sampleCount);
-  const buf = ctx.createBuffer(1, i16.length, TTS_SAMPLE_RATE);
-  const ch = buf.getChannelData(0);
-  for (let i = 0; i < i16.length; i++) {
-    ch[i] = i16[i] / 0x8000;
+/**
+ * Speak text aloud using the local Web Speech API.
+ *
+ * @param text The text to speak.
+ * @param onEnd Optional callback fired when speech completes naturally.
+ */
+export async function speak(text: string, onEnd?: () => void): Promise<void> {
+  if (typeof speechSynthesis === "undefined") {
+    console.warn("Web Speech API not available — TTS disabled");
+    onEnd?.();
+    return;
   }
 
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
+  // Cancel any in-progress speech (shouldn't happen if stopTts is called
+  // first, but this is a safety net).
+  speechSynthesis.cancel();
 
-  // Back-to-back scheduling (gapless).
-  const start = Math.max(ctx.currentTime, nextStartAt);
-  src.connect(ctx.destination);
-  src.start(start);
-  nextStartAt = start + buf.duration;
-  sources.push(src);
-  // Drop finished sources to avoid unbounded growth.
-  src.onended = () => {
-    sources = sources.filter((s) => s !== src);
+  await ensureVoices();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+
+  // Pick a good English voice if available.
+  const voices = speechSynthesis.getVoices();
+  const englishVoice = voices.find(
+    (v) => v.lang.startsWith("en") && v.default,
+  ) || voices.find((v) => v.lang.startsWith("en"));
+  if (englishVoice) {
+    utterance.voice = englishVoice;
+  }
+
+  // Moderate rate for clarity — not too fast, not too slow.
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+  utterance.volume = 1.0;
+
+  utterance.onend = () => {
+    onEnd?.();
   };
 
-  useAssistant.getState().setSpeakSeq(seq);
+  utterance.onerror = (e) => {
+    console.warn("TTS error:", e);
+    onEnd?.();
+  };
+
+  speechSynthesis.speak(utterance);
 }
 
-/** Called on a `done` server event. Stops all scheduled sources and resets state. */
+/**
+ * Stop any in-progress speech immediately (barge-in).
+ * Called when the user wakes NEXUS while it's speaking, or on cancel.
+ */
 export function stopTts(): void {
-  for (const s of sources) {
-    try { s.stop(); } catch { /* already ended */ }
-    try { s.disconnect(); } catch { /* already disconnected */ }
-  }
-  sources = [];
-  if (audioCtx) {
-    audioCtx.close().catch(() => {});
-    audioCtx = null;
-    nextStartAt = 0;
+  if (typeof speechSynthesis !== "undefined") {
+    speechSynthesis.cancel();
   }
   useAssistant.getState().setSpeakSeq(null);
-  // NOTE: do NOT call store.reset() here — the `done` event handler in wsBridge.ts
-  // owns the idle transition. Calling reset() here would race with that handler.
 }
 
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+/**
+ * Check if the Web Speech API is available on this platform.
+ */
+export function ttsAvailable(): boolean {
+  return typeof speechSynthesis !== "undefined";
 }

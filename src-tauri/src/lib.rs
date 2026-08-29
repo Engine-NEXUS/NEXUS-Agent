@@ -130,6 +130,7 @@ pub fn run() {
             window_manager::set_click_through,
             network::open_session,
             network::send_audio_chunk,
+            network::send_transcript,
             network::end_audio,
             network::cancel_session,
             network::close_session,
