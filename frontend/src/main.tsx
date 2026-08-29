@@ -123,11 +123,16 @@ async function startListening() {
   // If NEXUS is speaking or thinking, cancel the current turn before
   // starting a new one. This prevents the TTS 'interrupted' error and
   // ensures clean state transitions.
-  if (s.state === "speaking" || s.state === "thinking") {
-    console.log("[NEXUS] barge-in: cancelling current turn");
+  const wasSpeaking = s.state === "speaking";
+  if (wasSpeaking || s.state === "thinking") {
+    console.log("[NEXUS] barge-in/turn-transition: cancelling current turn");
     stopTts();
     stopVad();
     await abortCapture().catch(() => {});
+    if (wasSpeaking) {
+      // Dual-Phase Post-TTS Mute Gate: 300ms delay to allow DAC audio buffers and room acoustics to clear
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
 
   s.setVisible(true);
