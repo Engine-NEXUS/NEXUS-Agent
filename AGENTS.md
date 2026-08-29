@@ -69,8 +69,40 @@ this — the Vite server serves any HTML file on demand).
 | Service           | Port    | Notes                                        |
 | ----------------- | ------- | -------------------------------------------- |
 | STT (faster-whisper) | `18765` | Deliberately uncommon to avoid clashing with dev servers on 8000. Override: `NEXUS_STT_PORT` |
-| Sidecar (FastAPI) | `49152` | IANA dynamic range. Override: `NEXUS_SIDECAR_PORT` |
 | Vite dev server   | `5173`  | Dev only                                     |
+
+## Architecture (serverless — 2026-08-27)
+
+NEXUS is now **fully serverless**. No sidecar, no n8n, no Ollama, no server.
+
+```
+NEXUS laptop → HTTP POST → Cloudflare Worker → APIs → text response
+                              ↑
+                        D1 database (OAuth tokens)
+                        Workers AI (intent + summarization)
+```
+
+- **Worker** (`server/worker/`): Cloudflare Worker on the edge. Handles
+  intent classification, API calls (GitHub/Google), summarization, OAuth
+  exchange, token storage, and user registration. <5ms cold start.
+- **D1**: Cloudflare's free SQLite. Stores OAuth tokens, API keys, and
+  device registrations. 5GB free.
+- **Workers AI**: Free tier (10K neurons/day) for intent classification
+  (Qwen 0.5B) and summarization (Qwen 14B).
+- **Client** (`src-tauri/src/network.rs`): HTTP POST to the Worker. No
+  WebSocket. Emits state/ack/result/done events to the frontend.
+- **NEXUS_SERVER_URL**: Baked into the installer at build time. Points to
+  the Worker URL (e.g. `https://nexus-worker.xxx.workers.dev`).
+
+The old sidecar (`server/sidecar/`) is kept in the repo but no longer
+spawned at startup. `sidecar_manager.rs` is `#[allow(dead_code)]`.
+
+### Building the installer with the Worker URL
+
+```powershell
+$env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
+pwsh ./scripts/build.ps1
+```
 
 ## Runtime paths (Windows)
 

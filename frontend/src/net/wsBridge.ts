@@ -57,19 +57,20 @@ function shouldShowSidebar(query: string, response: string): boolean {
 let pendingQuery = "";
 
 /**
- * WebSocket bridge facade.
+ * HTTP bridge facade (serverless — no WebSocket, no sidecar).
  *
- * The Rust main process owns the actual WSS connection (so the webview can be torn down
- * between interactions without dropping the socket). The frontend only instructs
- * open/close and reacts to `assistant:server` events forwarded by Rust.
+ * The Rust main process makes HTTP POST requests to the Cloudflare Worker
+ * and forwards results to the frontend as `assistant:server` events.
  *
  * Protocol (text-only — no audio bytes cross the network):
- *   Client → Server: start, transcript, cancel
- *   Server → Client: state, ack, result, done, error
+ *   Client → Worker: POST { request_id, requester, task }
+ *   Worker → Client: { reply_text, intent }
+ *   Rust emits: state(thinking), ack, result, done
  */
 
 // Build-time fallback only — the real URL comes from get_server_config at runtime.
-const FALLBACK_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "ws://127.0.0.1:49152/ws";
+// This is the Cloudflare Worker URL (HTTPS, not WebSocket — serverless architecture).
+const FALLBACK_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "https://nexus-worker.example.workers.dev";
 const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "";
 
 /**
@@ -131,14 +132,9 @@ async function getServerConfig(): Promise<{ url: string; token: string; userId: 
 }
 
 /**
- * Open a backend session with retry logic.
- *
- * On cold boot, the Python sidecar may take 3-10 seconds to start.
- * This retries the connection with exponential backoff instead of
- * failing immediately.
- *
- * @param maxRetries Number of retry attempts (default 5)
- * @param baseDelayMs Initial delay between retries (default 1000ms, doubles each time)
+ * Open a backend session — loads the Worker URL + identity from config.
+ * No WebSocket connection is made (serverless HTTP architecture).
+ * The Worker is called on-demand when sendTranscript() is invoked.
  */
 export async function openSession(
   url?: string,

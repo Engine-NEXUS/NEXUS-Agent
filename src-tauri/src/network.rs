@@ -1,34 +1,38 @@
-//! WSS network bridge (TEXT-ONLY protocol).
+//! HTTP bridge to the Cloudflare Worker (TEXT-ONLY protocol, serverless).
 //!
-//! Holds a single WebSocket session to the server. The frontend drives it via IPC:
-//!   - `open_session`     → connect, send the "start" control frame, start reader task.
-//!   - `send_transcript`  → send {type:"transcript", data:"..."} text frame.
-//!   - `cancel_session`   → send {type:"cancel"} then tear down.
-//!   - `close_session`    → graceful close.
+//! The NEXUS client sends transcript text via HTTP POST to the Worker.
+//! The Worker classifies intent, calls external APIs, and returns text.
+//! No WebSocket, no sidecar, no server needed.
 //!
-//! Server events are JSON text frames like:
-//!   `{ "type": "state", "state": "thinking" }`,
-//!   `{ "type": "ack", "data": "On it, sir." }`,
-//!   `{ "type": "result", "data": "PR #76 is approved" }`,
-//!   `{ "type": "done" }`.
+//! The frontend drives it via IPC:
+//!   - `open_session`     → load config (Worker URL, user_id, device_id).
+//!   - `send_transcript`  → HTTP POST to Worker, emit events as they arrive.
+//!   - `cancel_session`   → reset state (no connection to tear down).
+//!   - `close_session`    → reset state.
 //!
-//! No binary frames are sent or received — audio stays on the device.
-//! The sessionId is generated client-side (UUID v4) so the server can key
-//! the response stream back to this socket via the sidecar's session map.
+//! Events emitted to the frontend (same as the old WebSocket protocol):
+//!   `{ "type": "state", "state": "thinking" }`
+//!   `{ "type": "ack", "data": "On it, sir." }`
+//!   `{ "type": "result", "data": "PR #76 is approved" }`
+//!   `{ "type": "done" }`
 
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::connect_async;
+use serde::Serialize;
 
-// `split()` and `next()` come from StreamExt; `send()` from SinkExt.
-use futures_util::{SinkExt, StreamExt};
+const ACK_PHRASES: &[&str] = &[
+    "On it, sir.",
+    "Right away, sir.",
+    "Checking that now, sir.",
+    "Working on it, sir.",
+    "Let me look into that, sir.",
+];
 
-#[derive(serde::Serialize, Clone)]
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerEvent {
-    pub kind: String,        // "state" | "ack" | "result" | "done" | "error"
+    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,17 +41,35 @@ pub struct ServerEvent {
     pub message: Option<String>,
 }
 
+impl ServerEvent {
+    fn state(s: &str) -> Self {
+        Self { kind: "state".into(), state: Some(s.into()), data: None, message: None }
+    }
+    fn ack(text: &str) -> Self {
+        Self { kind: "ack".into(), state: None, data: Some(text.into()), message: None }
+    }
+    fn result(text: &str) -> Self {
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None }
+    }
+    fn done() -> Self {
+        Self { kind: "done".into(), state: None, data: None, message: None }
+    }
+    fn error(msg: &str) -> Self {
+        Self { kind: "error".into(), state: None, data: None, message: Some(msg.into()) }
+    }
+}
+
 struct Session {
-    tx: mpsc::UnboundedSender<Message>,
-    #[allow(dead_code)]
-    session_id: String,
+    worker_url: String,
+    user_id: String,
+    device_id: String,
+    cancelled: bool,
 }
 
 static SESSION: once_cell::sync::Lazy<Arc<Mutex<Option<Session>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
 /// Generate a RFC 4122 v4 UUID string without pulling a uuid crate.
-/// Entropy: nanosecond clock ^ process id ^ a global counter (good enough for session IDs).
 fn uuid_v4() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,14 +82,12 @@ fn uuid_v4() -> String {
     let pid = std::process::id() as u64;
     let ctr = COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Mix the three sources into 16 bytes.
     let mut bytes = [0u8; 16];
     let a = nanos.wrapping_mul(0x2545F4914F6CDD1D).wrapping_add(ctr);
     let b = pid.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(nanos ^ ctr);
     bytes[0..8].copy_from_slice(&a.to_le_bytes());
     bytes[8..16].copy_from_slice(&b.to_le_bytes());
 
-    // Set version (4) and variant (10xx) bits.
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
@@ -78,140 +98,145 @@ fn uuid_v4() -> String {
     )
 }
 
-/// IPC: open a WSS session to the configured backend and send the "start" frame.
+/// IPC: open a session — just stores the Worker URL + identity.
+/// No WebSocket connection is made. The Worker is called on-demand per transcript.
 #[tauri::command]
 pub async fn open_session<R: Runtime>(
-    app: AppHandle<R>,
+    _app: AppHandle<R>,
     url: String,
-    token: String,
+    _token: String,
     user_id: String,
     device_id: String,
 ) -> Result<String, String> {
-    close_session_inner().await;
-
-    let req = tokio_tungstenite::tungstenite::http::Request::builder()
-        .uri(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Sec-WebSocket-Protocol", "NEXUS.v1")
-        .header("User-Agent", "NEXUS/0.1");
-    let request = req
-        .body(())
-        .map_err(|e| format!("build request: {e}"))?;
-
-    let (ws_stream, _resp) = connect_async(request)
-        .await
-        .map_err(|e| format!("ws connect: {e}"))?;
-
-    let (mut write, mut read) = ws_stream.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    // Normalize: the URL might be a ws:// URL from old config. Convert to https://.
+    let worker_url = url
+        .replace("ws://", "http://")
+        .replace("wss://", "https://")
+        .replace("/ws", "");  // strip /ws path if present from old config
 
     let session_id = uuid_v4();
 
-    // Send the "start" control frame immediately so the sidecar registers the session.
-    let start_frame = serde_json::json!({
-        "type": "start",
-        "sessionId": session_id,
-        "userId": user_id,
-        "deviceId": device_id,
-    });
-    if write
-        .send(Message::Text(start_frame.to_string()))
-        .await
-        .is_err()
-    {
-        return Err("failed to send start frame".into());
-    }
-
-    // Writer: pump outgoing messages from the channel.
-    tokio::spawn(async move {
-        use futures_util::SinkExt;
-        while let Some(msg) = rx.recv().await {
-            if write.send(msg).await.is_err() { break; }
-        }
-        let _ = write.send(Message::Close(None)).await;
+    *SESSION.lock() = Some(Session {
+        worker_url,
+        user_id,
+        device_id,
+        cancelled: false,
     });
 
-    // Reader: forward server frames to the frontend as `assistant:server` events.
-    // Only text frames are expected — binary frames are ignored (text-only protocol).
-    let app2 = app.clone();
-    tokio::spawn(async move {
-        use futures_util::StreamExt;
-        while let Some(frame) = read.next().await {
-            let event = match frame {
-                Ok(Message::Text(t)) => parse_server_json(&t),
-                Ok(Message::Binary(_)) => {
-                    // Binary frames should never be received in text-only mode.
-                    // Log and ignore — do not play as audio.
-                    tracing::warn!("received unexpected binary frame from server (text-only protocol)");
-                    continue;
-                }
-                Ok(Message::Close(_)) => {
-                    let _ = app2.emit("assistant:server", ServerEvent {
-                        kind: "done".into(),
-                        state: None, data: None, message: None,
-                    });
-                    break;
-                }
-                _ => continue,
-            };
-            let _ = app2.emit("assistant:server", event);
-        }
-    });
-
-    *SESSION.lock() = Some(Session { tx, session_id: session_id.clone() });
     Ok(session_id)
 }
 
-/// IPC: send transcribed text to the server.
-/// The client does STT locally and sends only text over the WebSocket.
+/// IPC: send transcript text to the Worker via HTTP POST.
+/// Emits state/ack/result/done events to the frontend as the request progresses.
 #[tauri::command]
-pub async fn send_transcript(text: String) -> Result<(), String> {
-    if let Some(s) = SESSION.lock().as_ref() {
-        let frame = serde_json::json!({ "type": "transcript", "data": text }).to_string();
-        let _ = s.tx.send(Message::Text(frame));
+pub async fn send_transcript<R: Runtime>(
+    app: AppHandle<R>,
+    text: String,
+) -> Result<(), String> {
+    let session_info = {
+        let mut guard = SESSION.lock();
+        match guard.as_mut() {
+            Some(s) => {
+                s.cancelled = false;
+                (s.worker_url.clone(), s.user_id.clone(), s.device_id.clone())
+            }
+            None => return Err("no session open".into()),
+        }
+    };
+    let (worker_url, user_id, device_id) = session_info;
+
+    // 1. Emit "thinking" state
+    let _ = app.emit("assistant:server", ServerEvent::state("thinking"));
+
+    // 2. Emit ack immediately (the client speaks this locally via TTS)
+    let ack = ACK_PHRASES[uuid_v4().as_bytes()[0] as usize % ACK_PHRASES.len()];
+    let _ = app.emit("assistant:server", ServerEvent::ack(ack));
+
+    // 3. Build the request payload
+    let session_id = uuid_v4();
+    let payload = serde_json::json!({
+        "request_id": session_id,
+        "requester": {
+            "id": user_id,
+            "device_id": device_id,
+        },
+        "task": {
+            "type": "general",
+            "request": text,
+        },
+    });
+
+    // 4. HTTP POST to the Worker
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+
+    let resp = client
+        .post(&worker_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("worker request: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let _ = app.emit("assistant:server", ServerEvent::error(&format!(
+            "Worker error {status}: {body}"
+        )));
+        return Ok(());
     }
+
+    let data: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("worker json: {e}"))?;
+
+    // 5. Check if cancelled while we were waiting
+    {
+        let guard = SESSION.lock();
+        if let Some(s) = guard.as_ref() {
+            if s.cancelled {
+                return Ok(());
+            }
+        }
+    }
+
+    // 6. Extract reply text and emit result
+    let reply_text = data["reply_text"]
+        .as_str()
+        .or(data["text"].as_str())
+        .or(data["content"].as_str())
+        .or(data["response"].as_str())
+        .unwrap_or("I couldn't process that request.");
+
+    let _ = app.emit("assistant:server", ServerEvent::result(reply_text));
+
+    // 7. Emit done
+    let _ = app.emit("assistant:server", ServerEvent::done());
+
     Ok(())
 }
 
-/// IPC: cancel the current turn and tear down.
+/// IPC: cancel the current turn.
 #[tauri::command]
 pub async fn cancel_session() -> Result<(), String> {
-    if let Some(s) = SESSION.lock().as_ref() {
-        let frame = serde_json::json!({ "type": "cancel" }).to_string();
-        let _ = s.tx.send(Message::Text(frame));
+    if let Some(s) = SESSION.lock().as_mut() {
+        s.cancelled = true;
     }
-    close_session_inner().await;
     Ok(())
 }
 
-/// IPC: graceful close (no cancel signal).
+/// IPC: close the session (reset state).
 #[tauri::command]
 pub async fn close_session() -> Result<(), String> {
-    close_session_inner().await;
+    *SESSION.lock() = None;
     Ok(())
 }
 
-async fn close_session_inner() {
-    if let Some(s) = SESSION.lock().take() {
-        let _ = s.tx.send(Message::Close(None));
-    }
-}
-
-/// Background monitor (keeps the module's `run` task alive; real sessions are demand-driven).
+/// Background monitor (no-op for HTTP mode — no persistent connection to maintain).
 pub async fn run<R: Runtime>(_app: AppHandle<R>) -> Result<(), String> {
     std::future::pending::<()>().await;
     Ok(())
-}
-
-fn parse_server_json(text: &str) -> ServerEvent {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
-        ServerEvent {
-            kind: v["type"].as_str().unwrap_or("unknown").to_string(),
-            state: v["state"].as_str().map(String::from),
-            data: v["data"].as_str().map(String::from),
-            message: v["message"].as_str().map(String::from),
-        }
-    } else {
-        ServerEvent { kind: "raw".into(), data: Some(text.into()), state: None, message: None }
-    }
 }
