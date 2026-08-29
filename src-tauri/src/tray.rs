@@ -34,8 +34,11 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
+                    let _ = crate::window_manager::configure_non_activating_overlay(&w);
                     let _ = w.set_ignore_cursor_events(false);
                     let _ = app.emit("assistant:wake", ());
+                    let _ = app.emit("nexus://wake", ());
+                    let _ = w.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
                 }
             }
             "pause" => {

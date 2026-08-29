@@ -439,7 +439,7 @@ Var AppStartMenuFolder
 !insertmacro MUI_PAGE_FINISH
 
 Function RunMainBinary
-  nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
+  nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" "--setup"
 FunctionEnd
 
 ; Uninstaller Pages

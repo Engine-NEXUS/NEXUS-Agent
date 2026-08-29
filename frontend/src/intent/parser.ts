@@ -28,6 +28,10 @@ export type Intent =
   | { action: "open_app"; target: string }
   | { action: "open_url"; target: string; url: string }
   | { action: "search"; query: string }
+  | { action: "media_play_pause" }
+  | { action: "media_next" }
+  | { action: "media_previous" }
+  | { action: "media_stop" }
   | { action: "unknown"; raw: string };
 
 /**
@@ -445,7 +449,6 @@ function doubleMetaphone(word: string): string[] {
         break;
 
       case "W":
-      case "Y":
         if (current === 0 && isVowel(next)) {
           add("A");
         }
@@ -516,6 +519,20 @@ function levenshtein(a: string, b: string): number {
  */
 export function parseIntent(transcript: string): Intent {
   const text = transcript.trim().toLowerCase().replace(/\s+/g, " ");
+
+  // --- Media Control (MPRIS D-Bus / System Keys) ---
+  if (/^(?:pause|pause\s+music|pause\s+media|play|resume|resume\s+music|play\s*[\/\s]*pause|toggle\s+media)$/i.test(text)) {
+    return { action: "media_play_pause" };
+  }
+  if (/^(?:next|next\s+song|next\s+track|skip|skip\s+song|skip\s+track)$/i.test(text)) {
+    return { action: "media_next" };
+  }
+  if (/^(?:previous|previous\s+song|previous\s+track|prev|prev\s+song|go\s+back\s+a\s+song)$/i.test(text)) {
+    return { action: "media_previous" };
+  }
+  if (/^(?:stop\s+music|stop\s+media|stop\s+playback)$/i.test(text)) {
+    return { action: "media_stop" };
+  }
 
   // --- "open <something>" / "launch <something>" / etc. ---
   // Matches: "open gmail", "open notepad", "open calculator", "open youtube"

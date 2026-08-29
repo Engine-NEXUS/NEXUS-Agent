@@ -8,7 +8,7 @@ rust-version = "1.77"
 
 [lib]
 name = "nexus_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -35,8 +35,11 @@ anyhow = "1"
 # Audio capture (16k mono) for wake word detection
 cpal = "0.15"
 # sherpa-onnx: on-device keyword spotting + speaker verification (Apache 2.0)
-# Provides KWS (wake word "NEXUS") and speaker embedding extraction (voice lock).
-sherpa-onnx = "1.13.4"
+# ONLY compiled when the `wakeword-sherpa` feature is enabled.
+# The default wake engine is openWakeWord (wakeword-oww / tract-onnx).
+# sherpa-onnx pulls in a large C++ ONNX Runtime build step — gating it
+# behind a feature flag shaves ~5-8 min off cold builds for the default config.
+sherpa-onnx = { version = "1.13.4", optional = true }
 # tract-onnx: pure-Rust ONNX inference (no native ONNX Runtime dependency)
 # Used for openWakeWord KWS pipeline: melspectrogram → embedding → classifier
 tract-onnx = "0.23"
@@ -60,7 +63,7 @@ dirs-next = "2"
 
 # Process enumeration — check if an app is already running (3-tier resolution)
 sysinfo = "0.32"
-uuid = { version = "1.20.0", features = ["v4"] }
+
 
 # Windows-specific: EnumWindows + SetForegroundWindow + ShellExecuteW
 [target.'cfg(windows)'.dependencies]
@@ -82,6 +85,10 @@ winreg = "0.55"
 webview2-com = "0.38"
 windows-core = "0.61"
 
+# Linux-specific: D-Bus / MPRIS media control & native notifications via zbus
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
 [features]
 default = ["wakeword-oww"]
 # REQUIRED FOR PRODUCTION BUILDS — DO NOT REMOVE.
@@ -102,15 +109,37 @@ default = ["wakeword-oww"]
 # It is intentionally NOT in `default` — `tauri dev` needs it OFF so the Vite
 # dev server and hot reload keep working.
 custom-protocol = ["tauri/custom-protocol"]
-wakeword-porcupine = []   # legacy: bundle libpv_porcupine + .ppn at runtime
-wakeword-sherpa = []      # sherpa-onnx VAD + ASR + speaker verification (old)
-wakeword-oww = []         # openWakeWord KWS + speaker verification (new, default)
-mock-wake = []            # CI: skip native lib, emit fake wake on hotkey only
-opus-encode = ["dep:opus"] # enable Opus upstream compression (needs CMake)
+wakeword-porcupine = []          # legacy: bundle libpv_porcupine + .ppn at runtime
+wakeword-sherpa = ["dep:sherpa-onnx"]  # sherpa-onnx VAD + ASR + speaker verification (old)
+wakeword-oww = []                # openWakeWord via tract-onnx (new, default)
+mock-wake = []                   # CI: skip native lib, emit fake wake on hotkey only
+opus-encode = ["dep:opus"]       # enable Opus upstream compression (needs CMake)
+
+[profile.dev]
+opt-level = 0
+debug = true
+incremental = true   # fast recompile on small changes
 
 [profile.release]
-opt-level = "z"
+# "s" = optimize for binary size (10-30% faster to compile than "z",
+# almost identical output size in practice for this codebase).
+opt-level = "s"
+# thin LTO: still removes dead code and does cross-crate inlining,
+# but parallelises the work. ~2x faster link step vs fat LTO.
+lto = "thin"
+# 4 parallel codegen units — allows LLVM to work in parallel.
+# codegen-units=1 forces serial codegen, which was the main bottleneck.
+codegen-units = 4
+strip = true
+panic = "abort"
+
+# [profile.dist] — use this ONLY when building the final installer
+# (pwsh ./scripts/build.ps1 already passes the right flags).
+# Keeps fat LTO + single codegen unit for the smallest possible binary.
+[profile.dist]
+inherits = "release"
 lto = true
 codegen-units = 1
+opt-level = "z"
 strip = true
 panic = "abort"

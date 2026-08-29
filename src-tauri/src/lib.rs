@@ -8,13 +8,15 @@
 
 mod window_manager;
 mod hotkey;
+// wakeword-oww (default): openWakeWord via tract-onnx (pure Rust, no C++ deps)
 #[cfg(feature = "wakeword-oww")]
 mod wakeword_oww;
 #[cfg(feature = "wakeword-oww")]
 mod wakeword {
     pub use crate::wakeword_oww::*;
 }
-#[cfg(not(feature = "wakeword-oww"))]
+// wakeword-sherpa (opt-in): old VAD+ASR pipeline using sherpa-onnx C++ runtime
+#[cfg(all(not(feature = "wakeword-oww"), feature = "wakeword-sherpa"))]
 mod wakeword;
 mod network;
 mod tray;
@@ -22,10 +24,13 @@ mod commands;
 mod command_executor;
 mod app_registry;
 mod stt;
-mod stt_server_manager;
+// voice_profile: speaker embedding via sherpa-onnx — only needed with wakeword-sherpa.
+// Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
+#[cfg(feature = "wakeword-sherpa")]
 mod voice_profile;
 mod meeting_detect;
 mod mic_permissions;
+mod mpris;
 
 use tauri::{Emitter, Listener, Manager};
 #[cfg(not(target_os = "windows"))]
@@ -171,14 +176,32 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // Focus the existing window if a second instance is attempted.
-            // Also handle deep-link redirects on Windows/Linux (passed as CLI arg).
+            tracing::info!("single-instance: secondary launch attempt with args: {:?}", args);
+            // Handle deep-link redirects on Windows/Linux (passed as CLI arg)
             if let Some(url) = args.iter().find(|a| a.starts_with("nexus://")) {
                 let _ = app.emit("deep-link://oauth-callback", url.clone());
             }
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+
+            // Check if secondary launch requested setup wizard or settings window
+            let is_setup = args.iter().any(|a| a == "--setup" || a == "-s");
+            let is_settings = args.iter().any(|a| a == "--settings");
+
+            if is_setup {
+                if let Some(setup_win) = app.get_webview_window("setup") {
+                    let _ = setup_win.show();
+                    let _ = setup_win.unminimize();
+                    let _ = setup_win.set_focus();
+                }
+            } else if is_settings {
+                if let Some(settings_win) = app.get_webview_window("settings") {
+                    let _ = settings_win.show();
+                    let _ = settings_win.unminimize();
+                    let _ = settings_win.set_focus();
+                }
+            } else if let Some(main_win) = app.get_webview_window("main") {
+                let _ = main_win.show();
+                let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
+                let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
             }
         }))
         .plugin(tauri_plugin_shell::init())
@@ -406,28 +429,7 @@ pub fn run() {
 
             // Position the orb at bottom-center, just above the taskbar/dock.
             if let Some(win) = app.get_webview_window("main") {
-                use tauri::PhysicalPosition;
-                if let Ok(Some(monitor)) = win.current_monitor() {
-                    let scale = monitor.scale_factor();
-                    let screen = monitor.size();
-                    let orb = 200i32; // matches tauri.conf.json
-                    let phys_orb = (orb as f64 * scale) as i32;
-
-                    let x = (screen.width as i32 - phys_orb) / 2;
-                    // Position relative to the work area (excludes taskbar/dock).
-                    // Use the monitor's work area if available, otherwise estimate.
-                    // Windows taskbar ~48px, macOS dock ~70px.
-                    #[cfg(target_os = "macos")]
-                    let taskbar = (70.0 * scale) as i32;
-                    #[cfg(not(target_os = "macos"))]
-                    let taskbar = (48.0 * scale) as i32;
-                    // Small gap above the taskbar/dock
-                    let gap = (12.0 * scale) as i32;
-                    let y = screen.height as i32 - phys_orb - taskbar - gap;
-
-                    let _ = win.set_position(PhysicalPosition::new(x, y));
-                    tracing::info!("orb positioned at ({x}, {y})");
-                }
+                let _ = window_manager::position_orb(&win);
             }
 
             // Pre-index installed apps for instant launch (background thread).
@@ -459,12 +461,6 @@ pub fn run() {
             // No sidecar, no server, no WebSocket — fully serverless.
             // The Worker URL is baked into the installer via NEXUS_SERVER_URL.
 
-            // STT server (faster-whisper on port 39217) transcribes audio locally.
-            // Without it, no commands can be executed — every transcript is empty.
-            // Auto-spawn it in a BACKGROUND THREAD — model loading takes 10-20s on CPU
-            // and must not block app startup. The first transcription will wait for it.
-            std::thread::spawn(stt_server_manager::init);
-
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::run(handle).await {
@@ -493,11 +489,13 @@ pub fn run() {
             //   - Installer override: set NEXUS_SERVER_URL env var before building
             //     the installer to bake in the user's remote server URL.
             let store_path = app.path().app_data_dir().ok();
+            let mut should_open_setup = std::env::args().any(|arg| arg == "--setup" || arg == "-s");
             if let Some(dir) = store_path {
                 let config_path = dir.join("nexus-config.json");
                 if !config_path.exists() {
-                    let user_id = format!("user_{}", uuid::Uuid::new_v4().simple());
-                    let device_id = format!("device_{}", uuid::Uuid::new_v4().simple());
+                    should_open_setup = true;
+                    let user_id = format!("user_{}", network::uuid_v4());
+                    let device_id = format!("device_{}", network::uuid_v4());
                     let server_url = option_env!("NEXUS_SERVER_URL")
                         .unwrap_or("https://nexus-worker.example.workers.dev");
                     let default_config = serde_json::json!({
@@ -511,6 +509,13 @@ pub fn run() {
                         "auto-created config at {:?} — user={}, device={}, server={}",
                         config_path, user_id, device_id, server_url
                     );
+                }
+            }
+
+            if should_open_setup {
+                if let Some(win) = app.get_webview_window("setup") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
                 }
             }
 
@@ -528,9 +533,6 @@ pub fn run() {
             commands::close_setup_window,
             commands::save_server_config,
             commands::get_server_config,
-            commands::get_voice_profile_status,
-            commands::enroll_voice,
-            commands::delete_voice_profile,
             commands::meeting_active,
             commands::is_nexus_paused,
             commands::meeting_status,
@@ -544,6 +546,7 @@ pub fn run() {
             commands::clear_transcript,
             commands::refresh_app_registry,
             commands::show_sidebar,
+            commands::show_sidebar_with_content,
             commands::hide_sidebar,
             stt::transcribe_audio,
             stt::stt_status,
