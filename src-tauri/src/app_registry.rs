@@ -72,11 +72,40 @@ pub struct AppEntry {
 struct DiskCache {
     version: u32,
     updated_at: u64,
+    /// Date string (YYYY-MM-DD) of the last OS scan.
+    /// Used to skip re-scanning if the cache is already from today.
+    #[serde(default)]
+    last_scan_date: String,
     entries: Vec<AppEntry>,
 }
 
-const CACHE_VERSION: u32 = 1;
-const REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+const CACHE_VERSION: u32 = 2;
+/// Check hourly whether it's a new day (for daily scan).
+const REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
+
+// ─── Resolution cache (phrase → app mapping, remembers user choices) ───────
+
+/// A resolved app mapping — remembers which app was chosen for a spoken phrase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResolutionEntry {
+    /// The display name of the matched app
+    display_name: String,
+    /// The search name that was matched
+    matched_name: String,
+    /// How many times this phrase has been used
+    use_count: u32,
+    /// Last used timestamp (unix seconds)
+    last_used: u64,
+}
+
+/// Disk format for the resolution cache.
+#[derive(Debug, Serialize, Deserialize)]
+struct ResolutionDiskCache {
+    version: u32,
+    entries: HashMap<String, ResolutionEntry>,
+}
+
+const RESOLUTION_CACHE_VERSION: u32 = 1;
 
 // ─── Global singleton ──────────────────────────────────────────────────────
 
@@ -87,6 +116,10 @@ pub struct AppRegistry {
     cache: RwLock<HashMap<String, AppEntry>>,
     /// When the cache was last refreshed from OS sources
     last_refresh: RwLock<Option<Instant>>,
+    /// Resolution cache: spoken phrase → resolved app (avoids re-lookup)
+    resolution: RwLock<HashMap<String, ResolutionEntry>>,
+    /// Last scan date (YYYY-MM-DD) — used for daily scan logic
+    last_scan_date: RwLock<Option<String>>,
 }
 
 impl AppRegistry {
@@ -94,20 +127,68 @@ impl AppRegistry {
         Self {
             cache: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(None),
+            resolution: RwLock::new(HashMap::new()),
+            last_scan_date: RwLock::new(None),
         }
     }
 }
 
+/// Get today's date as a string (YYYY-MM-DD) for daily scan comparison.
+fn today_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Simple date calculation from unix timestamp
+    let days = secs / 86400;
+    let (year, month, day) = days_to_date(days);
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+/// Convert days since epoch (1970-01-01) to (year, month, day).
+/// Uses the Howard Hinnant algorithm (civil_from_days).
+fn days_to_date(days: u64) -> (u32, u32, u32) {
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if m <= 2 { y + 1 } else { y };
+    (year as u32, m as u32, d as u32)
+}
+
 /// Initialize the registry: load disk cache, start background refresh.
 /// Call this once at app startup (non-blocking).
+///
+/// DAILY SCAN LOGIC:
+///   - Load disk cache synchronously (instant — just reads JSON)
+///   - If cache was scanned TODAY → skip scan (apps haven't changed)
+///   - If cache is from a previous day → background scan (catches installs/uninstalls)
+///   - Hourly check: if it's a new day → one scan
+///   - Maximum 1 scan per day (down from 288 with the old 5-min interval)
 pub fn init() {
-    // Force the Lazy to initialize
     let registry = REGISTRY.clone();
 
     // Load disk cache synchronously (fast — just reading a JSON file)
-    if let Some(entries) = load_disk_cache() {
+    let mut cache_from_today = false;
+    if let Some(disk) = load_disk_cache_with_date() {
+        *registry.last_scan_date.write() = Some(disk.last_scan_date.clone());
+        let today = today_string();
+        if disk.last_scan_date == today {
+            cache_from_today = true;
+            tracing::info!(
+                "app registry: disk cache is from today ({}), skipping scan",
+                today
+            );
+        }
+
         let mut cache = registry.cache.write();
-        for entry in entries {
+        for entry in disk.entries {
             for name in &entry.search_names {
                 cache.insert(name.clone(), entry.clone());
             }
@@ -118,15 +199,33 @@ pub fn init() {
         );
     }
 
-    // Start background app index refresh (scans OS for installed apps)
+    // Load resolution cache (phrase → app mapping)
+    if let Some(entries) = load_resolution_cache() {
+        let mut res = registry.resolution.write();
+        for (phrase, entry) in entries {
+            res.insert(phrase, entry);
+        }
+        tracing::info!("app registry: loaded {} resolution cache entries", res.len());
+    }
+
+    // Background thread: scan if needed, then check hourly for new day
     std::thread::Builder::new()
         .name("app-registry-refresh".into())
         .spawn(move || {
-            refresh_from_os(&registry);
-            // Schedule periodic refresh
-            loop {
-                std::thread::sleep(REFRESH_INTERVAL);
+            // Only scan if the cache is NOT from today
+            if !cache_from_today {
                 refresh_from_os(&registry);
+            }
+
+            // Hourly check: is it a new day?
+            loop {
+                std::thread::sleep(REFRESH_CHECK_INTERVAL);
+                let today = today_string();
+                let last = registry.last_scan_date.read().clone();
+                if last.as_deref() != Some(today.as_str()) {
+                    tracing::info!("app registry: new day detected ({}), refreshing...", today);
+                    refresh_from_os(&registry);
+                }
             }
         })
         .ok();
@@ -137,17 +236,50 @@ pub fn init() {
 
 /// Look up an app by name. Returns the best match or None.
 /// This is the hot path — must be <1ms.
+///
+/// Resolution order:
+///   1. Resolution cache (phrase → app, remembers user's previous choice) — O(1)
+///   2. Exact match in app cache — O(1)
+///   3. Prefix/contains/fuzzy match — O(n) but only on cache miss
 pub fn lookup(query: &str) -> Option<AppEntry> {
     let registry = &*REGISTRY;
-    let cache = registry.cache.read();
     let q = query.to_lowercase();
 
-    // 1. Exact match (O(1) HashMap lookup)
+    // 1. Resolution cache — if we've resolved this phrase before, use the saved result.
+    // This is the fastest path (~0.01ms) and remembers the user's preferred app
+    // when multiple apps match the same name.
+    {
+        let res = registry.resolution.read();
+        if let Some(resolved) = res.get(&q) {
+            // Find the actual AppEntry by display name
+            let cache = registry.cache.read();
+            // Try exact match on the resolved display name first
+            for entry in cache.values() {
+                if entry.display_name.to_lowercase() == resolved.display_name.to_lowercase() {
+                    return Some(entry.clone());
+                }
+            }
+            // Fallback: try the matched_name
+            if let Some(entry) = cache.get(&resolved.matched_name) {
+                return Some(entry.clone());
+            }
+            // Resolution cache is stale (app may have been uninstalled) — fall through
+            tracing::debug!(
+                "resolution cache stale for '{}': app '{}' not found",
+                q,
+                resolved.display_name
+            );
+        }
+    }
+
+    let cache = registry.cache.read();
+
+    // 2. Exact match (O(1) HashMap lookup)
     if let Some(entry) = cache.get(&q) {
         return Some(entry.clone());
     }
 
-    // 2. Prefix match — "calc" matches "calculator"
+    // 3. Prefix match — "calc" matches "calculator"
     let mut best: Option<(&AppEntry, usize)> = None;
     for (name, entry) in cache.iter() {
         if name.starts_with(&q) || q.starts_with(name.as_str()) {
@@ -158,7 +290,7 @@ pub fn lookup(query: &str) -> Option<AppEntry> {
         }
     }
 
-    // 3. Contains match — "chrome" in "google chrome"
+    // 4. Contains match — "chrome" in "google chrome"
     if best.is_none() {
         for (name, entry) in cache.iter() {
             if name.contains(&q) || q.contains(name.as_str()) {
@@ -170,7 +302,7 @@ pub fn lookup(query: &str) -> Option<AppEntry> {
         }
     }
 
-    // 4. Levenshtein fuzzy match (for typos: "chroem" → "chrome")
+    // 5. Levenshtein fuzzy match (for typos: "chroem" → "chrome")
     if best.is_none() && q.len() >= 3 {
         for (name, entry) in cache.iter() {
             let dist = levenshtein(&q, name);
@@ -186,10 +318,17 @@ pub fn lookup(query: &str) -> Option<AppEntry> {
     best.map(|(e, _)| e.clone())
 }
 
-/// Record that an app was used (for usage-weighted ranking).
+/// Force a manual refresh of the app registry (e.g. "NEXUS, refresh apps").
+/// Runs synchronously so the caller knows when it's done.
+pub fn force_refresh() {
+    let registry = &*REGISTRY;
+    refresh_from_os(registry);
+}
+
+/// Record that an app was used (for usage-weighted ranking + resolution cache).
+/// Also saves the phrase → app mapping so future lookups are instant.
 pub fn record_usage(query: &str) {
     let registry = &*REGISTRY;
-    let mut cache = registry.cache.write();
     let q = query.to_lowercase();
 
     let now = SystemTime::now()
@@ -197,18 +336,50 @@ pub fn record_usage(query: &str) {
         .unwrap_or_default()
         .as_secs();
 
-    // Update all entries that match this query
-    for entry in cache.values_mut() {
-        if entry.search_names.contains(&q) {
-            entry.use_count += 1;
-            entry.last_used = now;
+    // Update use_count in the app cache
+    let matched_entry: Option<AppEntry> = {
+        let mut cache = registry.cache.write();
+        let mut matched = None;
+        for entry in cache.values_mut() {
+            if entry.search_names.contains(&q) {
+                entry.use_count += 1;
+                entry.last_used = now;
+                if matched.is_none() {
+                    matched = Some(entry.clone());
+                }
+            }
         }
+        matched
+    };
+
+    // Update resolution cache (phrase → app mapping)
+    if let Some(entry) = &matched_entry {
+        let mut res = registry.resolution.write();
+        let res_entry = res.entry(q.clone()).or_insert_with(|| ResolutionEntry {
+            display_name: entry.display_name.clone(),
+            matched_name: q.clone(),
+            use_count: 0,
+            last_used: 0,
+        });
+        res_entry.use_count += 1;
+        res_entry.last_used = now;
+        res_entry.display_name = entry.display_name.clone();
+
+        // Save resolution cache to disk in background
+        let res_snapshot: HashMap<String, ResolutionEntry> = res.clone();
+        std::thread::spawn(move || {
+            save_resolution_cache(&res_snapshot);
+        });
     }
 
-    // Save to disk in background
-    let entries: Vec<AppEntry> = deduplicated_entries(&cache);
+    // Save app cache to disk in background
+    let entries: Vec<AppEntry> = {
+        let cache = registry.cache.read();
+        deduplicated_entries(&cache)
+    };
+    let last_scan = registry.last_scan_date.read().clone();
     std::thread::spawn(move || {
-        save_disk_cache(&entries);
+        save_disk_cache_with_date(&entries, last_scan.as_deref());
     });
 }
 
@@ -576,33 +747,68 @@ fn cache_path() -> PathBuf {
     dir.join("app_cache.json")
 }
 
-fn load_disk_cache() -> Option<Vec<AppEntry>> {
-    let path = cache_path();
+fn resolution_cache_path() -> PathBuf {
+    let base = dirs_next::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join("nexus");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("app_resolution_cache.json")
+}
+
+fn load_resolution_cache() -> Option<HashMap<String, ResolutionEntry>> {
+    let path = resolution_cache_path();
     let data = std::fs::read_to_string(&path).ok()?;
-    let cache: DiskCache = serde_json::from_str(&data).ok()?;
-    if cache.version != CACHE_VERSION {
-        tracing::warn!("disk cache version mismatch, ignoring");
+    let cache: ResolutionDiskCache = serde_json::from_str(&data).ok()?;
+    if cache.version != RESOLUTION_CACHE_VERSION {
+        tracing::warn!("resolution cache version mismatch, ignoring");
         return None;
     }
-    tracing::info!(
-        "loaded disk cache: {} entries, updated {}s ago",
-        cache.entries.len(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .saturating_sub(cache.updated_at)
-    );
     Some(cache.entries)
 }
 
-fn save_disk_cache(entries: &[AppEntry]) {
+fn save_resolution_cache(entries: &HashMap<String, ResolutionEntry>) {
+    let cache = ResolutionDiskCache {
+        version: RESOLUTION_CACHE_VERSION,
+        entries: entries.clone(),
+    };
+    let path = resolution_cache_path();
+    match serde_json::to_string_pretty(&cache) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!("failed to save resolution cache: {}", e);
+            } else {
+                tracing::debug!("saved resolution cache: {} entries to {}", entries.len(), path.display());
+            }
+        }
+        Err(e) => tracing::warn!("failed to serialize resolution cache: {}", e),
+    }
+}
+
+fn load_disk_cache_with_date() -> Option<DiskCache> {
+    let path = cache_path();
+    let data = std::fs::read_to_string(&path).ok()?;
+    let cache: DiskCache = serde_json::from_str(&data).ok()?;
+    // Accept version 1 (old format without last_scan_date) and version 2 (current)
+    if cache.version > CACHE_VERSION {
+        tracing::warn!("disk cache version {} > {}, ignoring", cache.version, CACHE_VERSION);
+        return None;
+    }
+    tracing::info!(
+        "loaded disk cache: {} entries, last scan: {}",
+        cache.entries.len(),
+        if cache.last_scan_date.is_empty() { "unknown".to_string() } else { cache.last_scan_date.clone() }
+    );
+    Some(cache)
+}
+
+fn save_disk_cache_with_date(entries: &[AppEntry], last_scan_date: Option<&str>) {
     let cache = DiskCache {
         version: CACHE_VERSION,
         updated_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
+        last_scan_date: last_scan_date.unwrap_or("").to_string(),
         entries: entries.to_vec(),
     };
     let path = cache_path();
@@ -672,16 +878,21 @@ fn refresh_from_os(registry: &AppRegistry) {
 
     *registry.last_refresh.write() = Some(Instant::now());
 
+    // Update last_scan_date to today
+    let today = today_string();
+    *registry.last_scan_date.write() = Some(today.clone());
+
     let elapsed = start.elapsed();
     tracing::info!(
-        "app registry: refresh complete ({} entries in {:.1}ms)",
+        "app registry: refresh complete ({} entries in {:.1}ms, scan date: {})",
         cache.len(),
-        elapsed.as_secs_f64() * 1000.0
+        elapsed.as_secs_f64() * 1000.0,
+        today
     );
 
-    // Save to disk for cold starts
+    // Save to disk for cold starts (with scan date)
     let disk_entries = deduplicated_entries(&cache);
-    std::thread::spawn(move || save_disk_cache(&disk_entries));
+    std::thread::spawn(move || save_disk_cache_with_date(&disk_entries, Some(&today)));
 }
 
 // ─── Windows discovery ─────────────────────────────────────────────────────
@@ -1174,7 +1385,67 @@ fn discover_macos(entries: &mut Vec<AppEntry>) {
     // Spotlight: find apps in non-standard locations (e.g. /Developer, /opt)
     discover_macos_spotlight(entries);
 
+    // PWAs installed via Chrome/Brave/Edge
+    discover_macos_pwas(entries);
+
     tracing::info!("discovered {} apps from macOS", entries.len());
+}
+
+/// Discover PWAs installed via Chrome, Brave, or Edge on macOS.
+/// These are stored as .app bundles in the browser's Web Applications directory.
+#[cfg(target_os = "macos")]
+fn discover_macos_pwas(entries: &mut Vec<AppEntry>) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let pwa_dirs = [
+        // Chrome PWAs
+        format!("{}/Applications/Chrome Apps", home),
+        // Brave PWAs
+        format!("{}/Applications/Brave Apps", home),
+        // Edge PWAs
+        format!("{}/Applications/Microsoft Edge Apps", home),
+    ];
+
+    let existing: std::collections::HashSet<String> = entries
+        .iter()
+        .map(|e| e.display_name.to_lowercase())
+        .collect();
+
+    let mut count = 0;
+    for dir in &pwa_dirs {
+        let path = std::path::Path::new(dir);
+        if !path.exists() { continue; }
+        if let Ok(readdir) = std::fs::read_dir(path) {
+            for entry in readdir.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !fname.ends_with(".app") { continue; }
+
+                let app_name = fname.trim_end_matches(".app").to_string();
+                if app_name == "Chrome Apps" || app_name == "Brave Apps" { continue; }
+                if existing.contains(&app_name.to_lowercase()) { continue; }
+
+                let app_path = entry.path().to_string_lossy().to_string();
+                let bundle_id = read_macos_bundle_id(&entry.path());
+                let launch = if let Some(bid) = bundle_id {
+                    LaunchMethod::Bundle { bundle_id: bid }
+                } else {
+                    LaunchMethod::AppPath { path: app_path }
+                };
+
+                let search_names = build_search_names(&app_name);
+                entries.push(AppEntry {
+                    display_name: app_name,
+                    search_names,
+                    launch,
+                    use_count: 0,
+                    last_used: 0,
+                });
+                count += 1;
+            }
+        }
+    }
+    if count > 0 {
+        tracing::debug!("discovered {} PWAs from macOS browsers", count);
+    }
 }
 
 /// Use Spotlight's mdfind to find .app bundles in non-standard locations.
@@ -1280,7 +1551,98 @@ fn discover_linux(entries: &mut Vec<AppEntry>) {
     // Also try `flatpak list` for installed Flatpak apps
     discover_flatpak_apps(entries);
 
+    // PWAs installed via Chrome/Brave/Edge
+    discover_linux_pwas(entries);
+
     tracing::info!("discovered {} apps from Linux", entries.len());
+}
+
+/// Discover PWAs installed via Chrome, Brave, or Edge on Linux.
+/// These are stored as .desktop files in the browser's profile directory
+/// with Type=Application and WebApp=true.
+#[cfg(target_os = "linux")]
+fn discover_linux_pwas(entries: &mut Vec<AppEntry>) {
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Chrome/Brave/Edge store PWAs in their profile directories
+    let pwa_dirs = [
+        // Chrome
+        format!("{}/.local/share/applications/chrome", home),
+        // Brave
+        format!("{}/.local/share/applications/brave", home),
+        // Edge
+        format!("{}/.local/share/applications/microsoft-edge", home),
+        // Generic — some browsers put PWAs directly in applications/
+        format!("{}/.local/share/applications", home),
+    ];
+
+    let existing: std::collections::HashSet<String> = entries
+        .iter()
+        .map(|e| e.display_name.to_lowercase())
+        .collect();
+
+    let mut count = 0;
+    for dir in &pwa_dirs {
+        let path = std::path::Path::new(dir);
+        if !path.exists() { continue; }
+        if let Ok(readdir) = std::fs::read_dir(path) {
+            for entry in readdir.flatten() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if !fname.ends_with(".desktop") { continue; }
+
+                // Check if this is a PWA (has WebApp=true or StartupWMClass)
+                if let Some(app_entry) = parse_pwa_desktop_file(&entry.path()) {
+                    if !existing.contains(&app_entry.display_name.to_lowercase()) {
+                        entries.push(app_entry);
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    if count > 0 {
+        tracing::debug!("discovered {} PWAs from Linux browsers", count);
+    }
+}
+
+/// Parse a .desktop file that might be a PWA.
+/// Returns Some(AppEntry) if the file has WebApp=true or is from a browser profile.
+#[cfg(target_os = "linux")]
+fn parse_pwa_desktop_file(path: &std::path::Path) -> Option<AppEntry> {
+    let content = std::fs::read_to_string(path).ok()?;
+    if !content.contains("[Desktop Entry]") { return None; }
+
+    let mut is_webapp = false;
+    let mut name = String::new();
+    let mut exec = String::new();
+    let mut icon = String::new();
+
+    for line in content.lines() {
+        if line.starts_with("Name=") {
+            name = line[5..].to_string();
+        } else if line.starts_with("Exec=") {
+            exec = line[5..].to_string();
+        } else if line.starts_with("Icon=") {
+            icon = line[5..].to_string();
+        } else if line.starts_with("Type=Application") {
+            // Check for WebApp indicator
+        } else if line.contains("WebApp=true") || line.contains("StartupWMClass=") {
+            is_webapp = true;
+        }
+    }
+
+    // Only include if it looks like a PWA
+    if !is_webapp || name.is_empty() || exec.is_empty() { return None; }
+
+    let _ = icon; // icon not used yet
+    let search_names = build_search_names(&name);
+    Some(AppEntry {
+        display_name: name,
+        search_names,
+        launch: LaunchMethod::DesktopExec { exec },
+        use_count: 0,
+        last_used: 0,
+    })
 }
 
 /// Use `flatpak list` to find installed Flatpak apps.

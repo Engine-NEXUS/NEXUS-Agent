@@ -289,6 +289,59 @@ fn check_wasapi_microphone_usage() -> bool {
     result
 }
 
+/// Get all descendant PIDs of the given parent PID (children, grandchildren, etc.).
+///
+/// Uses Toolhelp32Snapshot to walk the process tree. This is needed because
+/// NEXUS's audio capture is done by `msedgewebview2.exe` child processes,
+/// not by `nexus.exe` itself. Without this, NEXUS detects its own WebView2
+/// children as "meetings" and suppresses itself.
+#[cfg(target_os = "windows")]
+fn get_descendant_pids(parent_pid: u32) -> std::collections::HashSet<u32> {
+    use std::collections::HashSet;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let mut descendants: HashSet<u32> = HashSet::new();
+
+    let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+        Ok(s) => s,
+        Err(_) => return descendants,
+    };
+
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+
+    // Build a map of PID → parent PID
+    let mut parent_map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.as_bool() {
+        loop {
+            parent_map.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+            if !unsafe { Process32NextW(snapshot, &mut entry) }.as_bool() {
+                break;
+            }
+        }
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+
+    // BFS from parent_pid to find all descendants
+    let mut queue = vec![parent_pid];
+    while let Some(pid) = queue.pop() {
+        for (&child_pid, &parent) in &parent_map {
+            if parent == pid && !descendants.contains(&child_pid) {
+                descendants.insert(child_pid);
+                queue.push(child_pid);
+            }
+        }
+    }
+
+    descendants
+}
+
 #[cfg(target_os = "windows")]
 unsafe fn wasapi_check_inner() -> bool {
     use windows::Win32::Media::Audio::{
@@ -355,6 +408,10 @@ unsafe fn wasapi_check_inner() -> bool {
 
     let our_pid = std::process::id();
 
+    // Get all descendant PIDs of NEXUS (msedgewebview2.exe children, etc.)
+    // This prevents NEXUS from detecting its own WebView2 audio capture as a "meeting".
+    let descendant_pids = get_descendant_pids(our_pid);
+
     // 5. Check each session
     for i in 0..count {
         let ctrl = match session_list.GetSession(i) {
@@ -378,9 +435,24 @@ unsafe fn wasapi_check_inner() -> bool {
             continue;
         }
 
-        // Get process name to skip system audio service
+        // Skip all descendant processes (msedgewebview2.exe children, etc.)
+        // NEXUS uses WebView2 for mic capture — those child processes must not
+        // trigger false meeting detection.
+        if descendant_pids.contains(&pid) {
+            continue;
+        }
+
+        // Get process name to skip system audio service and NEXUS's WebView2
         let proc_name = get_process_name(pid).unwrap_or_default();
         if proc_name.contains("AudioSrv") || proc_name.contains("audiodg") {
+            continue;
+        }
+
+        // Belt and suspenders: skip any msedgewebview2.exe process.
+        // NEXUS uses WebView2 (msedgewebview2.exe) for audio capture.
+        // The Edge browser uses msedge.exe (not msedgewebview2.exe),
+        // so this won't miss real meetings in Edge.
+        if proc_name.eq_ignore_ascii_case("msedgewebview2.exe") {
             continue;
         }
 

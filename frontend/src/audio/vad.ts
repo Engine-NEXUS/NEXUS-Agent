@@ -46,7 +46,8 @@ const PRE_SPEECH_PAD_MS = 500;          // Audio to prepend before speech start
 const MIN_SPEECH_MS = 500;              // Discard segments shorter than this
 
 // ---- State ----
-let micVad: any = null;           // MicVAD instance (Silero)
+let micVad: any = null;           // MicVAD instance (Silero) — kept alive between commands
+let micVadStream: MediaStream | null = null;  // Stream associated with the pre-init VAD
 let active = false;
 
 // ---- RMS fallback state (used only if Silero fails to load) ----
@@ -109,21 +110,118 @@ async function _preloadSilero(): Promise<void> {
 }
 
 /**
+ * Pre-initialize the MicVAD instance at app startup with a warm mic stream.
+ * This eliminates the 60-250ms MicVAD.new() latency on every wake.
+ *
+ * The VAD is created in paused state (startOnLoad: false) and won't process
+ * audio until startVad() is called. The instance is kept alive between commands
+ * — stopVad() pauses it instead of destroying it.
+ *
+ * Must be called AFTER preloadSileroVad() and AFTER the mic stream is acquired.
+ */
+export async function preloadMicVad(stream: MediaStream): Promise<void> {
+  if (micVad) {
+    console.log("[NEXUS] VAD: MicVAD already pre-initialized");
+    return;
+  }
+
+  try {
+    const { MicVAD } = await import("@ricky0123/vad-web");
+    console.log("[NEXUS] VAD: pre-initializing MicVAD with warm stream...");
+
+    micVad = await MicVAD.new({
+      baseAssetPath: "./",
+      onnxWASMBasePath: ORT_CDN_BASE,
+      model: "v5",
+      startOnLoad: false,
+      positiveSpeechThreshold: POSITIVE_SPEECH_THRESHOLD,
+      negativeSpeechThreshold: NEGATIVE_SPEECH_THRESHOLD,
+      redemptionMs: REDEMPTION_MS,
+      preSpeechPadMs: PRE_SPEECH_PAD_MS,
+      minSpeechMs: MIN_SPEECH_MS,
+      submitUserSpeechOnPause: true,
+      ortConfig: (ort: any) => {
+        ort.env.wasm.wasmPaths = ORT_CDN_BASE;
+        ort.env.wasm.numThreads = 1;
+      },
+      getStream: async () => stream,
+      pauseStream: async (s: MediaStream) => {
+        s.getTracks().forEach((t) => (t.enabled = false));
+      },
+      resumeStream: async (s: MediaStream) => {
+        s.getTracks().forEach((t) => (t.enabled = true));
+        return s;
+      },
+      onSpeechStart: () => {
+        console.log("[NEXUS] VAD: Silero speech start detected");
+      },
+      onSpeechRealStart: () => {
+        console.log("[NEXUS] VAD: Silero speech real start (min frames met)");
+      },
+      onVADMisfire: () => {
+        console.log("[NEXUS] VAD: Silero misfire (segment too short)");
+      },
+      onSpeechEnd: (audio: Float32Array) => {
+        console.log(`[NEXUS] VAD: Silero speech end (${audio.length} samples @ 16kHz)`);
+        active = false;
+        void finishCaptureFromVad(audio);
+      },
+      onFrameProcessed: (probs: { isSpeech: number; notSpeech: number }) => {
+        if (Math.random() < 0.01) {
+          console.log(`[NEXUS] VAD: Silero probs speech=${probs.isSpeech.toFixed(3)} silence=${probs.notSpeech.toFixed(3)}`);
+        }
+      },
+    });
+
+    micVadStream = stream;
+    console.log("[NEXUS] VAD: MicVAD pre-initialized (paused, ready for instant start)");
+  } catch (err) {
+    console.warn("[NEXUS] VAD: MicVAD pre-init failed, will create on wake:", err);
+    micVad = null;
+    micVadStream = null;
+  }
+}
+
+/**
  * Start VAD on an existing MediaStream.
  * Tries Silero VAD first, falls back to RMS if Silero is unavailable.
+ *
+ * If MicVAD was pre-initialized at startup, this just calls micVad.start()
+ * (resume from pause) — near-instant (~1-10ms).
+ * If not pre-initialized, creates a new MicVAD instance (~60-250ms).
  */
 export async function startVad(stream: MediaStream): Promise<void> {
   if (active) return;
   active = true;
   startedAt = performance.now();
 
-  // Try Silero VAD first.
+  // ─── Fast path: reuse pre-initialized MicVAD ──────────────────────
+  if (micVad && micVadStream === stream) {
+    try {
+      await micVad.start();
+      console.log("[NEXUS] VAD: Silero VAD resumed (pre-initialized, ~1ms)");
+      return;
+    } catch (err) {
+      console.warn("[NEXUS] VAD: pre-init MicVAD start failed, recreating:", err);
+      micVad = null;
+      micVadStream = null;
+    }
+  }
+
+  // ─── Slow path: create new MicVAD (first wake or pre-init failed) ──
+  // If we have a stale micVad from a different stream, destroy it first
+  if (micVad && micVadStream !== stream) {
+    try { micVad.pause(); } catch {}
+    micVad = null;
+    micVadStream = null;
+  }
+
   try {
     await startSileroVad(stream);
     return;
   } catch (err) {
     console.warn("[NEXUS] VAD: Silero VAD failed, falling back to RMS:", err);
-    active = false; // reset for RMS fallback
+    active = false;
   }
 
   // Fallback to RMS energy detection.
@@ -134,12 +232,14 @@ export async function startVad(stream: MediaStream): Promise<void> {
 
 /**
  * Stop VAD (either Silero or RMS).
+ * With hot mic + pre-init VAD, this PAUSES the MicVAD instead of destroying it.
+ * The MicVAD instance is kept alive for instant resume on the next wake.
  */
 export function stopVad(): void {
   active = false;
   if (micVad) {
     try { micVad.pause(); } catch {}
-    micVad = null;
+    // DON'T set micVad = null — keep it alive for instant resume
   }
   teardownRms();
 }
@@ -147,9 +247,17 @@ export function stopVad(): void {
 // ─── Silero VAD ────────────────────────────────────────────────────────────
 
 async function startSileroVad(stream: MediaStream): Promise<void> {
+  // If MicVAD already exists from pre-init, just start it
+  if (micVad) {
+    micVadStream = stream;
+    await micVad.start();
+    console.log("[NEXUS] VAD: Silero VAD started (reused pre-init instance)");
+    return;
+  }
+
   const { MicVAD } = await import("@ricky0123/vad-web");
 
-  console.log("[NEXUS] VAD: starting Silero ONNX VAD (WASM from CDN)");
+  console.log("[NEXUS] VAD: creating new Silero ONNX VAD (WASM from CDN)");
 
   micVad = await MicVAD.new({
     // Local files for the model and worklet (served by viteStaticCopy).
@@ -208,6 +316,7 @@ async function startSileroVad(stream: MediaStream): Promise<void> {
     },
   });
 
+  micVadStream = stream;
   await micVad.start();
   console.log("[NEXUS] VAD: Silero VAD started successfully");
 }

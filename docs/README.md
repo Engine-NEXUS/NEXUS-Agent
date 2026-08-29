@@ -2,7 +2,7 @@
 
 > Complete technical documentation for the NEXUS floating desktop assistant.
 > A cross-platform, Siri-like, thin-client assistant that talks to a fat server (n8n + Ollama).
-> All documentation reflects the current state of the codebase as of 2026-08-19.
+> All documentation reflects the current state of the codebase as of 2026-08-23.
 
 ---
 
@@ -46,6 +46,10 @@ If you're new to the project, read in this order:
 | 09 | [audio-pipeline.md](./features/09-audio-pipeline.md) | Complete local audio chain: ScriptProcessorNode capture → Silero VAD → faster-whisper STT (127.0.0.1) → Web Speech API TTS |
 | 10 | [window-overlay.md](./features/10-window-overlay.md) | Transparent, frameless, always-on-top orb. Region-aware click-through. Bottom-center positioning. Slide animation. macOS accessory app |
 | 11 | [system-tray.md](./features/11-system-tray.md) | Tray menu: show, pause/resume, settings, quit. Autostart. Single instance. Deep-link forwarding |
+| 12 | [settings-window.md](./features/12-settings-window.md) | Dedicated tabbed settings window (600x720): General, Audio, Wake Word, Privacy, Backend. White theme. Settings persisted to JSON via Rust IPC |
+| 13 | [response-sidebar.md](./features/13-response-sidebar.md) | Right-edge transparent window (280x500) that shows server responses only. Slides in from right when n8n/Ollama responds. Not for local commands |
+| 14 | [nsis-installer.md](./features/14-nsis-installer.md) | Custom white-themed NSIS installer with NEXUS branding, 220x500 sidebar image, no desktop shortcut (Start Menu only). 40.1 MB LZMA compressed |
+| 15 | [setup-wizard.md](./features/15-setup-wizard.md) | 4-step onboarding wizard (520x680): Welcome → Server → Voice → Accounts. Multi-option Google + GitHub cards with brand icons. API keys section |
 
 ### Credentials (How API keys, OAuth, and device tokens work)
 
@@ -81,6 +85,18 @@ If you're new to the project, read in this order:
 | 14 | [meeting-privacy-mode.md](./changes/14-meeting-privacy-mode.md) | Meeting detection + wake/TTS suppression |
 | 15 | [oww-kws.md](./changes/15-oww-kws.md) | Migrated from VAD+ASR (~30% recall) to openWakeWord KWS (~100% recall) |
 | 16 | [tts-fixes.md](./changes/16-tts-fixes.md) | Removed comma pause in "Didn't catch that sir" TTS |
+| 17 | [white-theme-ui-overhaul.md](./changes/17-white-theme-ui-overhaul.md) | White theme design tokens, settings window, setup wizard. Orb changes later reverted |
+| 18 | [orb-revert.md](./changes/18-orb-revert.md) | Reverted orb window to original 200x200 after user feedback. Settings + setup kept |
+| 19 | [nsis-installer.md](./changes/19-nsis-installer.md) | Custom white-themed NSIS installer with branded images (220x500 sidebar, 180x68 header) |
+| 20 | [setup-wizard-redesign.md](./changes/20-setup-wizard-redesign.md) | 4-step setup wizard with multi-option Google + GitHub account cards |
+| 21 | [response-sidebar.md](./changes/21-response-sidebar.md) | Right-side response sidebar (280x500) that shows only for server responses |
+| 22 | [installer-desktop-shortcut-removal.md](./changes/22-installer-desktop-shortcut-removal.md) | Removed desktop shortcut option from NSIS installer (Start Menu only) |
+| 23 | [meeting-detection-self-trigger-fix.md](./changes/23-meeting-detection-self-trigger-fix.md) | Fixed NEXUS detecting its own WebView2 as a meeting (wake/TTS deadlock) |
+| 24 | [local-first-intent-routing.md](./changes/24-local-first-intent-routing.md) | Local commands now execute before contacting sidecar (no more n8n dependency for basic commands) |
+| 25 | [stt-server-auto-start.md](./changes/25-stt-server-auto-start.md) | STT server now auto-starts with NEXUS (was the root cause of all command failures) |
+| 26 | [stt-performance-optimization.md](./changes/26-stt-performance-optimization.md) | STT: base→tiny.en, beam_size 5→1, eager loading — 54x faster, 22% less RAM |
+| 27 | [native-app-priority-resolution-cache.md](./changes/27-native-app-priority-resolution-cache.md) | Opens native apps/PWAs/Store apps instead of browser tabs. Resolution cache + daily scan + cross-platform PWA discovery |
+| 28 | [hot-mic-preinit-vad.md](./changes/28-hot-mic-preinit-vad.md) | Eliminates 2s wake-to-listen delay: hot mic + pre-init VAD + parallel init |
 
 ### Wake Word Detection (Detailed Deep Dive)
 
