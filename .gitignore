@@ -37,6 +37,14 @@ desktop.ini
 secrets.json
 credentials.json
 
+# Machine-specific generated launchers.
+# start_stt.cmd embeds an absolute path to the local Python interpreter
+# (e.g. C:\Users\<name>\AppData\Local\Programs\Python\...\pythonw.exe),
+# so it is valid on exactly one machine and leaks the username.
+server/start_stt.cmd
+server/start_*.cmd
+server/start_*.sh
+
 # Tauri
 src-tauri/WixTools/
 
@@ -59,6 +67,11 @@ frontend/yarn.lock
 
 # Experiment / scratch projects (not part of NEXUS)
 experiment/
+
+# Stray Lottie / animation assets dropped in the repo root while iterating on
+# the orb. Anything actually used by the UI belongs in frontend/public/.
+/Development.json
+/*.lottie
 
 # Duplicate model file at root (real one is in src-tauri/resources/oww/)
 /nexus.onnx

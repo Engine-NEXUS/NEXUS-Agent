@@ -396,10 +396,16 @@ pub fn mark_greeted_today<R: Runtime>(
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────
 
-/// IPC: Check if a meeting is active (TTS should be suppressed).
+/// IPC: Check whether TTS should be suppressed right now.
 ///
 /// The frontend calls this before speaking to decide whether to
 /// produce audible TTS or show a silent visual response instead.
+///
+/// Uses `should_suppress_tts()` (not `is_meeting_active()`) so that
+/// disabling auto-detection in settings takes effect immediately.
+/// `is_meeting_active()` only reports the raw detection flag, which the
+/// polling loop clears up to 2s later — long enough for the user to
+/// disable detection and still have their next response muted.
 #[tauri::command]
 pub fn meeting_active<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -407,7 +413,7 @@ pub fn meeting_active<R: Runtime>(
     let state = app
         .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
         .ok_or_else(|| "meeting state not managed".to_string())?;
-    Ok(state.is_meeting_active())
+    Ok(state.should_suppress_tts())
 }
 
 /// IPC: Check if NEXUS is paused (manual pause via tray).
