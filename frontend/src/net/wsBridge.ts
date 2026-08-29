@@ -155,11 +155,29 @@ let sessionOpen = false;
 type LongRunningResultCallback = () => void;
 let longRunningResultCb: LongRunningResultCallback | null = null;
 
+/** Track whether we've already given a local "On it sir" ack for the
+ *  current long-running query. If true, the server's `ack` event is
+ *  suppressed to avoid double-speak. */
+let localAckGiven = false;
+
+/** Called by recorder.ts when it gives a local "On it sir" ack via
+ *  ackLongRunningQuery(). The wsBridge ack handler checks this flag. */
+export function setLocalAckGiven(): void {
+  localAckGiven = true;
+}
+
+/** Reset the local ack flag — called when a new query starts or when
+ *  the result arrives. */
+function resetLocalAck(): void {
+  localAckGiven = false;
+}
+
 /** Called by recorder.ts before sending a long-running query. */
 export function setLongRunningInFlight(transcript: string, onResult: LongRunningResultCallback): void {
   longRunningInFlight = true;
   lastSentTranscript = normalizeTranscript(transcript);
   longRunningResultCb = onResult;
+  resetLocalAck(); // reset for new query
   // Safety timeout: auto-clear after 60s in case the Worker never responds
   if (longRunningTimeout) clearTimeout(longRunningTimeout);
   longRunningTimeout = setTimeout(() => {
@@ -200,6 +218,7 @@ function clearLongRunningInFlight(): void {
   lastSentTranscript = "";
   const cb = longRunningResultCb;
   longRunningResultCb = null;
+  resetLocalAck();
   if (wasInFlight && cb) {
     try { cb(); } catch (e) { console.warn("[NEXUS] long-running result callback error:", e); }
   }
@@ -334,6 +353,12 @@ async function handle(ev: ServerEvent): Promise<void> {
     }
     case "ack":
       // Acknowledgement text (e.g. "On it, sir.") — speak it locally and add to transcript.
+      // Skip if we've already given a local ack (ackLongRunningQuery in recorder.ts)
+      // to avoid double-speak ("On it sir" said twice).
+      if (localAckGiven) {
+        console.log("[NEXUS] server ack suppressed — local ack already given");
+        break;
+      }
       if (ev.data) {
         store.addAssistantMessage(ev.data);
         store.setState("speaking");

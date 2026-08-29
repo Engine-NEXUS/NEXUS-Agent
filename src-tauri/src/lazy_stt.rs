@@ -173,13 +173,6 @@ pub fn find_python() -> Option<String> {
 
     None
 }
-                }
-            }
-        }
-    }
-
-    None
-}
 
 /// Start the STT server if it's not already running.
 /// Called when the wake word fires or when a transcription is needed.

@@ -35,6 +35,7 @@ export type Intent =
   | { action: "media_next" }
   | { action: "media_previous" }
   | { action: "media_stop" }
+  | { action: "greeting"; reply: string }
   | { action: "unknown"; raw: string };
 
 /**

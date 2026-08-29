@@ -70,6 +70,9 @@ pub enum Intent {
     MediaPrevious,
     #[serde(rename = "media_stop")]
     MediaStop,
+    /// Local conversational reply (greetings, thanks, etc.)
+    #[serde(rename = "greeting")]
+    Greeting { reply: String },
     #[serde(rename = "unknown")]
     Unknown { raw: String },
 }
@@ -112,6 +115,10 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
         Intent::MediaNext => execute_media_command("next").await,
         Intent::MediaPrevious => execute_media_command("previous").await,
         Intent::MediaStop => execute_media_command("stop").await,
+        Intent::Greeting { reply } => Ok(CommandResult {
+            success: true,
+            message: reply,
+        }),
         Intent::Unknown { raw } => Ok(CommandResult {
             success: false,
             message: format!(

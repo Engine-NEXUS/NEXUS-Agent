@@ -437,9 +437,6 @@ pub fn run() {
             // A gap much larger than the sleep interval means the machine just
             // resumed from sleep/hibernate.
             //
-            // Note: This no longer triggers a greeting. Greeting is now
-            // "first interaction of the day" — handled when the user wakes
-            // NEXUS via `should_greet_today` / `mark_greeted_today` IPC.
             // The sleep-wake watcher remains for future use (e.g. re-init
             // audio device after sleep, refresh app registry, etc.).
             {
@@ -653,8 +650,6 @@ pub fn run() {
             commands::is_nexus_paused,
             commands::meeting_status,
             commands::set_meeting_detection,
-            commands::should_greet_today,
-            commands::mark_greeted_today,
             commands::open_settings_window,
             commands::close_settings_window,
             commands::get_settings,

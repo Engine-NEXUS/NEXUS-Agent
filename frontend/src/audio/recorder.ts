@@ -4,6 +4,7 @@ import {
   closeSession,
   sendTranscript,
   setLongRunningInFlight,
+  setLocalAckGiven,
   isLongRunningInFlight,
   isDuplicateLongRunning,
 } from "../net/wsBridge";
@@ -102,6 +103,7 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
     console.log(`[NEXUS] dedup: same command already in flight, not sending again`);
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
+    setLocalAckGiven(); // prevent server ack from double-speaking
     void speak("On it sir");
     useAssistant.getState().setState("thinking");
   } else {
@@ -110,6 +112,7 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
     pendingLongRunningQueue.push(transcript);
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
+    setLocalAckGiven(); // prevent server ack from double-speaking
     void speak("On it sir");
     useAssistant.getState().setState("thinking");
   }
@@ -245,6 +248,7 @@ function correctSttTranscript(transcript: string): string {
 async function ackLongRunningQuery(): Promise<void> {
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("On it sir.");
+  setLocalAckGiven(); // prevent server ack from double-speaking
   await speak("On it sir");
   await waitForTtsIdle();
   // Hide the orb — it will reappear when the response arrives
@@ -580,6 +584,22 @@ export async function finishCapture(): Promise<void> {
   // but the Rust parser has already extracted the repo/PR data.
   if (isAnalyseIntent(intent)) {
     console.log("[NEXUS] analyse intent detected, sending to backend:", intent);
+  } else if (intent.action === "greeting") {
+    // Greeting/conversational reply — speak the reply directly, no "Ok sir."
+    // preface and no "execute_command" round-trip (the reply is already
+    // in the intent).
+    const reply = (intent as { reply: string }).reply;
+    console.log("[NEXUS] local greeting reply:", reply);
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage(reply);
+    void speak(reply.replace(/,/g, ""));
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    useAssistant.getState().setVisible(false);
+    setTimeout(() => useAssistant.getState().reset(), 550);
+    captureInProgress = false;
+    return;
   } else if (intent.action !== "unknown") {
     // Known local command — execute it directly.
     useAssistant.getState().setState("speaking");
@@ -836,6 +856,22 @@ async function _finishCaptureFromVadInner(
   // but the Rust parser has already extracted the repo/PR data.
   if (isAnalyseIntent(intent)) {
     console.log("[NEXUS] analyse intent detected (vad), sending to backend:", intent);
+  } else if (intent.action === "greeting") {
+    // Greeting/conversational reply — speak the reply directly, no "Ok sir."
+    // preface and no "execute_command" round-trip (the reply is already
+    // in the intent).
+    const reply = (intent as { reply: string }).reply;
+    console.log("[NEXUS] local greeting reply (vad):", reply);
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage(reply);
+    void speak(reply.replace(/,/g, ""));
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    useAssistant.getState().setVisible(false);
+    setTimeout(() => useAssistant.getState().reset(), 550);
+    captureInProgress = false;
+    return;
   } else if (intent.action !== "unknown") {
     // Known local command — execute it directly.
     useAssistant.getState().setState("speaking");

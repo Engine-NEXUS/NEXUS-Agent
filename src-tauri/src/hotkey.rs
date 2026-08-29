@@ -1,8 +1,10 @@
-//! Global hotkey (Ctrl/Cmd+Shift+Space) → state-dependent action.
+//! Global hotkey (Ctrl/Cmd+Space) → state-dependent action.
 //!
 //! On press:
 //!   - If the sidebar is visible → close the sidebar only (do NOT wake).
 //!   - If the sidebar is hidden → wake the assistant (do NOT touch sidebar).
+//!   - If the assistant is speaking → barge-in: the frontend wake handler
+//!     stops TTS and starts listening (handled in main.tsx startListening).
 //!
 //! This means:
 //!   - Pressing the hotkey twice (with sidebar visible) first closes the
@@ -16,7 +18,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const HOTKEYS: &[&str] = &[
-    "CommandOrControl+Shift+Space",
+    "CommandOrControl+Space",
     "CommandOrControl+Alt+Space",
     // NOTE: "Alt+Space" was removed — it conflicts with the Windows system
     // menu shortcut (Restore/Move/Size/Minimize/Maximize/Close). Registering
@@ -24,11 +26,6 @@ const HOTKEYS: &[&str] = &[
     // which caused WhatsApp (and other apps) to glitch — windows would
     // flash open/close because the system menu event was being swallowed.
 ];
-
-/// Cancel hotkey — instantly cancels the current recording/session and hides the orb.
-/// Separate from the wake hotkeys so the user can abort without waiting for the
-/// no-speech timeout. Uses Ctrl+Space (AK repo contribution).
-const HOTKEY_CANCEL: &str = "CommandOrControl+Space";
 
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     for &hk in HOTKEYS {
@@ -58,8 +55,14 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                     // Sidebar is hidden → wake NEXUS, do NOT touch sidebar.
                     tracing::info!("hotkey ({}) → sidebar hidden, waking NEXUS", hk);
 
-                    // Ensure the STT server is running before the frontend starts recording
-                    crate::lazy_stt::ensure_stt_running();
+                    // Ensure the STT server is running — but DON'T block the hotkey
+                    // handler on this. The STT server only needs to be ready by the
+                    // time the user finishes speaking (several seconds from now).
+                    // Spawning in a background thread saves 2-4s of hotkey latency
+                    // (is_stt_responsive() has a 2s TCP timeout when STT isn't running).
+                    std::thread::spawn(|| {
+                        crate::lazy_stt::ensure_stt_running();
+                    });
 
                     if let Some(win) = handle.get_webview_window("main") {
                         let _ = win.show();
@@ -76,29 +79,6 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         } else {
             tracing::info!("Registered global hotkey handler: {hk}");
         }
-    }
-
-    // Register the cancel hotkey (Ctrl+Space).
-    // This instantly cancels the current recording/session and hides the orb.
-    let sc_cancel: Shortcut = match HOTKEY_CANCEL.parse() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("Failed to parse cancel hotkey '{HOTKEY_CANCEL}': {e}");
-            return Ok(());
-        }
-    };
-    let handle_cancel = app.clone();
-    if let Err(e) = app.global_shortcut().on_shortcut(sc_cancel, move |_app, _shortcut, event| {
-        if event.state() == ShortcutState::Pressed {
-            tracing::info!("hotkey (cancel) → cancelling current turn");
-            if let Some(win) = handle_cancel.get_webview_window("main") {
-                let _ = win.eval("window.__NEXUS_CANCEL__ && window.__NEXUS_CANCEL__()");
-            }
-        }
-    }) {
-        tracing::warn!("Failed to register cancel hotkey '{HOTKEY_CANCEL}': {e}");
-    } else {
-        tracing::info!("Registered cancel hotkey: {HOTKEY_CANCEL}");
     }
 
     Ok(())

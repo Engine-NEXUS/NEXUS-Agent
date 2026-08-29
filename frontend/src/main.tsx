@@ -231,19 +231,11 @@ async function startListening() {
   console.log("[NEXUS] __NEXUS_FIRST_RUN_GREETING__ invoked");
   const { useAssistant } = await import("./store/assistant");
   const { speak } = await import("./audio/ttsPlayer");
-  const { invoke } = await import("@tauri-apps/api/core");
 
   const s = useAssistant.getState();
   s.setVisible(true);
   s.setState("speaking");
   s.addAssistantMessage("NEXUS online, sir. Ready when you are.");
-
-  // Mark today as greeted so the first wake doesn't re-greet
-  try {
-    await invoke("mark_greeted_today");
-  } catch (e) {
-    console.warn("[NEXUS] mark_greeted_today failed:", e);
-  }
 
   void speak("NEXUS online, sir. Ready when you are.").then(() => {
     console.log("[NEXUS] first-run greeting done — hiding orb");
@@ -269,71 +261,13 @@ async function startListening() {
 // "on it sir" being spoken twice.
 
 /**
- * Wake handler with first-of-day greeting.
+ * Wake handler — goes straight to listening.
  *
- * On the first wake of each calendar day, NEXUS speaks:
- *   "Welcome sir, how can I assist you today?"
- * ...then transitions directly into listening.
- *
- * On subsequent wakes the same day, it skips the greeting and goes
- * straight to listening.
- *
- * The "first of day" check is persisted in `greeting-state.json` by Rust
- * (via `should_greet_today` / `mark_greeted_today` IPC), so it survives
- * restarts, shutdowns, and crashes.
+ * The daily greeting has been removed. NEXUS simply shows the orb and
+ * starts listening immediately when the hotkey is pressed.
  */
 async function wakeWithGreeting() {
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const shouldGreet = await invoke<boolean>("should_greet_today");
-    if (shouldGreet) {
-      await greetAndListen();
-    } else {
-      void startListening();
-    }
-  } catch (e) {
-    console.warn("[NEXUS] should_greet_today failed, proceeding to listen:", e);
-    void startListening();
-  }
-}
-
-/**
- * First-of-day greeting: speak "Welcome sir..." then transition to listening.
- *
- * Unlike the old greet() which hid the orb after speaking, this flows
- * directly into the listening state — the orb stays visible and the
- * conversation begins immediately after the greeting.
- */
-async function greetAndListen() {
-  const { useAssistant } = await import("./store/assistant");
-  const { speak } = await import("./audio/ttsPlayer");
-  const { invoke } = await import("@tauri-apps/api/core");
-
-  const s = useAssistant.getState();
-  if (s.state !== "idle") {
-    console.log("[NEXUS] greeting skipped — not idle:", s.state);
-    void startListening();
-    return;
-  }
-
-  console.log("[NEXUS] first-of-day greeting");
-  s.setVisible(true);
-  s.setState("speaking");
-
-  // Mark today as greeted BEFORE speaking (so a crash during TTS
-  // doesn't cause a re-greet on the next wake)
-  try {
-    await invoke("mark_greeted_today");
-  } catch (e) {
-    console.warn("[NEXUS] mark_greeted_today failed:", e);
-  }
-
-  // Speak the greeting, then transition to listening
-  void speak("Welcome sir, how can I assist you today?").then(() => {
-    // After greeting TTS finishes, start listening
-    console.log("[NEXUS] greeting done, transitioning to listening");
-    void startListening();
-  });
+  void startListening();
 }
 
 /**
@@ -466,7 +400,9 @@ void setupCommandDetectionListener();
 /** Called from Rust to cancel the current session. */
 (window as any).__NEXUS_CANCEL__ = async () => {
   console.log("[NEXUS] cancel");
-  // Stop VAD first so it doesn't trigger finishCapture during cleanup.
+  // Stop TTS first so we don't hear the rest of the speech.
+  stopTts();
+  // Stop VAD so it doesn't trigger finishCapture during cleanup.
   stopVad();
   // Then abort recording and close the session.
   await abortCapture();

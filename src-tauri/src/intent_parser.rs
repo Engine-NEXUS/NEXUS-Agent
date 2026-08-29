@@ -1449,4 +1449,184 @@ mod tests {
             }
         }
     }
+
+    // ─── Greeting tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_greeting_hello() {
+        let result = parse_deterministic("hello");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_hi() {
+        let result = parse_deterministic("hi");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_hey() {
+        let result = parse_deterministic("hey");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_how_are_you() {
+        let result = parse_deterministic("how are you");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_hows_it_going() {
+        let result = parse_deterministic("how's it going");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_bye() {
+        let result = parse_deterministic("bye");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_goodbye() {
+        let result = parse_deterministic("goodbye");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_see_you() {
+        let result = parse_deterministic("see you");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_thanks() {
+        let result = parse_deterministic("thanks");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_thank_you() {
+        let result = parse_deterministic("thank you");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_what_is_your_name() {
+        let result = parse_deterministic("what's your name");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_who_are_you() {
+        let result = parse_deterministic("who are you");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_what_can_you_do() {
+        let result = parse_deterministic("what can you do");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_good_morning() {
+        let result = parse_deterministic("good morning");
+        assert!(result.is_some());
+        if let ParsedIntent::Greeting { reply } = result.unwrap().intent {
+            assert!(reply.contains("morning"), "expected 'morning' in reply: {}", reply);
+        } else {
+            panic!("expected Greeting");
+        }
+    }
+
+    #[test]
+    fn test_greeting_good_evening() {
+        let result = parse_deterministic("good evening");
+        assert!(result.is_some());
+        if let ParsedIntent::Greeting { reply } = result.unwrap().intent {
+            assert!(reply.contains("evening"), "expected 'evening' in reply: {}", reply);
+        } else {
+            panic!("expected Greeting");
+        }
+    }
+
+    #[test]
+    fn test_greeting_yes() {
+        let result = parse_deterministic("yes");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_ok() {
+        let result = parse_deterministic("ok");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_no() {
+        let result = parse_deterministic("no");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_never_mind() {
+        let result = parse_deterministic("never mind");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_with_nexus_suffix() {
+        let result = parse_deterministic("hello nexus");
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_not_triggered_by_open() {
+        // "open hello" should NOT be a greeting — it's an open command
+        let result = parse_deterministic("open hello");
+        assert!(result.is_some());
+        assert!(!matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_not_triggered_by_search() {
+        // "search for hello" should NOT be a greeting
+        let result = parse_deterministic("search for hello");
+        assert!(result.is_some());
+        assert!(!matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));
+    }
+
+    #[test]
+    fn test_greeting_pick_is_deterministic() {
+        // Same input should always produce the same reply
+        let r1 = parse_deterministic("hello");
+        let r2 = parse_deterministic("hello");
+        assert!(r1.is_some() && r2.is_some());
+        if let (Some(ParseResult { intent: ParsedIntent::Greeting { reply: ref1 }, .. }),
+                Some(ParseResult { intent: ParsedIntent::Greeting { reply: ref2 }, .. })) = (r1, r2) {
+            assert_eq!(ref1, ref2, "same input should produce same reply");
+        } else {
+            panic!("expected Greeting");
+        }
+    }
 }
