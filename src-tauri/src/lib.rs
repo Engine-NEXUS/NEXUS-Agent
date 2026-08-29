@@ -28,9 +28,13 @@ mod sidecar_manager;
 mod mic_permissions;
 
 use tauri::{Emitter, Listener, Manager};
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 /// Shared app state held across async tasks.
 pub struct AppState {
@@ -95,9 +99,85 @@ pub fn run() {
                 let _ = app.deep_link().register("nexus");
             }
 
-            // Autostart on by default.
-            let autostart = app.autolaunch();
-            let _ = autostart.enable();
+            // ─── Autostart: Windows Scheduled Task (zero-delay) ───────────
+            //
+            // On Windows, we use a Scheduled Task with "At log on" trigger
+            // instead of the HKCU\...\Run registry key. This launches NEXUS
+            // IMMEDIATELY when the user logs on — no 10-30s desktop-settle
+            // delay. This is the same technique Discord, Steam, and other
+            // startup-optimized apps use.
+            //
+            // We use PowerShell's Register-ScheduledTask cmdlet instead of
+            // schtasks.exe because schtasks.exe requires admin privileges
+            // for /rl highest, while Register-ScheduledTask works for the
+            // current user without elevation.
+            //
+            // On macOS/Linux, we keep tauri-plugin-autostart (LaunchAgent /
+            // systemd user units are already zero-delay on those platforms).
+            #[cfg(target_os = "windows")]
+            {
+                let exe_path = std::env::current_exe()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                if !exe_path.is_empty() {
+                    // Remove old HKCU\Run entry (from the previous autostart plugin)
+                    // to avoid double-launching.
+                    let _ = std::process::Command::new("reg")
+                        .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                               "/v", "NEXUS", "/f"])
+                        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                        .status();
+
+                    // Create/update the scheduled task via PowerShell.
+                    // Register-ScheduledTask is idempotent with -Force and
+                    // doesn't require admin privileges when -User is specified.
+                    // We pass the current user's identity to both the trigger
+                    // and the registration to avoid "Access is denied" errors.
+                    let ps_script = format!(
+                        r#"$exe = '{}';
+                        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name;
+                        $action = New-ScheduledTaskAction -Execute $exe;
+                        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user;
+                        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0);
+                        $result = Register-ScheduledTask -TaskName 'NEXUS' -Action $action -Trigger $trigger -Settings $settings -User $user -Force;
+                        if ($result) {{ Write-Output 'NEXUS_TASK_OK' }} else {{ Write-Output 'NEXUS_TASK_FAIL' }}"#,
+                        exe_path
+                    );
+
+                    let result = std::process::Command::new("powershell")
+                        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                        .output();
+
+                    match result {
+                        Ok(out) if out.status.success()
+                            && String::from_utf8_lossy(&out.stdout).contains("NEXUS_TASK_OK") =>
+                        {
+                            tracing::info!(
+                                "autostart: scheduled task 'NEXUS' created (AtLogOn, zero-delay)"
+                            );
+                        }
+                        Ok(out) => {
+                            tracing::warn!(
+                                "autostart: Register-ScheduledTask failed: stdout={} stderr={}",
+                                String::from_utf8_lossy(&out.stdout).trim(),
+                                String::from_utf8_lossy(&out.stderr).trim()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("autostart: failed to run PowerShell: {e}");
+                        }
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                // macOS/Linux: use tauri-plugin-autostart (LaunchAgent / systemd)
+                let autostart = app.autolaunch();
+                let _ = autostart.enable();
+            }
 
             // Tray menu.
             tray::setup(app.handle())?;
