@@ -103,7 +103,8 @@ mod engine {
     const DETECTION_BUFFER_SIZE: usize = 12;
 
     /// Minimum positive detections before triggering
-    const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
+    /// (3 frames = 240ms of consistent detection — filters transient spikes)
+    const MIN_POSITIVE_DETECTIONS: f32 = 3.0;
 
     /// Refractory period after a detection (ms)
     const NO_DETECTION_MS: u64 = 2000;
@@ -430,7 +431,8 @@ mod engine {
 
             tracing::info!(
                 "openWakeWord KWS engine initialized \
-                 (wake word: NEXUS, 80ms sliding window, threshold: 0.5)"
+                 (wake word: NEXUS, 80ms sliding window, threshold: 0.7, \
+                 silence gate: RMS < 0.005 = skip)"
             );
 
             // --- Tier 3: Load command classifiers (optional) ---
@@ -455,7 +457,7 @@ mod engine {
                 speaker,
                 sample_rate: 16000,
                 chunk_buffer: Vec::with_capacity(OWW_CHUNK_SIZE),
-                threshold: 0.5,
+                threshold: 0.7,
                 detections_buffer: CircularBuffer::<DETECTION_BUFFER_SIZE, f32>::new(),
                 last_detection_time: std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(10))
@@ -471,6 +473,37 @@ mod engine {
             &mut self,
             chunk: Vec<f32>,
         ) -> (bool, f32, Option<CommandIntent>) {
+            // ─── Energy gate: skip detection on silence ───────────────
+            // The nexus.onnx model produces false positives (0.6-0.9 probability)
+            // when fed pure digital silence (all zeros). This is because the model
+            // was trained on TTS clips that always have a noise floor, so pure
+            // silence is an out-of-distribution input that maps to high probability.
+            //
+            // Fix: compute RMS of the chunk and skip the classifier entirely if
+            // the audio is too quiet to be speech. Push 0.0 to the detection buffer
+            // to flush out any stale high values from the previous chunk.
+            //
+            // Threshold: 0.005 (~-46dBFS) — well below any speech but above the
+            // noise floor of a typical laptop mic in a quiet room.
+            const SILENCE_RMS_THRESHOLD: f32 = 0.005;
+
+            let rms = if chunk.is_empty() {
+                0.0
+            } else {
+                let sum_sq: f32 = chunk.iter().map(|s| s * s).sum();
+                (sum_sq / chunk.len() as f32).sqrt()
+            };
+
+            if rms < SILENCE_RMS_THRESHOLD {
+                // Push low probability to flush stale high values from buffer
+                self.detections_buffer.push_back(0.0);
+                // Also flush command classifier buffers
+                for cmd in &mut self.command_classifiers {
+                    cmd.detections_buffer.push_back(0.0);
+                }
+                return (false, 0.0, None);
+            }
+
             // Get audio features (melspectrogram → embedding)
             let features = match self.audio_features.get_audio_features(&chunk) {
                 Ok(f) => f,
