@@ -2850,7 +2850,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
- "uuid",
  "webview2-com",
  "window-vibrancy 0.8.0",
  "windows 0.36.1",

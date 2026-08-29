@@ -35,7 +35,15 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                 if sidebar_visible {
                     // Sidebar is visible → close it only, do NOT wake NEXUS.
                     tracing::info!("hotkey → sidebar visible, closing sidebar only");
-                    let _ = handle.emit("sidebar:hide", ());
+                    // Directly hide the native window + reset the CSS class
+                    // via JS eval (bypasses the event system which may not
+                    // be received by the sidebar window's listen() calls).
+                    if let Some(sidebar) = handle.get_webview_window("sidebar") {
+                        let _ = sidebar.eval(
+                            r#"(function(){var a=document.getElementById('sidebar-app');if(a)a.className='sidebar--hidden';})();"#,
+                        );
+                        let _ = sidebar.hide();
+                    }
                 } else {
                     // Sidebar is hidden → wake NEXUS, do NOT touch sidebar.
                     tracing::info!("hotkey → sidebar hidden, waking NEXUS");

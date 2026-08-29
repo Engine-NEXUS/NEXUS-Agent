@@ -55,25 +55,60 @@ COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8")
 # This is faster-whisper's built-in hotword feature (PR #731, merged May 2024).
 # It adds the hotwords as a prompt to every transcription window, unlike
 # initial_prompt which only affects the first window.
-HOTWORDS = os.getenv(
-    "WHISPER_HOTWORDS",
-    " ".join([
-        # Web apps / services
-        "gmail", "youtube", "github", "google", "chrome", "brave", "firefox",
-        "twitter", "instagram", "facebook", "reddit", "linkedin", "whatsapp",
-        "netflix", "amazon", "wikipedia", "twitch", "spotify", "discord",
-        "slack", "notion", "figma", "chatgpt", "claude", "gemini",
-        # Google suite
-        "drive", "docs", "sheets", "slides", "maps", "calendar", "translate",
-        "photos", "meet", "chat",
-        # Native apps
-        "notepad", "calculator", "explorer", "terminal", "powershell",
-        "paint", "settings", "outlook", "word", "excel", "powerpoint",
-        "vscode", "code", "steam", "zoom", "teams", "skype", "telegram",
-        # Action words
-        "open", "launch", "start", "search", "find", "close",
-    ]),
-)
+#
+# DYNAMIC HOTWORDS: In addition to the built-in list, the server reads a
+# hotwords file (default: %APPDATA%\com.nexus.assistant\stt_hotwords.txt on
+# Windows, ~/.config/nexus/stt_hotwords.txt on Linux/Mac). NEXUS writes the
+# user's GitHub repo names to this file so Whisper recognises them correctly.
+# The file is re-read on every transcription request (hot-reload, no restart).
+_DEFAULT_HOTWORDS = [
+    # Web apps / services
+    "gmail", "youtube", "github", "google", "chrome", "brave", "firefox",
+    "twitter", "instagram", "facebook", "reddit", "linkedin", "whatsapp",
+    "netflix", "amazon", "wikipedia", "twitch", "spotify", "discord",
+    "slack", "notion", "figma", "chatgpt", "claude", "gemini",
+    # Google suite
+    "drive", "docs", "sheets", "slides", "maps", "calendar", "translate",
+    "photos", "meet", "chat",
+    # Native apps
+    "notepad", "calculator", "explorer", "terminal", "powershell",
+    "paint", "settings", "outlook", "word", "excel", "powerpoint",
+    "vscode", "code", "steam", "zoom", "teams", "skype", "telegram",
+    # Action words
+    "open", "launch", "start", "search", "find", "close",
+    # Analysis commands (improves recognition of NEXUS commands)
+    "analyse", "analyze", "analysis", "review", "pull request", "PR",
+    # Known user repos (add more via stt_hotwords.txt)
+    "servx", "NEXUS", "ULTRON", "zync",
+]
+
+# Path to the dynamic hotwords file — NEXUS writes repo names here.
+import platform
+if platform.system() == "Windows":
+    _appdata = os.getenv("APPDATA", "")
+    HOTWORDS_FILE = os.path.join(_appdata, "com.nexus.assistant", "stt_hotwords.txt")
+else:
+    HOTWORDS_FILE = os.path.expanduser("~/.config/nexus/stt_hotwords.txt")
+
+
+def _load_hotwords() -> str:
+    """Load hotwords from the built-in list + the dynamic hotwords file."""
+    words = list(_DEFAULT_HOTWORDS)
+    # Override with env var if set (for testing)
+    env_hotwords = os.getenv("WHISPER_HOTWORDS")
+    if env_hotwords:
+        return env_hotwords
+    # Read the dynamic hotwords file (hot-reload on every request)
+    try:
+        if os.path.exists(HOTWORDS_FILE):
+            with open(HOTWORDS_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    w = line.strip()
+                    if w and w not in words:
+                        words.append(w)
+    except Exception:
+        pass
+    return " ".join(words)
 
 app = FastAPI(title="NEXUS STT", version="0.2.0")
 
@@ -94,11 +129,13 @@ def _get_model() -> WhisperModel:
 
 @app.get("/health")
 async def health() -> JSONResponse:
+    hw = _load_hotwords()
     return JSONResponse({
         "ok": True,
         "model": MODEL_NAME,
         "device": DEVICE,
-        "hotwords": HOTWORDS[:80] + "..." if len(HOTWORDS) > 80 else HOTWORDS,
+        "hotwords": hw[:80] + "..." if len(hw) > 80 else hw,
+        "hotwords_file": HOTWORDS_FILE,
     })
 
 
@@ -150,10 +187,23 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
     model = _get_model()
     _transcribe_start = time.monotonic()
     try:
+        # Reload hotwords on every request (hot-reload from file)
+        hotwords = _load_hotwords()
+        # initial_prompt gives the model context about expected vocabulary.
+        # This is especially important for tiny.en (39M params) which struggles
+        # with hotwords alone. The prompt biases the decoder toward recognised
+        # words like "servx", "analyse", "PR" without forcing them.
+        initial_prompt = (
+            "The user is giving voice commands to a desktop assistant. "
+            "Common commands include: analyse PR 5 in servx, review PR 3 in servx, "
+            "open gmail, search youtube, close notepad. "
+            "Recognised names: servx, NEXUS, ULTRON, github, gmail."
+        )
         segments, _info = model.transcribe(
             audio_file,
             language="en",
-            hotwords=HOTWORDS,
+            hotwords=hotwords,
+            initial_prompt=initial_prompt,
             # Use VAD but with gentle parameters — default VAD is too aggressive
             # on short command clips (<2s) and discards them entirely.
             # min_silence_duration_ms=1500 matches the frontend VAD timing.
