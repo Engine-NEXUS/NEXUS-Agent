@@ -263,48 +263,55 @@ export async function finishCapture(): Promise<void> {
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
 
-  // 3. Try the remote backend first. If it's available, send the transcript
-  //    and let the server handle it (n8n → Ollama → domain workflows).
-  //    The server sends back ack/result/done events that wsBridge handles.
-  try {
-    await sendTranscript(transcript);
-    captureInProgress = false;
-    // Backend is handling it — wsBridge will speak ack + result + reset.
-    return;
-  } catch (err) {
-    // Backend unavailable — fall through to local intent parsing.
-    console.warn("[NEXUS] backend unavailable, using local intent parser:", err);
-  }
-
-  // 4. LOCAL-ONLY MODE: parse the intent and execute locally.
+  // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
+  //    (open app, open URL, search), execute it locally — no need to send
+  //    to the remote backend. Only send to the backend if the intent is
+  //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   const intent = parseIntent(transcript);
 
-  if (intent.action === "unknown") {
+  if (intent.action !== "unknown") {
+    // Known local command — execute it directly.
     useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that sir");
+    useAssistant.getState().addAssistantMessage("Ok sir.");
+    void speak("Ok sir.");
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<{ success: boolean; message: string }>("execute_command", { intent });
+      console.log("[NEXUS] local command result:", result);
+      if (result.message && result.message !== "Ok sir.") {
+        useAssistant.getState().addAssistantMessage(result.message);
+        void speak(result.message.replace(/,/g, ""));
+      }
+    } catch (err) {
+      console.error("[NEXUS] command execution failed:", err);
+    }
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 800));
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
     return;
   }
 
-  // Speak short acknowledgement and execute command in parallel.
-  useAssistant.getState().setState("speaking");
-  useAssistant.getState().addAssistantMessage("Ok sir.");
-  void speak("Ok sir.");
-
-  // 5. Execute the command via Tauri (runs while ack is speaking).
+  // 4. Unknown intent — try the remote backend (n8n/Ollama/Hermes).
+  //    If the backend is available, send the transcript and let the server
+  //    handle it. The server sends back ack/result/done events.
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke<{ success: boolean; message: string }>("execute_command", { intent });
+    await sendTranscript(transcript);
+    captureInProgress = false;
+    // Backend is handling it — wsBridge will speak ack + result + reset.
+    return;
   } catch (err) {
-    console.error("[NEXUS] command execution failed:", err);
+    // Backend unavailable — can't handle this query.
+    console.warn("[NEXUS] backend unavailable for unknown query:", err);
   }
 
-  // 6. Brief pause after ack, then dismiss.
-  await waitForTtsIdle();
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  // 5. Neither local intent nor backend available.
+  useAssistant.getState().setState("speaking");
+  useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+  await speak("Didn't catch that sir");
   useAssistant.getState().setVisible(false);
   setTimeout(() => useAssistant.getState().reset(), 550);
   captureInProgress = false;
@@ -382,45 +389,51 @@ export async function finishCaptureFromVad(audio: Float32Array): Promise<void> {
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
 
-  // 3. Try the remote backend first. If it's available, send the transcript
-  //    and let the server handle it (n8n → Ollama → domain workflows).
-  try {
-    await sendTranscript(transcript);
-    captureInProgress = false;
-    return;
-  } catch (err) {
-    console.warn("[NEXUS] backend unavailable, using local intent parser:", err);
-  }
-
-  // 4. LOCAL-ONLY MODE: parse the intent and execute locally.
+  // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
+  //    (open app, open URL, search), execute it locally — no need to send
+  //    to the remote backend. Only send to the backend if the intent is
+  //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   const intent = parseIntent(transcript);
 
-  if (intent.action === "unknown") {
+  if (intent.action !== "unknown") {
+    // Known local command — execute it directly.
     useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that sir");
+    useAssistant.getState().addAssistantMessage("Ok sir.");
+    void speak("Ok sir.");
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<{ success: boolean; message: string }>("execute_command", { intent });
+      console.log("[NEXUS] local command result:", result);
+      if (result.message && result.message !== "Ok sir.") {
+        useAssistant.getState().addAssistantMessage(result.message);
+        void speak(result.message.replace(/,/g, ""));
+      }
+    } catch (err) {
+      console.error("[NEXUS] command execution failed:", err);
+    }
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 800));
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
     return;
   }
 
-  // Speak short acknowledgement and execute command in parallel.
-  useAssistant.getState().setState("speaking");
-  useAssistant.getState().addAssistantMessage("Ok sir.");
-  void speak("Ok sir.");
-
-  // 5. Execute the command via Tauri (runs while ack is speaking).
+  // 4. Unknown intent — try the remote backend (n8n/Ollama/Hermes).
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke<{ success: boolean; message: string }>("execute_command", { intent });
+    await sendTranscript(transcript);
+    captureInProgress = false;
+    return;
   } catch (err) {
-    console.error("[NEXUS] command execution failed:", err);
+    console.warn("[NEXUS] backend unavailable for unknown query:", err);
   }
 
-  // 6. Brief pause after ack, then dismiss.
-  await waitForTtsIdle();
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  // 5. Neither local intent nor backend available.
+  useAssistant.getState().setState("speaking");
+  useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+  await speak("Didn't catch that sir");
   useAssistant.getState().setVisible(false);
   setTimeout(() => useAssistant.getState().reset(), 550);
   captureInProgress = false;
