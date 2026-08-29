@@ -177,7 +177,9 @@ export function setLongRunningInFlight(transcript: string, onResult: LongRunning
   longRunningInFlight = true;
   lastSentTranscript = normalizeTranscript(transcript);
   longRunningResultCb = onResult;
-  resetLocalAck(); // reset for new query
+  // NOTE: Do NOT reset localAckGiven here — it was set by ackLongRunningQuery()
+  // just before this call, and the server ack needs to be suppressed.
+  // The flag is reset when the result arrives (clearLongRunningInFlight).
   // Safety timeout: auto-clear after 60s in case the Worker never responds
   if (longRunningTimeout) clearTimeout(longRunningTimeout);
   longRunningTimeout = setTimeout(() => {

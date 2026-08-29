@@ -40,8 +40,11 @@ pub async fn speak_text(
     // 1. Mark TTS as playing to suppress wake word self-trigger
     meeting.set_tts_playing(true);
 
-    // Clear any previous stop request before starting new playback
-    STOP_REQUESTED.store(false, Ordering::SeqCst);
+    // Do NOT clear STOP_REQUESTED here — if the user pressed Ctrl+Space
+    // while the previous speak_text was finishing, the flag should still
+    // be set. We check it after synthesis and skip playback if set.
+    // The flag is cleared at the END of this function (after playback
+    // completes or is stopped).
 
     // 2. Synthesize audio on a blocking thread to avoid starving the tokio runtime.
     // Note: kokoro-micro internally multiplies speed by 0.65 (SPEED_SCALE = 0.65), which
@@ -70,8 +73,18 @@ pub async fn speak_text(
     .await
     .map_err(|e| format!("TTS task panicked: {}", e))??;
 
-    // 3. Play audio on a blocking thread (rodio needs the OutputStream to stay alive)
-    let play_result = std::thread::spawn(move || {
+    // Check if stop was requested DURING synthesis — if so, skip playback
+    if STOP_REQUESTED.load(Ordering::SeqCst) {
+        tracing::info!("tts: stop requested during synthesis, skipping playback");
+        meeting.set_tts_playing(false);
+        return Ok(());
+    }
+
+    // 3. Play audio using spawn_blocking so the tokio runtime can still
+    //    process other commands (like stop_tts) while audio plays.
+    //    The old code used std::thread::spawn().join() which BLOCKED the
+    //    tokio worker thread, preventing stop_tts from executing.
+    let play_result = tokio::task::spawn_blocking(move || {
         match OutputStream::try_default() {
             Ok((_stream, handle)) => {
                 match Sink::try_new(&handle) {
@@ -88,7 +101,7 @@ pub async fn speak_text(
                                 tracing::info!("tts: playback stopped by user (barge-in)");
                                 return Ok(());
                             }
-                            std::thread::sleep(std::time::Duration::from_millis(30));
+                            std::thread::sleep(std::time::Duration::from_millis(20));
                         }
                         tracing::info!("tts: audio playback completed");
                         Ok(())
@@ -104,12 +117,17 @@ pub async fn speak_text(
                 Err(format!("Failed to get audio output stream: {}", e))
             }
         }
-    }).join().unwrap_or_else(|_| {
+    })
+    .await
+    .unwrap_or_else(|_| {
         tracing::error!("tts: audio thread panicked");
         Err("Audio thread panicked".to_string())
     });
 
-    // 4. Grace period for acoustic settling before resuming wake word detection
+    // 4. Clear the stop flag (playback is done or was stopped)
+    STOP_REQUESTED.store(false, Ordering::SeqCst);
+
+    // 5. Grace period for acoustic settling before resuming wake word detection
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     meeting.set_tts_playing(false);
 

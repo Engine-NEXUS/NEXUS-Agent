@@ -1,4 +1,5 @@
 import { useAssistant } from "../store/assistant";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface VoiceOption {
   id: string;
@@ -139,10 +140,13 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
 }
 
 export function stopTts(): void {
-  // Tell Rust to stop the rodio playback immediately (barge-in)
-  import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("stop_tts"))
-    .catch((e: unknown) => console.warn("[TTS] stop_tts failed:", e));
+  // Tell Rust to stop the rodio playback immediately (barge-in).
+  // Uses static import for instant invocation — no dynamic import delay.
+  void invoke("stop_tts").catch((e: unknown) => console.warn("[TTS] stop_tts failed:", e));
+  // Also cancel Web Speech API if it's being used as fallback
+  if ("speechSynthesis" in window) {
+    window.speechSynthesis.cancel();
+  }
   void emitTtsEvent("tts-ended");
   useAssistant.getState().setSpeakSeq(null);
 }
