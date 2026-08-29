@@ -81,10 +81,20 @@ Get-Process nexus -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorActi
 Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*stt_server*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 
-# ─── Start STT Server ──────────────────────────────────────────────────────
-Write-Log "INIT" "Starting STT server (127.0.0.1:39217)..." $C_STT
+# Clear old log files so the tail loop doesn't read stale content
+Write-Log "INIT" "Clearing old logs..." $C_SYS
 $sttLog = "$LogDir\stt_unified.log"
 $sttErr = "$LogDir\stt_unified_err.log"
+$nexusLog = "$LogDir\nexus_unified.log"
+$nexusErr = "$LogDir\nexus_unified_err.log"
+$cdpLog = "$LogDir\cdp_unified.log"
+$cdpErr = "$LogDir\cdp_unified_err.log"
+foreach ($f in @($sttLog, $sttErr, $nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
+  if (Test-Path $f) { Clear-Content $f -Force }
+}
+
+# ─── Start STT Server ──────────────────────────────────────────────────────
+Write-Log "INIT" "Starting STT server (127.0.0.1:39217)..." $C_STT
 $sttProc = Start-Process -FilePath "python" `
   -ArgumentList "stt_server.py" `
   -WorkingDirectory "$ProjectRoot\server" `
@@ -116,8 +126,6 @@ if (-not $sttReady) {
 
 # ─── Start NEXUS ───────────────────────────────────────────────────────────
 Write-Log "INIT" "Starting NEXUS desktop app..." $C_RUST
-$nexusLog = "$LogDir\nexus_unified.log"
-$nexusErr = "$LogDir\nexus_unified_err.log"
 
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = if ($Debug) { "--remote-debugging-port=9222" } else { "" }
 
@@ -193,7 +201,7 @@ function Get-NewLines([string]$File, [ref]$Position) {
 # Main tail loop
 try {
   while (-not $nexusProc.HasExited) {
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 500
 
     # STT logs
     $sttLines = Get-NewLines $sttLog ([ref]$pos.STT)
@@ -209,15 +217,19 @@ try {
       }
     }
 
-    # Rust logs (wake word, audio, baton pass)
+    # Rust logs (wake word, audio, baton pass) — limit to 50 lines per cycle
     $rustLines = Get-NewLines $nexusLog ([ref]$pos.Rust)
+    $rustShown = 0
     foreach ($line in $rustLines) {
+      if ($rustShown -ge 50) { break }
       # Strip ANSI color codes
       $clean = $line -replace '\x1b\[[0-9;]*m', ""
       # Extract timestamp and level
-      if ($clean -match "(\d{2}:\d{2}:\d{2}\.\d+).*?(INFO|DEBUG|WARN|ERROR)\s+(.+)") {
+      if ($clean -match "(\d{2}:\d{2}:\d{2}\.\d+).*?(INFO|DEBUG|WARN|ERROR|TRACE)\s+(.+)") {
         $level = $Matches[2]
         $msg = $Matches[3]
+        # Skip TRACE entirely (AGC gain etc — too noisy)
+        if ($level -eq "TRACE") { continue }
         $color = switch ($level) {
           "INFO"  { $C_RUST }
           "DEBUG" { "DarkGreen" }
@@ -227,24 +239,27 @@ try {
         }
         # Highlight key events
         if ($msg -match "NEXUS detected|wake.*trigger") {
-          Write-Log "WAKE" $msg $C_CMD
+          Write-Log "WAKE" $msg $C_CMD; $rustShown++
         } elseif ($msg -match "stream paused|stream resumed|baton") {
-          Write-Log "BATON" $msg $C_CMD
-        } elseif ($msg -match "audio passed gate|AGC gain|model probability") {
-          # Only show high-probability detections
+          Write-Log "BATON" $msg $C_CMD; $rustShown++
+        } elseif ($msg -match "model probability") {
+          # Only show probabilities above 0.3
           if ($msg -match "probability=0\.[3-9]|probability=1\.") {
-            Write-Log "WAKE" $msg "DarkYellow"
+            Write-Log "WAKE" $msg "DarkYellow"; $rustShown++
           }
-        } elseif ($msg -match "stream started|device|sample_rate") {
-          Write-Log "AUDIO" $msg $C_RUST
-        } elseif ($msg -match "3000 callbacks") {
-          Write-Log "AUDIO" $msg "DarkGray"
-        } else {
-          # Skip noisy DEBUG audio gate logs
-          if ($level -ne "DEBUG" -or $msg -notmatch "audio passed gate|AGC gain") {
-            Write-Log "RUST" $msg $color
+        } elseif ($msg -match "stream started|device|sample_rate|audio capture started") {
+          Write-Log "AUDIO" $msg $C_RUST; $rustShown++
+        } elseif ($msg -match "callbacks.*processed") {
+          # Only show every 5000 callbacks (not every 1000)
+          if ($msg -match "(\d+) callbacks" -and [int64]$Matches[1] % 5000 -eq 0) {
+            Write-Log "AUDIO" $msg "DarkGray"; $rustShown++
           }
+        } elseif ($level -eq "INFO") {
+          Write-Log "RUST" $msg $color; $rustShown++
+        } elseif ($level -eq "WARN" -or $level -eq "ERROR") {
+          Write-Log "RUST" $msg $color; $rustShown++
         }
+        # Skip all other DEBUG lines (audio passed gate, AGC, etc)
       }
     }
 
