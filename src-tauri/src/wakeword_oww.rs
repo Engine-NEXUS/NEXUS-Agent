@@ -1067,8 +1067,11 @@ fn start_audio_capture_with_retry(
 fn start_audio_capture(
     engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
 ) -> Result<(), String> {
+    #[allow(unused_imports)]
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    #[allow(unused_imports)]
     use cpal::Sample;
+    #[allow(unused_imports)]
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let host = cpal::default_host();
