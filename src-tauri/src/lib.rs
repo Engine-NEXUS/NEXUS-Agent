@@ -191,7 +191,14 @@ pub fn run() {
             tracing::info!("single-instance: secondary launch attempt with args: {:?}", args);
             // Handle deep-link redirects on Windows/Linux (passed as CLI arg)
             if let Some(url) = args.iter().find(|a| a.starts_with("nexus://")) {
+                tracing::info!("single-instance: deep-link callback: {}", url);
                 let _ = app.emit("deep-link://oauth-callback", url.clone());
+                // OAuth callback — just emit the event and return.
+                // Do NOT try to show/wake the main window here; the WebView2
+                // environment may not be accessible from this callback context
+                // (causes HRESULT 0x8007139F "group or resource not in correct
+                // state"). The frontend listens for the event and handles UI.
+                return;
             }
 
             // Check if secondary launch requested setup wizard or settings window
@@ -593,6 +600,11 @@ pub fn run() {
             }
 
             if should_open_setup {
+                // Hide the orb during setup — it should not steal focus or
+                // appear behind the setup wizard on first launch.
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
+                }
                 if let Ok(win) = crate::dyn_windows::get_or_create_window(app.handle(), crate::dyn_windows::WindowConfig::setup()) {
                     let _ = win.show();
                     let _ = win.set_focus();

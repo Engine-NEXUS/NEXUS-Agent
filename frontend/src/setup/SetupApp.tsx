@@ -21,7 +21,7 @@ export function SetupApp() {
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
 
   // Settings
-  const [hotkey, setHotkey] = useState("Ctrl+Shift+Space");
+  const [hotkey] = useState("Ctrl+Space");
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
   const [autostart, setAutostart] = useState(true);
 
@@ -51,7 +51,6 @@ export function SetupApp() {
       .then((s) => {
         if (s) {
           if (s.ttsVoice) setSelectedVoice(s.ttsVoice);
-          if (s.hotkey) setHotkey(s.hotkey);
           if (typeof s.wakeWordEnabled === "boolean") setWakeWordEnabled(s.wakeWordEnabled);
           if (typeof s.autostart === "boolean") setAutostart(s.autostart);
         }
@@ -96,14 +95,27 @@ export function SetupApp() {
   }, [step, checkServer]);
 
   const handleConnect = async (provider: "google" | "github") => {
-    if (!serverUrl) {
+    // Fallback: if serverUrl hasn't loaded yet, try loading it now
+    let url = serverUrl;
+    if (!url) {
+      try {
+        const cfg = await invoke<{ serverUrl: string; userId: string; deviceId: string }>("get_server_config");
+        url = cfg.serverUrl;
+        setServerUrl(cfg.serverUrl);
+        setUserId(cfg.userId);
+      } catch {
+        setError("Server not configured");
+        return;
+      }
+    }
+    if (!url) {
       setError("Server not configured");
       return;
     }
     setConnecting(provider);
     setError(null);
     try {
-      setSidecarBaseUrl(serverUrl);
+      setSidecarBaseUrl(url);
       await connectOAuth(provider, userId);
       await checkServer();
     } catch (err) {
@@ -515,14 +527,11 @@ export function SetupApp() {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: "var(--nx-text-sm)" }}>Global Hotkey</div>
-                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>Instantly wake/toggle assistant</div>
+                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>Ctrl+Space — instantly wake/toggle assistant</div>
                     </div>
-                    <input
-                      type="text"
-                      value={hotkey}
-                      onChange={(e) => setHotkey(e.target.value)}
-                      style={{ padding: "6px 10px", fontSize: "var(--nx-text-xs)", border: "1px solid var(--nx-border)", borderRadius: "6px", width: "140px", textAlign: "center" }}
-                    />
+                    <div style={{ padding: "6px 10px", fontSize: "var(--nx-text-xs)", border: "1px solid var(--nx-border)", borderRadius: "6px", width: "140px", textAlign: "center", color: "var(--nx-text-secondary)", background: "var(--nx-surface-2)" }}>
+                      Ctrl+Space
+                    </div>
                   </div>
 
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>

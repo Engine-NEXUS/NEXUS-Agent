@@ -128,10 +128,14 @@ pub fn get_server_config<R: Runtime>(
     }
     let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let default_url = option_env!("NEXUS_SERVER_URL")
+        .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
+    // Use saved URL, but fall back to default if the saved URL is empty
+    // (a previous save_settings call may have written an empty string).
+    let saved_url = json["serverUrl"].as_str().unwrap_or(default_url);
+    let server_url = if saved_url.is_empty() { default_url } else { saved_url };
     Ok(ServerConfig {
-        server_url: json["serverUrl"].as_str()
-            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("https://nexus-worker.chitkullakshya.workers.dev"))
-            .to_string(),
+        server_url: server_url.to_string(),
         user_id: json["userId"].as_str().unwrap_or("").to_string(),
         device_id: json["deviceId"].as_str().unwrap_or("").to_string(),
     })
@@ -936,8 +940,11 @@ pub fn get_settings<R: Runtime>(
     if config_path.exists() {
         if let Ok(config) = std::fs::read_to_string(&config_path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&config) {
+                let default_url = option_env!("NEXUS_SERVER_URL")
+                    .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
                 if let Some(url) = json.get("serverUrl").and_then(|v| v.as_str()) {
-                    settings.server_url = url.to_string();
+                    // Don't overwrite with empty string — keep default
+                    settings.server_url = if url.is_empty() { default_url.to_string() } else { url.to_string() };
                 }
                 if let Some(uid) = json.get("userId").and_then(|v| v.as_str()) {
                     settings.user_id = uid.to_string();
