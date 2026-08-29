@@ -9,7 +9,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(mobile)");
 
     #[cfg(feature = "mock-wake")]
-    println!("cargo:warning=ultron built with mock-wake: Porcupine native lib disabled");
+    println!("cargo:warning=NEXUS built with mock-wake: Porcupine native lib disabled");
 
     tauri_build::build();
 

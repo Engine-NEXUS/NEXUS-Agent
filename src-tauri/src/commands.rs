@@ -35,7 +35,7 @@ pub fn save_server_config<R: Runtime>(
     device_id: String,
 ) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let config_path = dir.join("ultron-config.json");
+    let config_path = dir.join("nexus-config.json");
     let config = serde_json::json!({
         "serverUrl": server_url,
         "userId": user_id,

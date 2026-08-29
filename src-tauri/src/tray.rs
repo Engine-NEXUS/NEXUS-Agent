@@ -9,11 +9,11 @@ use tauri::{
 pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
     let show = MenuItem::with_id(app, "show", "Show Assistant", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Ultron", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit NEXUS", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
 
     let handle = app.clone();
-    TrayIconBuilder::with_id("ultron-tray")
+    TrayIconBuilder::with_id("NEXUS-tray")
         .icon(app.default_window_icon().cloned().unwrap())
         .menu(&menu)
         .show_menu_on_left_click(false)

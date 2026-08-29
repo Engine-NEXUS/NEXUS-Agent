@@ -1,5 +1,5 @@
 """
-Ultron WSS Bridge — FastAPI WebSocket sidecar.
+NEXUS WSS Bridge — FastAPI WebSocket sidecar.
 
 Bridges the thin client's persistent WebSocket to:
   - STT (faster-whisper) for speech-to-text
@@ -50,12 +50,12 @@ from .tts import get_tts, shutdown_tts
 from .n8n_client import call_supervisor
 from .oauth import router as oauth_router, get_valid_credentials
 
-log = logging.getLogger("ultron.sidecar")
+log = logging.getLogger("NEXUS.sidecar")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 # ---- Configuration (env-driven) ----
 STT_URL = os.getenv("STT_URL", "http://localhost:8000/transcribe")
-SIDECAR_TOKEN = os.getenv("ULTRON_SIDECAR_TOKEN", "")
+SIDECAR_TOKEN = os.getenv("NEXUS_SIDECAR_TOKEN", "")
 MAX_AUDIO_BYTES = 8 * 1024 * 1024  # 8 MB safety cap
 
 # Acknowledgement phrases. The sidecar picks one randomly to avoid repetition.
@@ -68,7 +68,7 @@ _ACK_PHRASES = [
     "Let me look into that, sir.",
 ]
 
-app = FastAPI(title="Ultron WSS Bridge", version="0.2.0")
+app = FastAPI(title="NEXUS WSS Bridge", version="0.2.0")
 app.include_router(oauth_router)
 
 
@@ -118,7 +118,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
             await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="unauthorized")
             return
 
-    await ws.accept(subprotocol="ultron.v1")
+    await ws.accept(subprotocol="NEXUS.v1")
     session: Optional[Session] = None
     try:
         while True:

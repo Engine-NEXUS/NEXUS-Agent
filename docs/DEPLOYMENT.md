@@ -1,4 +1,4 @@
-# ULTRON Deployment Guide
+# NEXUS Deployment Guide
 
 This guide covers deploying the server-side components (sidecar, STT, n8n, Ollama)
 on a GPU server, and building the Tauri client for distribution.
@@ -78,7 +78,7 @@ Required environment variables (see `env.example`):
 ### 5. Production: Caddy reverse proxy (TLS)
 
 ```Caddyfile
-ultron.yourdomain.com {
+NEXUS.yourdomain.com {
     reverse_proxy localhost:8443
 }
 ```
@@ -134,13 +134,13 @@ The CI workflow (`.github/workflows/ci.yml`) runs on every PR:
 2. Enable APIs: Gmail, Google Calendar, Google Drive
 3. Configure OAuth consent screen (External, add your scopes)
 4. Create OAuth client (Web application)
-5. Add redirect URI: `ultron://oauth/callback`
+5. Add redirect URI: `NEXUS://oauth/callback`
 6. Copy Client ID + Client Secret to sidecar `.env`
 
 ### GitHub OAuth App
 
 1. Go to https://github.com/settings/developers → OAuth Apps → New OAuth App
-2. Authorization callback URL: `ultron://oauth/callback`
+2. Authorization callback URL: `NEXUS://oauth/callback`
 3. Copy Client ID + Client Secret to sidecar `.env`
 
 ### ElevenLabs

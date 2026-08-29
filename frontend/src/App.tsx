@@ -8,7 +8,7 @@ import { startVad, stopVad } from "./audio/vad";
 import { openSession, cancelSession } from "./net/wsBridge";
 import { stopTts } from "./audio/ttsPlayer";
 
-const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.ultron.internal/ws";
+const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.nexus.internal/ws";
 const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
 const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
 const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";
@@ -32,7 +32,7 @@ export default function App() {
     const off = listen("assistant:wake", async () => {
       const s = useAssistant.getState();
 
-      // Barge-in: if ULTRON is speaking, stop TTS and cancel the current session
+      // Barge-in: if NEXUS is speaking, stop TTS and cancel the current session
       // before starting a new capture. This lets the user interrupt mid-speech.
       if (s.state === "speaking") {
         stopTts();

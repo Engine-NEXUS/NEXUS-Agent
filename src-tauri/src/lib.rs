@@ -1,4 +1,4 @@
-//! Ultron — Tauri v2 main process.
+//! NEXUS — Tauri v2 main process.
 //!
 //! Wires up: window manager (click-through), global hotkey, autostart, tray,
 //! wake-word engine, the WSS network bridge, deep-link (OAuth redirects),
@@ -27,7 +27,7 @@ pub struct AppState {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,ultron=debug")))
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,nexus=debug")))
         .with_target(false)
         .init();
 
@@ -35,7 +35,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Focus the existing window if a second instance is attempted.
             // Also handle deep-link redirects on Windows/Linux (passed as CLI arg).
-            if let Some(url) = args.iter().find(|a| a.starts_with("ultron://")) {
+            if let Some(url) = args.iter().find(|a| a.starts_with("nexus://")) {
                 let _ = app.emit("deep-link://oauth-callback", url.clone());
             }
             if let Some(w) = app.get_webview_window("main") {
@@ -57,11 +57,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Register the ultron:// deep-link scheme (Windows + Linux runtime registration).
+            // Register the nexus:// deep-link scheme (Windows + Linux runtime registration).
             // macOS uses Info.plist CFBundleURLTypes (already configured).
             #[cfg(desktop)]
             {
-                let _ = app.deep_link().register("ultron");
+                let _ = app.deep_link().register("nexus");
             }
 
             // Autostart on by default.
@@ -103,7 +103,7 @@ pub fn run() {
             let _ = app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
                     let url_str = url.as_str();
-                    if url_str.starts_with("ultron://oauth/") {
+                    if url_str.starts_with("nexus://oauth/") {
                         let _ = handle.emit("deep-link://oauth-callback", url_str);
                     }
                 }
@@ -112,7 +112,7 @@ pub fn run() {
             // Check if this is first launch (no server URL configured) → show setup.
             let store_path = app.path().app_data_dir().ok();
             let needs_setup = if let Some(dir) = store_path {
-                !dir.join("ultron-config.json").exists()
+                !dir.join("nexus-config.json").exists()
             } else {
                 true
             };
@@ -137,5 +137,5 @@ pub fn run() {
             commands::save_server_config,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Ultron application");
+        .expect("error while running NEXUS application");
 }

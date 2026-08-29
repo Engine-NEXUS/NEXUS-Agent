@@ -22,7 +22,7 @@ from typing import AsyncIterator
 
 import httpx
 
-log = logging.getLogger("ultron.sidecar.n8n")
+log = logging.getLogger("NEXUS.sidecar.n8n")
 
 N8N_SUPERVISOR_URL = os.getenv("N8N_SUPERVISOR_URL", "http://localhost:5678/webhook/supervisor")
 N8N_STREAM_URL = os.getenv("N8N_STREAM_URL", "http://localhost:5678/webhook-stream/supervisor")
@@ -42,7 +42,7 @@ async def call_supervisor(
     Call the n8n supervisor and return the final result text.
 
     Args:
-        session_id: The ULTRON session ID for correlation.
+        session_id: The NEXUS session ID for correlation.
         user_id: The user's ID (for credential lookup).
         device_id: The device ID.
         transcript: The transcribed user speech.
