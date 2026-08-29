@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useArchitect, type ImpactResult } from "./architectStore";
 import { renderMarkdownToHtml } from "../sidebar/markdownRenderer";
 import { speak } from "../audio/ttsPlayer";
+import { getServerConfig } from "../net/wsBridge";
 
 export function ArchitectSidebar() {
   const phase1Data = useArchitect((s) => s.phase1Data);
@@ -32,7 +33,7 @@ export function ArchitectSidebar() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages]);
 
-  // Run impact query via Rust reverse BFS
+  // Run impact query via Rust reverse BFS, then get LLM narration from Worker
   const runImpactAnalysis = useCallback(
     async (filePath: string) => {
       try {
@@ -67,11 +68,50 @@ export function ArchitectSidebar() {
             ? `Changing this file directly affects ${impact.direct_count} files.`
             : "This is an isolated leaf node with minimal blast radius."
         );
+
+        // Phase 3 LLM narration: ask the Worker to explain WHY the paths matter
+        if (impact.affected_files.length > 0) {
+          try {
+            const config = await getServerConfig();
+            const repoName = `${phase1Data?.owner || "unknown"}/${phase1Data?.repo || "repo"}`;
+            const narrationResp = await fetch(config.url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                request_id: `impact-${Date.now()}`,
+                requester: { id: config.userId || "architect-local" },
+                task: {
+                  request: "impact narration",
+                  intent: "impact_narration",
+                  target_file: filePath,
+                  affected_files: impact.affected_files,
+                  dependency_paths: impact.dependency_paths,
+                  direct_count: impact.direct_count,
+                  transitive_count: impact.transitive_count,
+                  test_files: impact.test_files_affected,
+                  repo: repoName,
+                },
+              }),
+            });
+            if (narrationResp.ok) {
+              const narrationData = await narrationResp.json();
+              const narration = narrationData.reply_text;
+              if (narration && narration.length > 20) {
+                addChatMessage({
+                  role: "assistant",
+                  text: `🧠 **LLM Risk Assessment:**\n\n${narration}`,
+                });
+              }
+            }
+          } catch (narrationErr) {
+            console.warn("LLM narration failed (non-fatal):", narrationErr);
+          }
+        }
       } catch (err: any) {
         console.warn("Impact analysis error:", err);
       }
     },
-    [setImpactResult, setHighlightedPaths, addChatMessage]
+    [setImpactResult, setHighlightedPaths, addChatMessage, phase1Data]
   );
 
   const handleSendMessage = (textToSend?: string) => {
@@ -89,43 +129,101 @@ export function ArchitectSidebar() {
       return;
     }
 
-    setTimeout(() => {
-      let reply = "";
+    // Use Gemini 3.1 Pro for architecture chat with graph context
+    void (async () => {
+      try {
+        const GEMINI_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
+        const GEMINI_MODEL = "gemini-3.1-pro-preview";
+        const repoName = `${phase1Data?.owner || "unknown"}/${phase1Data?.repo || "repo"}`;
 
-      if (lower.includes("circular") || lower.includes("cycle")) {
-        if (phase2Data && phase2Data.circular_deps.length > 0) {
-          reply = `🔄 **Found ${phase2Data.circular_deps.length} Circular Dependency Chains:**\n\n`;
-          phase2Data.circular_deps.forEach((c, idx) => {
-            reply += `**Cycle #${idx + 1}:**\n${c.chain.map((f) => `\`${f}\``).join(" ➔ ")}\n*Risk: ${c.risk}*\n\n`;
-          });
-        } else if (phase2Data) {
-          reply = `✅ **No Circular Dependencies Detected.** The import hierarchy has a clean directed acyclic structure.`;
-        } else {
-          reply = `🔄 Run Phase 2 Deep Scan to trace exact circular dependency chains across the entire codebase.`;
+        // Build context from the graph data
+        let graphContext = `Repository: ${repoName}\n`;
+        graphContext += `Summary: ${phase2Data?.summary || phase1Data?.summary || "Analyzing..."}\n`;
+        if (phase1Data) {
+          graphContext += `Layers: ${phase1Data.layers.map(l => `${l.label} (${l.layer_type}, ${l.file_count} files)`).join(", ")}\n`;
         }
-      } else if (lower.includes("hotspot") || lower.includes("hub") || lower.includes("critical")) {
-        if (phase2Data && phase2Data.hotspots.length > 0) {
-          reply = `🔥 **Top Coupling Hotspots (Highest In-Degree Dependents):**\n\n`;
-          phase2Data.hotspots.slice(0, 5).forEach((h) => {
-            reply += `- \`${h.file}\` — **${h.in_degree} files import this** (${h.risk.toUpperCase()} risk)\n`;
-          });
-          reply += `\n*Tip: Refactoring these files requires updating extensive downstream consumers.*`;
-        } else {
-          reply = `🔥 Run Phase 2 Deep Scan to calculate in-degree centrality and identify critical hotspots.`;
+        if (phase2Data) {
+          graphContext += `Total files: ${phase2Data.total_files}, Files analyzed: ${phase2Data.files_analyzed}\n`;
+          graphContext += `Hotspots: ${phase2Data.hotspots.slice(0, 5).map(h => `${h.file} (${h.in_degree} dependents, ${h.risk})`).join("; ")}\n`;
+          graphContext += `Circular deps: ${phase2Data.circular_deps.length} chains\n`;
+          if (phase2Data.circular_deps.length > 0) {
+            graphContext += `Cycles: ${phase2Data.circular_deps.slice(0, 3).map(c => c.chain.join(" → ")).join(" | ")}\n`;
+          }
+          graphContext += `Isolated files: ${phase2Data.isolated.length}\n`;
+          graphContext += `Entry points: ${phase2Data.entry_points.join(", ")}\n`;
         }
-      } else if (lower.includes("safe") || lower.includes("refactor") || lower.includes("start")) {
-        if (phase2Data && phase2Data.isolated.length > 0) {
-          reply = `🛡️ **Safest Starting Points for Refactoring:**\n\nThese leaf/isolated modules have 0 reverse dependents:\n${phase2Data.isolated.slice(0, 5).map((f) => `- \`${f}\``).join("\n")}`;
-        } else {
-          reply = `🛡️ The shared utilities layer (\`layer_shared\`) is typically the safest starting point with lowest coupling risk.`;
+        if (selectedFile) {
+          graphContext += `Selected file: ${selectedFile.file_path} (in_degree=${selectedFile.in_degree}, out_degree=${selectedFile.out_degree}, risk=${selectedFile.risk_level})\n`;
         }
-      } else {
-        reply = `💡 **Architecture Agent:**\n\n${phase2Data?.summary || phase1Data?.summary || "Analyzing codebase..."}\n\nSelect any node on the canvas to inspect dependencies or run blast radius queries.`;
+
+        const prompt = `You are NEXUS, an AI architecture assistant analyzing the repository ${repoName}.
+You have access to a real dependency graph built from static import analysis.
+
+Graph Context:
+${graphContext}
+
+The developer asks: "${text}"
+
+Answer concisely (under 200 words). Use markdown formatting. Reference specific file paths when relevant.
+If the question is about impact or "what breaks", explain the blast radius with specific dependency paths.
+If about circular deps, explain why they're dangerous and which ones exist.
+If about hotspots, identify the highest-coupling files and why they're risky.
+If about safe refactoring, suggest low-coupling starting points.`;
+
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { maxOutputTokens: 500, temperature: 0.7 },
+            }),
+          }
+        );
+
+        if (resp.ok) {
+          const data = await resp.json();
+          const reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (reply && reply.length > 10) {
+            addChatMessage({ role: "assistant", text: reply });
+            void speak("Analysis updated.");
+            return;
+          }
+        }
+
+        // Fallback to keyword-based response if Gemini fails
+        throw new Error("Gemini API failed");
+      } catch {
+        // Fallback: keyword-based response
+        let reply = "";
+        if (lower.includes("circular") || lower.includes("cycle")) {
+          if (phase2Data && phase2Data.circular_deps.length > 0) {
+            reply = `� **Found ${phase2Data.circular_deps.length} Circular Dependency Chains:**\n\n`;
+            phase2Data.circular_deps.forEach((c, idx) => {
+              reply += `**Cycle #${idx + 1}:**\n${c.chain.map((f) => `\`${f}\``).join(" ➔ ")}\n*Risk: ${c.risk}*\n\n`;
+            });
+          } else if (phase2Data) {
+            reply = `✅ **No Circular Dependencies Detected.** The import hierarchy has a clean directed acyclic structure.`;
+          } else {
+            reply = `� Run Phase 2 Deep Scan to trace exact circular dependency chains across the entire codebase.`;
+          }
+        } else if (lower.includes("hotspot") || lower.includes("hub") || lower.includes("critical")) {
+          if (phase2Data && phase2Data.hotspots.length > 0) {
+            reply = `� **Top Coupling Hotspots:**\n\n`;
+            phase2Data.hotspots.slice(0, 5).forEach((h) => {
+              reply += `- \`${h.file}\` — **${h.in_degree} files import this** (${h.risk.toUpperCase()} risk)\n`;
+            });
+          } else {
+            reply = `� Run Phase 2 Deep Scan to identify critical hotspots.`;
+          }
+        } else {
+          reply = `💡 **Architecture Agent:**\n\n${phase2Data?.summary || phase1Data?.summary || "Analyzing codebase..."}\n\nSelect any node on the canvas to inspect dependencies or run blast radius queries.`;
+        }
+        addChatMessage({ role: "assistant", text: reply });
+        void speak("Analysis updated.");
       }
-
-      addChatMessage({ role: "assistant", text: reply });
-      void speak("Analysis updated.");
-    }, 500);
+    })();
   };
 
   return (
