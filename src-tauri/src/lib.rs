@@ -19,6 +19,8 @@ mod wakeword;
 mod network;
 mod tray;
 mod commands;
+mod command_executor;
+mod app_registry;
 mod stt;
 mod voice_profile;
 
@@ -65,6 +67,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            // Clear WebView2 HTTP cache on startup to prevent stale JS files
+            // from being served after code changes (dev mode).
+            // The cache is at: %LOCALAPPDATA%/<identifier>/EBWebView/Default/Cache
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(data_dir) = app.path().app_data_dir() {
+                    let cache_dir = data_dir.join("EBWebView").join("Default").join("Cache");
+                    if cache_dir.exists() {
+                        let _ = std::fs::remove_dir_all(&cache_dir);
+                        tracing::debug!("cleared WebView2 cache: {}", cache_dir.display());
+                    }
+                    let code_cache = data_dir.join("EBWebView").join("Default").join("Code Cache");
+                    if code_cache.exists() {
+                        let _ = std::fs::remove_dir_all(&code_cache);
+                    }
+                }
+            }
+
             // Register the nexus:// deep-link scheme (Windows + Linux runtime registration).
             // macOS uses Info.plist CFBundleURLTypes (already configured).
             #[cfg(desktop)]
@@ -107,6 +127,9 @@ pub fn run() {
                     tracing::info!("orb positioned at ({x}, {y})");
                 }
             }
+
+            // Pre-index installed apps for instant launch (background thread).
+            app_registry::init();
 
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
@@ -170,6 +193,7 @@ pub fn run() {
             commands::delete_voice_profile,
             stt::transcribe_audio,
             stt::stt_status,
+            command_executor::execute_command,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS application");

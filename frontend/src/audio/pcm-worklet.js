@@ -14,6 +14,36 @@ class PcmPassthrough extends AudioWorkletProcessor {
     this.resampleRatio = sampleRate / 16000;
     this.frac = 0;
     this.buffer = new Float32Array(0);
+
+    // Handle flush requests from the main thread — sends any remaining
+    // buffered samples as a final PCM frame before the worklet is destroyed.
+    this.port.onmessage = (e) => {
+      if (e.data && e.data.type === "flush") {
+        this.flushRemaining();
+      }
+    };
+  }
+
+  /** Flush any remaining buffered samples as a final PCM frame. */
+  flushRemaining() {
+    if (this.buffer.length === 0) return;
+    const out = [];
+    let pos = this.frac;
+    while (pos + this.resampleRatio < this.buffer.length) {
+      const idx0 = Math.floor(pos);
+      const idx1 = idx0 + 1 < this.buffer.length ? idx0 + 1 : idx0;
+      const t = pos - idx0;
+      const sample = this.buffer[idx0] * (1 - t) + this.buffer[idx1] * t;
+      const s = Math.max(-1, Math.min(1, sample));
+      out.push(s < 0 ? s * 0x8000 : s * 0x7fff);
+      pos += this.resampleRatio;
+    }
+    if (out.length > 0) {
+      const pcm = new Int16Array(out);
+      this.port.postMessage({ pcm }, [pcm.buffer]);
+    }
+    this.buffer = new Float32Array(0);
+    this.frac = 0;
   }
 
   process(inputs) {

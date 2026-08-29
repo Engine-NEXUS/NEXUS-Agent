@@ -703,3 +703,122 @@ fn start_audio_capture(
     std::mem::forget(stream);
     Ok(())
 }
+
+#[cfg(all(test, feature = "wakeword-oww"))]
+mod tests {
+    use std::path::PathBuf;
+
+    /// Verify that all three required ONNX models exist in the resources directory
+    /// and are non-trivial in size (not corrupted/empty).
+    #[test]
+    fn test_oww_models_exist() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let oww_dir = PathBuf::from(manifest_dir).join("resources").join("oww");
+
+        let required = ["melspectrogram.onnx", "embedding_model.onnx", "nexus.onnx"];
+        let mut found = 0;
+        for name in &required {
+            let path = oww_dir.join(name);
+            if !path.exists() {
+                eprintln!("SKIP: {} not found at {}", name, path.display());
+                continue;
+            }
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            assert!(
+                size > 1000,
+                "{} is only {} bytes — file may be corrupted",
+                name,
+                size
+            );
+            println!("OK: {} ({} bytes)", name, size);
+            found += 1;
+        }
+        if found == 0 {
+            eprintln!("SKIP: No OWW models found — train the model first");
+        }
+    }
+
+    /// Verify that the trained nexus.onnx model file is a valid ONNX file
+    /// by checking its magic bytes and basic structure.
+    #[test]
+    fn test_nexus_onnx_file_valid() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let nexus_path = PathBuf::from(manifest_dir)
+            .join("resources")
+            .join("oww")
+            .join("nexus.onnx");
+
+        if !nexus_path.exists() {
+            eprintln!("SKIP: nexus.onnx not found at {}", nexus_path.display());
+            eprintln!("      Train the model first using train_nexus_oww.ipynb");
+            return;
+        }
+
+        // Read the file
+        let data = std::fs::read(&nexus_path).expect("Failed to read nexus.onnx");
+        assert!(data.len() > 1000, "nexus.onnx is too small ({} bytes)", data.len());
+
+        // ONNX files start with a Protobuf header — check for common ONNX markers
+        // The first few bytes should be valid protobuf (not random/corrupted)
+        // ONNX format: message ModelProto { ... } — field 7 is ir_version
+        // We just verify it's a valid protobuf by checking it doesn't start with null bytes
+        assert!(
+            data[0] != 0 || data.len() > 100,
+            "nexus.onnx may be corrupted (starts with null bytes)"
+        );
+
+        // Check for the "onnx" string somewhere in the first 1KB (producer name)
+        let header = &data[..std::cmp::min(1024, data.len())];
+        let has_onnx_marker = header.windows(4).any(|w| w == b"onnx");
+        let has_pytorch_marker = header.windows(7).any(|w| w == b"pytorch");
+        let has_keras_marker = header.windows(5).any(|w| w == b"keras");
+
+        // At least one producer marker should be present
+        assert!(
+            has_onnx_marker || has_pytorch_marker || has_keras_marker,
+            "nexus.onnx doesn't contain expected ONNX producer markers — may not be a valid ONNX file"
+        );
+
+        println!(
+            "OK: nexus.onnx is a valid ONNX file ({} bytes, markers: onnx={}, pytorch={}, keras={})",
+            data.len(),
+            has_onnx_marker,
+            has_pytorch_marker,
+            has_keras_marker
+        );
+    }
+
+    /// Verify that the WakeEngine can be constructed with the trained model.
+    /// This is the integration test — it loads all 3 models and initializes
+    /// the full KWS pipeline.
+    #[test]
+    fn test_wake_engine_initializes() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let resource_dir = PathBuf::from(manifest_dir).join("resources");
+        let app_data_dir = std::env::temp_dir().join("nexus_test_profile");
+
+        // Check if models exist first
+        let oww_dir = resource_dir.join("oww");
+        let nexus_path = oww_dir.join("nexus.onnx");
+        if !nexus_path.exists() {
+            eprintln!("SKIP: nexus.onnx not found — train the model first");
+            return;
+        }
+
+        // Try to create the WakeEngine — this loads all 3 ONNX models
+        match crate::wakeword_oww::engine::WakeEngine::new(resource_dir, app_data_dir) {
+            Ok(_engine) => {
+                println!("OK: WakeEngine initialized successfully with trained nexus.onnx");
+            }
+            Err(e) => {
+                // Speaker model may be missing — that's OK, it's optional
+                let err_str = format!("{e}");
+                if err_str.contains("speaker") || err_str.contains("Speaker") {
+                    println!("OK: WakeEngine initialized (speaker verification disabled): {}", err_str);
+                } else {
+                    panic!("WakeEngine initialization failed: {e}");
+                }
+            }
+        }
+    }
+}

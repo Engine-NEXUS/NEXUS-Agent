@@ -15,7 +15,7 @@
 | **Text-only protocol** | WebSocket carries only JSON text frames. No binary audio frames in either direction. |
 | **Privacy** | Microphone audio never leaves the device. STT runs locally via faster-whisper on localhost. |
 | **Overlay correctness** | Transparent, frameless, always-on-top, with *region-aware* click-through. |
-| **Zero idle CPU** | Wake-word via native Porcupine C bindings (Rust), not a JS AudioWorklet loop. |
+| **Zero idle CPU** | Wake-word via openWakeWord KWS (tract-onnx, pure Rust), not a JS AudioWorklet loop. |
 
 ---
 
@@ -46,7 +46,7 @@
    │              THIN CLIENT (per device)                                      │
    │  ┌──────────────────────────────────────────────────────────────────────┐ │
    │  │  Tauri v2 Main Process (Rust)                                          │ │
-   │  │   ├── Porcupine wake-word (C FFI, ~0.5% CPU)  ──▶  Wake Event          │ │
+   │  │   ├── openWakeWord KWS (tract-onnx, ~1-2% CPU)  ──▶  Wake Event        │ │
    │  │   ├── Global Hotkey (Ctrl/Cmd+Shift+Space)  ──▶  Wake Event           │ │
    │  │   ├── click-through region manager (set_ignore_cursor_events)        │ │
    │  │   ├── autostart + system tray (tauri-plugin-*)                        │ │
@@ -65,7 +65,7 @@
   │ wake phrase ─┐  │                       │                    │                    │
   │ (or hotkey) │  │                       │                    │                    │
   │             ▼  │                       │                    │                    │
-  │  Porcupine CB ▼ │                       │                    │                    │
+  │  OWW KWS callback ▼ │                       │                    │                    │
   │  ──wake─────▶ │ emit("assistant:wake") │                    │                    │
   │               │ ───────────────────────▶│                    │                    │
   │               │                         │ state=Listening    │                    │
@@ -120,8 +120,8 @@ Only text crosses the network (transcript up, ack + result down).
 | Concern | Crate | Why |
 |---|---|---|
 | App shell | `tauri` v2 | Only option giving transparent overlay + IPC + cross-platform tray + Rust core. |
-| Wake word | `pv_porcupine` (C lib) via `libloading` FFI | < 1% CPU, offline, no JS event loop. Wasm AudioWorklet alternative rejected: keeps webview awake → kills idle budget. |
-| Audio capture (feed to Porcupine) | `cpal` | Cross-platform PCM; route 16 kHz mono frames to Porcupine. |
+| Wake word | `tract-onnx` (pure Rust ONNX) + openWakeWord KWS | < 2% CPU, offline, no JS event loop, no native C dependency. Replaces Porcupine (which required API key + online activation). See [wake-word docs](./wake-word/). |
+| Audio capture (feed to KWS) | `cpal` | Cross-platform PCM; route 16 kHz mono frames to openWakeWord. |
 | Global hotkey | `tauri-plugin-global-shortcut` | Official, works on all 3 OSes incl. Wayland. |
 | Autostart | `tauri-plugin-autostart` | Official, uses LaunchAgent/MS reg/.desktop. |
 | Tray | built-in `tauri::tray` (v2) | — |
@@ -130,7 +130,7 @@ Only text crosses the network (transcript up, ack + result down).
 | Audio encode (Opus) | `opus` (audiopus_lite) | Compress mic stream before WSS. |
 | Logging | `tracing` + `tracing-subscriber` | Async-friendly, zero-cost when off. |
 | Single instance | `tauri-plugin-single-instance` | Prevent duplicate autostart launches. |
-| Secret storage | `keyring` | OS keychain for Porcupine AccessKey + device token. |
+| Secret storage | `keyring` | OS keychain for device token. |
 
 ### Frontend (Webview)
 | Concern | Library | Why |
@@ -155,23 +155,38 @@ Only text crosses the network (transcript up, ack + result down).
 
 ---
 
-## 6. Wake-Word Engine: Porcupine in Rust
+## 6. Wake-Word Engine: openWakeWord KWS in Rust
 
 ### 6.1 Approach
-Porcupine ships as a C static/shared lib (`libpv_porcupine.so/.dll/.dylib`) + header. We load it at runtime with `libloading` to avoid GPL/compile-time FFI friction and bundle per-platform binaries in `resources/porcupine/`.
+The wake-word engine uses **openWakeWord** — a continuous keyword spotting (KWS) system that scores every 80ms audio chunk for the target word "NEXUS" without using VAD or ASR. The engine is implemented in pure Rust via `tract-onnx` (no native ONNX Runtime dependency).
 
-- Custom wake phrase → train on Picovoice Console → download `.ppn` + `porcupine_params.pv` + platform lib.
-- Audio: `cpal` stream 16 kHz mono i16 → buffer → `pv_porcupine_process()` per `frame_length` samples.
-- On detection → channel → `app.emit("assistant:wake")`.
+- **3-stage ONNX pipeline:** melspectrogram → embedding → custom NEXUS classifier
+- **Models:** `melspectrogram.onnx` (1.0MB) + `embedding_model.onnx` (1.3MB) + `nexus.onnx` (~0.8MB, custom-trained)
+- **Audio:** `cpal` stream → downmix to mono → resample to 16kHz → 1280-sample (80ms) chunks
+- **Detection:** rolling probability buffer + threshold (0.5) + refractory period (2000ms)
+- **Speaker verification:** sherpa-onnx speaker embeddings (second stage, optional)
+- On detection → tokio channel → `window.__NEXUS_WAKE__()` in frontend
 
-### 6.2 CPU budget
-Porcupine is designed for ≤ 1% CPU on a Raspberry Pi 3; on x86 desktop ~0.1–0.5%. The audio capture thread is the only always-on thread; everything else is event-driven. Implementation: `src-tauri/src/wakeword.rs`.
+### 6.2 Why not VAD+ASR? Why not Porcupine?
+The original approach used VAD (Silero) + ASR (sherpa-onnx Zipformer) + text matching, achieving only ~30% recall. VAD clips the start of short words and ASR misrecognizes "nexus" as "mexic", "next", etc. Porcupine was considered but rejected because it requires an API key and online activation (violates the privacy-first principle). See [wake-word/02-wake-word-architecture-decision.md](./wake-word/02-wake-word-architecture-decision.md) for the full comparison.
 
-### 6.3 Why not WebAssembly AudioWorklet?
-A Worklet runs *inside the webview audio graph*, forcing the webview/V8 loop to tick every audio quantum → defeats the idle budget and keeps WebView2 memory resident. Porcupine in Rust keeps the webview free to be torn down between interactions. **Recommendation: Porcupine C-FFI in Rust.**
+### 6.3 CPU budget
+The KWS engine uses ~1-2% CPU at idle (3 small ONNX models, ~11-22ms inference per 80ms chunk). The audio capture thread is the only always-on thread; everything else is event-driven. Implementation: `src-tauri/src/wakeword_oww.rs`.
 
-### 6.4 License
-Porcupine custom wake words require a Picovoice account (free dev tier). Place the `.ppn` + AccessKey in the OS keychain (`keyring` crate: `Entry::new("NEXUS","porcupine-access-key")`). A `mock-wake` cargo feature disables the native lib for CI.
+### 6.4 Why not WebAssembly AudioWorklet?
+A Worklet runs *inside the webview audio graph*, forcing the webview/V8 loop to tick every audio quantum → defeats the idle budget and keeps WebView2 memory resident. KWS in Rust keeps the webview free to be torn down between interactions.
+
+### 6.5 Feature flags
+```toml
+default = ["wakeword-oww"]
+wakeword-porcupine = []   # legacy
+wakeword-sherpa = []      # old VAD+ASR (fallback)
+wakeword-oww = []         # openWakeWord KWS (default)
+mock-wake = []            # CI: no audio capture, hotkey only
+```
+
+### 6.6 Custom model training
+The `nexus.onnx` classifier is trained using `train_nexus_oww.ipynb` in Google Colab (T4 GPU, ~1 hour). Uses synthetic Piper TTS data — no real user audio needed. See [wake-word/06-model-training.md](./wake-word/06-model-training.md).
 
 ---
 
@@ -217,7 +232,7 @@ Porcupine custom wake words require a Picovoice account (free dev tier). Place t
 - All traffic over WSS (Caddy TLS) or Tailscale (WireGuard mesh) — no plaintext.
 - Per-device token issued by server; rotate on revoke; stored in OS keychain.
 - Audio never persisted on client; server stores transcripts only on opt-in.
-- Porcupine AccessKey stored in OS keychain (`keyring`), never committed.
+- Porcupine AccessKey no longer needed (replaced by openWakeWord — no API key required).
 - CSP in `tauri.conf.json` restricts `connect-src` to the backend host + `ipc:`/`http://ipc.localhost`.
 - Capabilities (`capabilities/main.json`) grant only the window/cursor/hotkey/autostart/event scopes needed — least privilege.
 
@@ -242,7 +257,8 @@ NEXUS/
 │     ├─ lib.rs                         # Tauri builder + plugin wiring
 │     ├─ window_manager.rs              # overlay + set_click_through IPC
 │     ├─ hotkey.rs                       # Ctrl/Cmd+Shift+Space → wake
-│     ├─ wakeword.rs                    # Porcupine C-FFI (cpal) / mock-wake
+│     ├─ wakeword_oww.rs                # openWakeWord KWS (tract-onnx) — default
+│     ├─ wakeword.rs                    # legacy VAD+ASR (sherpa-onnx) — fallback
 │     ├─ network.rs                     # WSS bridge (tokio-tungstenite)
 │     └─ tray.rs                        # system tray
 ├─ frontend/
@@ -270,7 +286,7 @@ NEXUS/
 ## 12. Known Limitations / Assumptions
 - **Compositor required on Linux** for `transparent: true`. On bare WMs (e.g. i3 without compositor) the overlay degrades to an opaque rounded rectangle.
 - **Wayland global hotkeys** are unreliable without a portal; `tauri-plugin-global-shortcut` uses `evdev`/`x11` backends — on pure Wayland the wake word remains the primary trigger; document the hotkey limitation for Wayland users.
-- **Porcupine custom wake word** requires a Picovoice account and per-platform binary; the `mock-wake` feature exists for CI without the lib.
+- **Custom wake word model** (`nexus.onnx`) must be trained via the Colab notebook before the KWS engine can detect "NEXUS". The `mock-wake` feature exists for CI without the model.
 - **Streaming TTS over WebSocket** is implemented client-side; the n8n blueprint uses `respondToWebhook` for the simple case — a custom n8n node (or a small FastAPI sidecar holding the session map keyed by `sessionId`) is recommended for true chunked streaming. See `_meta` note in the blueprint.
 - **Ollama single-GPU** enforces sequential micro-tasks; for 5 concurrent users with heavy summarization, consider a second small model slot or GPU offload scheduling — out of scope for v1.
 
@@ -315,7 +331,7 @@ Implementation: `src-tauri/src/window_manager.rs` + `frontend/src/overlay/clickT
 | Network | 0 | Opus 16–32 kbps up + TTS 32 kbps down |
 | Disk (installed) | ~25 MB binary + 30 MB webview runtime |
 
-Enforced via: native Porcupine (no JS audio loop), `tokio` single-thread, no background polling, lazy frontend (webview only mounted while visible).
+Enforced via: native openWakeWord KWS (no JS audio loop), `tokio` single-thread, no background polling, lazy frontend (webview only mounted while visible).
 
    │  │   ├── Audio recorder (AudioWorklet → Tauri IPC)                      │ │
    │  │   ├── VAD (WebRTC VAD RMS / @ricky0/vad-web)                         │ │
