@@ -294,8 +294,9 @@ function downloadMoonshineModel() {
   const HF_REPO = "onnx-community/moonshine-tiny-ONNX";
   const files = [
     ["tokenizer.json", "tokenizer.json"],
-    ["onnx/encoder_model_int8.onnx", "encoder_model_int8.onnx"],
-    ["onnx/decoder_model_merged_int8.onnx", "decoder_model_merged_int8.onnx"],
+    // transcribe-rs expects {name}.{suffix}.onnx (dot), HF uses underscore — save with dot
+    ["onnx/encoder_model_int8.onnx", "encoder_model.int8.onnx"],
+    ["onnx/decoder_model_merged_int8.onnx", "decoder_model_merged.int8.onnx"],
   ];
 
   // Resolve model directory

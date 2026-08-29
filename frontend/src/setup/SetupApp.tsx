@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import {
@@ -28,6 +28,9 @@ export function SetupApp() {
   // Mic permission
   const [micStatus, setMicStatus] = useState<"checking" | "granted" | "denied" | "no_device">("checking");
   const [micTesting, setMicTesting] = useState(false);
+  const [micRetryCount, setMicRetryCount] = useState(0);
+  const [micSkipped, setMicSkipped] = useState(false);
+  const micPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Accounts
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
@@ -110,26 +113,44 @@ export function SetupApp() {
     }
   };
 
-  // ─── Mic permission check ──────────────────────────────────────
+  // ─── Mic permission check with auto-retry ──────────────────────
   //
   // Two-stage check:
   //   1. Rust-side: check_mic_permission() probes cpal for the default input
   //      device. Detects if Windows mic privacy is globally off.
   //   2. Frontend-side: getUserMedia() to trigger the WebView2/browser mic
   //      permission prompt and verify the user actually grants it.
+  //
+  // If permission is denied, we start a background poll that re-checks every
+  // 3 seconds. This way, when the user fixes Windows Settings → Privacy →
+  // Microphone, the setup auto-detects the change without requiring them
+  // to manually click "Check Again".
 
-  const runMicCheck = async () => {
-    setMicStatus("checking");
+  const stopMicPoll = useCallback(() => {
+    if (micPollRef.current) {
+      clearInterval(micPollRef.current);
+      micPollRef.current = null;
+    }
+  }, []);
+
+  const runMicCheck = async (isAutoRetry = false) => {
+    if (!isAutoRetry) {
+      setMicStatus("checking");
+    }
+    setMicSkipped(false);
 
     // Stage 1: Rust probe (checks OS-level mic privacy)
     try {
       const result = await invoke<string>("check_mic_permission");
       if (result === "no_device") {
         setMicStatus("no_device");
+        stopMicPoll();
         return;
       }
       if (result === "denied") {
         setMicStatus("denied");
+        // Start auto-retry polling — user likely needs to fix Windows Settings
+        startMicPoll();
         return;
       }
     } catch (e) {
@@ -138,7 +159,7 @@ export function SetupApp() {
     }
 
     // Stage 2: Frontend getUserMedia (triggers WebView2 permission prompt)
-    setMicTesting(true);
+    if (!isAutoRetry) setMicTesting(true);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -150,6 +171,8 @@ export function SetupApp() {
       // Success — stop the tracks immediately, we just wanted permission
       stream.getTracks().forEach((t) => t.stop());
       setMicStatus("granted");
+      setMicRetryCount(0);
+      stopMicPoll();
       console.log("[NEXUS] setup: mic permission granted");
     } catch (err) {
       console.error("[NEXUS] setup: mic permission denied:", err);
@@ -158,13 +181,45 @@ export function SetupApp() {
         setMicStatus("denied");
       } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
         setMicStatus("no_device");
+        stopMicPoll();
+        return;
       } else {
         setMicStatus("denied");
       }
+      // Start auto-retry polling if not already running
+      startMicPoll();
     } finally {
       setMicTesting(false);
     }
   };
+
+  // Auto-retry poll: re-check mic permission every 3 seconds when denied.
+  // This detects when the user has fixed Windows Settings without requiring
+  // them to manually click "Check Again".
+  const startMicPoll = useCallback(() => {
+    if (micPollRef.current) return; // already polling
+    setMicRetryCount(0);
+    micPollRef.current = setInterval(async () => {
+      setMicRetryCount((c) => c + 1);
+      console.log("[NEXUS] setup: auto-retrying mic permission check...");
+      await runMicCheck(true);
+    }, 3000);
+  }, []);
+
+  // Stop polling when leaving the Permissions step or on unmount
+  useEffect(() => {
+    if (step !== 1) {
+      stopMicPoll();
+    }
+    return () => {
+      if (step === 1) stopMicPoll();
+    };
+  }, [step, stopMicPoll]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => stopMicPoll();
+  }, [stopMicPoll]);
 
   const handleOpenMicSettings = async () => {
     try {
@@ -206,8 +261,9 @@ export function SetupApp() {
     }
   };
 
-  // Prevent advancing past Permissions step if mic is not granted
-  const canAdvanceFromPermissions = micStatus === "granted";
+  // Prevent advancing past Permissions step if mic is not granted.
+  // User can skip with a warning, but only via the explicit "Skip" button.
+  const canAdvanceFromPermissions = micStatus === "granted" || micSkipped;
 
   return (
     <div className="setup-root">

@@ -15,10 +15,13 @@ const MOONSHINE_HF_REPO: &str = "onnx-community/moonshine-tiny-ONNX";
 
 /// Files needed for Int8 quantization (smallest, ~32 MB total).
 /// tokenizer.json is in the repo root, ONNX files are in the onnx/ subdir.
+/// NOTE: transcribe-rs expects {name}.{suffix}.onnx (dot separator), but
+/// HuggingFace uses {name}_{suffix}.onnx (underscore). We download from HF
+/// and save with the dot naming that transcribe-rs's resolve_model_path() expects.
 const MOONSHINE_FILES: &[(&str, &str)] = &[
     ("tokenizer.json", "tokenizer.json"),
-    ("onnx/encoder_model_int8.onnx", "encoder_model_int8.onnx"),
-    ("onnx/decoder_model_merged_int8.onnx", "decoder_model_merged_int8.onnx"),
+    ("onnx/encoder_model_int8.onnx", "encoder_model.int8.onnx"),
+    ("onnx/decoder_model_merged_int8.onnx", "decoder_model_merged.int8.onnx"),
 ];
 
 /// Resolve the Moonshine model directory.
