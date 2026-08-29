@@ -8,6 +8,13 @@
 
 mod window_manager;
 mod hotkey;
+#[cfg(feature = "wakeword-oww")]
+mod wakeword_oww;
+#[cfg(feature = "wakeword-oww")]
+mod wakeword {
+    pub use crate::wakeword_oww::*;
+}
+#[cfg(not(feature = "wakeword-oww"))]
 mod wakeword;
 mod network;
 mod tray;

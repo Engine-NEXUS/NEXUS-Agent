@@ -42,6 +42,10 @@ libloading = "0.8"
 # sherpa-onnx: on-device keyword spotting + speaker verification (Apache 2.0)
 # Provides KWS (wake word "NEXUS") and speaker embedding extraction (voice lock).
 sherpa-onnx = "1.13.4"
+# tract-onnx: pure-Rust ONNX inference (no native ONNX Runtime dependency)
+# Used for openWakeWord KWS pipeline: melspectrogram → embedding → classifier
+tract-onnx = "0.23"
+circular-buffer = "1.2"
 # Opus encoder for streaming mic to server — OPTIONAL (requires CMake on the build machine).
 # The recorder streams raw 16 kHz PCM by default; enable `opus-encode` to compress upstream.
 opus = { version = "0.3", optional = true }
@@ -57,9 +61,10 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
 [features]
-default = ["wakeword-sherpa"]
+default = ["wakeword-oww"]
 wakeword-porcupine = []   # legacy: bundle libpv_porcupine + .ppn at runtime
-wakeword-sherpa = []      # sherpa-onnx KWS + speaker verification (default)
+wakeword-sherpa = []      # sherpa-onnx VAD + ASR + speaker verification (old)
+wakeword-oww = []         # openWakeWord KWS + speaker verification (new, default)
 mock-wake = []            # CI: skip native lib, emit fake wake on hotkey only
 opus-encode = ["dep:opus"] # enable Opus upstream compression (needs CMake)
 
