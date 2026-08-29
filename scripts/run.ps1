@@ -77,9 +77,45 @@ if ($Build) {
 
 # ─── Kill any existing instances ───────────────────────────────────────────
 Write-Log "INIT" "Killing existing NEXUS / STT instances..." $C_SYS
-Get-Process nexus -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+# Build a set of nexus.exe PIDs so we can kill only OUR WebView2 children.
+# Killing ALL msedgewebview2.exe processes would also kill WhatsApp, M365
+# Copilot, Windows Search, and any other app that embeds WebView2.
+$nexusPids = (Get-Process nexus -ErrorAction SilentlyContinue).Id
+if ($nexusPids) {
+  $nexusPidSet = [System.Collections.Generic.HashSet[int]]::new()
+  foreach ($p in $nexusPids) { [void]$nexusPidSet.Add($p) }
+
+  # Walk the process tree to find all descendant PIDs of nexus.exe
+  $allProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+  $parentMap = @{}
+  foreach ($proc in $allProcs) { $parentMap[$proc.ProcessId] = $proc.ParentProcessId }
+  $queue = [System.Collections.Generic.Queue[int]]::new()
+  foreach ($p in $nexusPids) { $queue.Enqueue($p) }
+  $descendants = [System.Collections.Generic.HashSet[int]]::new()
+  while ($queue.Count -gt 0) {
+    $cur = $queue.Dequeue()
+    foreach ($kv in $parentMap.GetEnumerator()) {
+      if ($kv.Value -eq $cur -and $descendants.Add($kv.Key)) {
+        $queue.Enqueue($kv.Key)
+      }
+    }
+  }
+
+  # Kill nexus.exe first so it stops spawning new WebView2 children
+  Get-Process nexus -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+  # Kill only msedgewebview2.exe processes that are descendants of nexus.exe
+  Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Where-Object {
+    $descendants.Contains($_.Id)
+  } | Stop-Process -Force -ErrorAction SilentlyContinue
+} else {
+  # No nexus running — nothing to clean up
+  Write-Log "INIT" "No existing NEXUS process found" $C_SYS
+}
+
 Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*stt_server*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep 2
+Start-Sleep 3
 
 # Clear old log files so the tail loop doesn't read stale content
 Write-Log "INIT" "Clearing old logs..." $C_SYS
