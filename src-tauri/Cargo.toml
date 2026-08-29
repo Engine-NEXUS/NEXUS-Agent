@@ -58,8 +58,7 @@ opus = { version = "0.3", optional = true }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
-# STT & TTS Upgrade (August 2026)
-transcribe-rs = { version = "0.3.0", features = ["onnx"] }
+# TTS engine (in-process Kokoro)
 kokoro-micro = "1.0"
 rodio = "0.19"
 

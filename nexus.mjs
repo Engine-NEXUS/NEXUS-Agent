@@ -287,77 +287,30 @@ function installLinux() {
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
-/// Download the Moonshine Tiny ONNX model (Int8, ~32 MB) from HuggingFace.
-/// Files go to %APPDATA%/com.nexus.assistant/models/moonshine/ (Windows)
-/// or ~/.local/share/com.nexus.assistant/models/moonshine/ (Unix).
-function downloadMoonshineModel() {
-  const HF_REPO = "onnx-community/moonshine-tiny-ONNX";
-  const files = [
-    ["tokenizer.json", "tokenizer.json"],
-    // transcribe-rs expects {name}.{suffix}.onnx (dot), HF uses underscore — save with dot
-    ["onnx/encoder_model_int8.onnx", "encoder_model.int8.onnx"],
-    ["onnx/decoder_model_merged_int8.onnx", "decoder_model_merged.int8.onnx"],
-  ];
+/// Verify faster-whisper Python package is installed.
+/// The STT server (server/stt_server.py) uses faster-whisper tiny.en
+/// which auto-downloads the model from HuggingFace on first transcription.
+function checkFasterWhisper() {
+  const result = spawnSync(IS_WIN ? "python" : "python3", ["-c", "import faster_whisper; print('ok')"], {
+    stdio: "pipe",
+    encoding: "utf-8",
+    shell: IS_WIN,
+  });
 
-  // Resolve model directory
-  let modelDir;
-  if (IS_WIN) {
-    modelDir = join(process.env.APPDATA || "", "com.nexus.assistant", "models", "moonshine");
+  if (result.status === 0 && result.stdout?.trim() === "ok") {
+    ok("faster-whisper installed (STT server ready)");
   } else {
-    const dataDir = process.env.XDG_DATA_HOME || join(process.env.HOME || "", ".local", "share");
-    modelDir = join(dataDir, "com.nexus.assistant", "models", "moonshine");
-  }
-
-  // Check if already complete
-  const allPresent = files.every(([, local]) => existsSync(join(modelDir, local)));
-  if (allPresent) {
-    ok("Moonshine Tiny Int8 model already present");
-    return;
-  }
-
-  if (!existsSync(modelDir)) mkdirSync(modelDir, { recursive: true });
-
-  info("Downloading Moonshine Tiny Int8 model from HuggingFace (~32 MB)...");
-  let downloaded = 0;
-  for (const [remote, local] of files) {
-    const localPath = join(modelDir, local);
-    if (existsSync(localPath)) { downloaded++; continue; }
-
-    const url = `https://huggingface.co/${HF_REPO}/resolve/main/${remote}`;
-    info(`  Downloading ${remote}...`);
-
-    // Use curl (available on all platforms) for the download
-    const curlArgs = ["-L", "-o", localPath, "--progress-bar", url];
-    const result = spawnSync("curl", curlArgs, {
-      stdio: "inherit",
-      shell: IS_WIN,
-      encoding: "utf-8",
-    });
-
-    if (result.status !== 0 || !existsSync(localPath)) {
-      // Try PowerShell as fallback on Windows
-      if (IS_WIN) {
-        try {
-          execSync(
-            `powershell -NoProfile -Command "Invoke-WebRequest -Uri '${url}' -OutFile '${localPath}' -UseBasicParsing"`,
-            { stdio: "inherit", encoding: "utf-8" }
-          );
-        } catch {
-          warn(`Failed to download ${remote} — NEXUS will auto-download on first transcription`);
-          return;
-        }
-      } else {
-        warn(`Failed to download ${remote} — NEXUS will auto-download on first transcription`);
-        return;
-      }
+    warn("faster-whisper not installed — installing now...");
+    try {
+      execSync(`${IS_WIN ? "python" : "python3"} -m pip install faster-whisper fastapi uvicorn python-multipart`, {
+        stdio: "inherit",
+        encoding: "utf-8",
+        shell: IS_WIN,
+      });
+      ok("faster-whisper installed successfully");
+    } catch {
+      warn("Failed to install faster-whisper — STT will not work. Run: pip install faster-whisper fastapi uvicorn python-multipart");
     }
-    downloaded++;
-    const sizeMB = (statSync(localPath).size / 1024 / 1024).toFixed(1);
-    ok(`  ${local} (${sizeMB} MB)`);
-  }
-
-  if (downloaded === files.length) {
-    ok("Moonshine Tiny Int8 model downloaded successfully");
   }
 }
 
@@ -415,8 +368,8 @@ function cmdSetup() {
     warn("NLU model not found — NLU server will fail. Run: cd server/nlu && python train.py");
   }
 
-  // 7. Download Moonshine STT model (Int8, ~32 MB from HuggingFace)
-  downloadMoonshineModel();
+  // 7. Verify faster-whisper is installed (STT server dependency)
+  checkFasterWhisper();
 
   // 8. Build
   info("Building NEXUS...");
@@ -720,10 +673,10 @@ ${C.cyan}Examples:${C.reset}
 ${C.cyan}Environment:${C.reset}
   NEXUS_SERVER_URL   Cloudflare Worker URL (default: baked at build time)
   LIBCLANG_PATH      Path to LLVM bin (Windows, for bindgen)
-  NEXUS_STT_PORT     STT port override (legacy, unused with in-process Moonshine)
+  NEXUS_STT_PORT     STT port override (default: 39217)
 
 ${C.cyan}Notes:${C.reset}
-  • STT uses Moonshine in-process (auto-downloads ONNX model on first use)
+  • STT uses faster-whisper tiny.en (lazy-started Python sidecar on port 39217)
   • NLU server is lazy-started Python (BERT-Mini, model committed in repo)
   • TTS uses Fish Audio (set API key in Settings) with Web Speech fallback
   • Wake word uses openWakeWord (ONNX, pure Rust, model in repo)

@@ -1,7 +1,7 @@
 //! Connection diagnostics — checks all NEXUS services and logs status.
 //!
 //! Services checked:
-//!   1. STT (in-process Moonshine ONNX engine readiness)
+//!   1. STT (faster-whisper tiny.en on port 39217 — lazy-started)
 //!   2. TTS (in-process Kokoro engine readiness)
 //!   3. Cloudflare Worker (HTTP GET to /health)
 //!   4. GitHub OAuth (via Worker /oauth/status)
@@ -133,11 +133,24 @@ fn get_last_latency() -> Option<u64> {
 
 /// Check if the local STT engine is ready.
 fn check_stt() -> ServiceStatus {
-    ServiceStatus {
-        name: "STT (Moonshine Tiny/Base)".into(),
-        connected: true,
-        detail: "In-process Rust ONNX engine ready".into(),
-        latency_ms: Some(0),
+    // Check if the faster-whisper STT server is reachable on port 39217
+    match http_get("http://127.0.0.1:39217/health", 3000) {
+        Ok((status, _body)) if status >= 200 && status < 400 => {
+            ServiceStatus {
+                name: "STT (faster-whisper tiny.en)".into(),
+                connected: true,
+                detail: "STT server ready on port 39217".into(),
+                latency_ms: get_last_latency(),
+            }
+        }
+        _ => {
+            ServiceStatus {
+                name: "STT (faster-whisper tiny.en)".into(),
+                connected: true, // Not an error — lazy-started on first wake
+                detail: "STT server lazy-starts on first wake (port 39217)".into(),
+                latency_ms: Some(0),
+            }
+        }
     }
 }
 

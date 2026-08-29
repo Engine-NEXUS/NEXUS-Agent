@@ -49,10 +49,11 @@ fn stt_script_path() -> Option<std::path::PathBuf> {
             .parent()?          // src-tauri
             .join("server")
             .join("stt_server.py"),
-        // Production: <app_dir>/server/stt_server.py
+        // Production: <app_dir>/resources/server/stt_server.py
         std::env::current_exe()
             .ok()?
             .parent()?
+            .join("resources")
             .join("server")
             .join("stt_server.py"),
     ];
@@ -69,7 +70,6 @@ fn stt_script_path() -> Option<std::path::PathBuf> {
 /// Uses a raw TCP connection to avoid tokio runtime dependency ΓÇö this
 /// function is called from non-tokio threads (wake-word thread, hotkey handler).
 fn is_stt_responsive() -> bool {
-    let url = format!("http://127.0.0.1:{STT_PORT}/health");
     // Use a simple TCP connection + HTTP GET instead of reqwest, which
     // requires a tokio runtime that may not be available on the calling thread.
     use std::io::{Read, Write};

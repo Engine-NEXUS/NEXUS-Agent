@@ -42,10 +42,11 @@ fn nlu_script_path() -> Option<std::path::PathBuf> {
             .parent()?          // src-tauri
             .join("server")
             .join("nlu_server.py"),
-        // Production: installed directory/server/nlu_server.py
+        // Production: installed directory/resources/server/nlu_server.py
         std::env::current_exe()
             .ok()?
             .parent()?
+            .join("resources")
             .join("server")
             .join("nlu_server.py"),
     ];

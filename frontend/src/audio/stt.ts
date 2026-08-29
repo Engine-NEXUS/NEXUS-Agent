@@ -1,6 +1,6 @@
 /**
  * Local Speech-to-Text interface.
- * Uses the in-process Moonshine Rust engine.
+ * Uses the faster-whisper Python sidecar (port 39217) via Rust proxy.
  */
 
 function isTauri(): boolean {
@@ -32,7 +32,7 @@ export async function transcribeAudio(samples: Int16Array): Promise<string> {
       return text.trim();
     }
   } catch (err) {
-    console.error("[NEXUS] Local Moonshine STT failed:", err);
+    console.error("[NEXUS] Local faster-whisper STT failed:", err);
   }
 
   return "";

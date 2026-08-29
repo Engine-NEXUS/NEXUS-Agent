@@ -1,6 +1,6 @@
 # NEXUS Connection Diagnostics
 # Checks: STT, TTS, Cloudflare Worker, GitHub, Google
-# STT is in-process Moonshine (transcribe-rs) — no external server/port.
+# STT is faster-whisper tiny.en (lazy-started Python sidecar on port 39217).
 
 $cfg = "$env:APPDATA\com.nexus.assistant\nexus-config.json"
 $worker = ""
@@ -18,12 +18,16 @@ Write-Host "  NEXUS Connection Diagnostics" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. STT (in-process Moonshine — always ready if NEXUS is running)
+# 1. STT (faster-whisper tiny.en — lazy-started on port 39217)
 Write-Host -NoNewline "  [STT]    "
+$sttHealth = try { (Invoke-WebRequest -Uri "http://127.0.0.1:39217/health" -TimeoutSec 3 -UseBasicParsing).StatusCode } catch { 0 }
 $nexusProc = Get-Process nexus -ErrorAction SilentlyContinue
-if ($nexusProc) {
+if ($sttHealth -eq 200) {
     Write-Host "READY" -ForegroundColor Green
-    Write-Host "           In-process Moonshine Tiny (transcribe-rs, ONNX Int8)"
+    Write-Host "           faster-whisper tiny.en on port 39217"
+} elseif ($nexusProc) {
+    Write-Host "LAZY" -ForegroundColor Yellow
+    Write-Host "           NEXUS running — STT starts on first wake (port 39217)"
 } else {
     Write-Host "NOT RUNNING" -ForegroundColor Yellow
     Write-Host "           Start NEXUS first: nexus start"

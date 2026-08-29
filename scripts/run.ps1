@@ -21,7 +21,7 @@ $LogDir = "$env:APPDATA\com.nexus.assistant"
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 # ─── Colors ────────────────────────────────────────────────────────────────
-$C_STT   = "Cyan"      # STT transcription logs (in-process Moonshine)
+$C_STT   = "Cyan"      # STT transcription logs (faster-whisper sidecar)
 $C_RUST  = "Green"     # Rust wake-word / audio logs
 $C_FRONT = "Yellow"    # Frontend console logs (via CDP)
 $C_CMD   = "Magenta"   # Command execution
@@ -126,7 +126,7 @@ foreach ($f in @($nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
 }
 
 # ─── Start NEXUS ───────────────────────────────────────────────────────────
-# STT is in-process Moonshine (transcribe-rs) — no external server needed.
+# STT is lazy-started by Rust (faster-whisper on port 39217) — no external server needed at boot.
 Write-Log "INIT" "Starting NEXUS desktop app..." $C_RUST
 
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = if ($Debug) { "--remote-debugging-port=9222" } else { "" }

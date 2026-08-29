@@ -1,26 +1,30 @@
 # NEXUS — Project Notes
 
-## STT Architecture — Moonshine In-Process (2026-08-31)
+## STT Architecture — faster-whisper Python Sidecar (2026-08-31)
 
-**STT is now in-process Rust — no Python sidecar.**
+**STT uses faster-whisper tiny.en via a lazy-started Python sidecar.**
 
-The old faster-whisper Python server (`server/stt_server.py`) and its
-lazy manager (`src-tauri/src/lazy_stt.rs`) have been removed. STT now
-uses **Moonshine Tiny** via the `transcribe-rs` crate, loaded directly
-inside the Tauri process:
+The STT server (`server/stt_server.py`) runs on `127.0.0.1:39217` and is
+started lazily by `src-tauri/src/lazy_stt.rs` when the wake word or hotkey
+fires. This was the working architecture before the Moonshine experiment
+and has been restored because Moonshine Tiny (39M params) produced garbage
+transcripts on real speech.
 
-- **File:** `src-tauri/src/stt.rs`
-- **Model:** `MoonshineVariant::Tiny`, `Quantization::Int8`
-- **First-run:** `transcribe-rs` auto-downloads the Moonshine ONNX model
-  to the Hugging Face cache dir (`~/.cache/huggingface` on Linux/macOS,
-  `%USERPROFILE%\.cache\huggingface` on Windows). Requires network on
-  first transcription only.
-- **Latency:** in-process, no IPC, no port, no idle timeout.
-- **Hallucination filter:** still applied in `stt.rs` — catches
+- **Files:** `src-tauri/src/stt.rs` (HTTP proxy), `src-tauri/src/lazy_stt.rs`
+  (lazy manager), `server/stt_server.py` (Python server)
+- **Model:** faster-whisper `tiny.en` (auto-downloads from HuggingFace on
+  first transcription, ~40MB)
+- **Port:** 39217 (`POST /transcribe`, `GET /health`)
+- **Audio format:** multipart/form-data with WAV (16kHz, mono, 16-bit PCM)
+- **Latency:** ~0.5s per transcription after model load; first call ~10-15s
+  (model loading). `stt.rs` waits up to 20s for the server to be ready.
+- **Hotwords:** built-in list + dynamic file at
+  `%APPDATA%/com.nexus.assistant/stt_hotwords.txt`
+- **Hallucination filter:** applied in `stt.rs` — catches
   "thank you for watching", < 2 alphabetic chars, etc.
-
-The old `lazy_stt.rs` / port 39217 / `stt_server.py` references in this
-file are **historical** — kept for context but no longer apply at runtime.
+- **Idle timeout:** server killed after 5 min of no requests (saves ~340MB RAM)
+- **Installer:** server files bundled in `resources/server/` via Tauri
+  resources config. Production path: `exe_dir/resources/server/stt_server.py`.
 
 ## NLU Server — Lazy Python Sidecar (2026-08-31)
 
@@ -41,8 +45,8 @@ handle a command.
 
 ### Historical STT Pipeline Fixes (2026-08-30, faster-whisper era)
 
-These bugs were fixed in the old faster-whisper Python sidecar. They are
-**no longer relevant** (the sidecar was replaced by in-process Moonshine)
+These bugs were fixed in the faster-whisper Python sidecar. They are
+**still relevant** (the sidecar was restored after the Moonshine experiment)
 but kept for historical context:
 
 1. **`lazy_stt.rs` path bug:** `stt_script_path()` was missing one
@@ -55,8 +59,8 @@ but kept for historical context:
 
 ### Whisper hallucination filter (`stt.rs`)
 
-The hallucination filter is still active in the new Moonshine-based
-`stt.rs`. It catches common hallucinations on noisy/silent audio:
+The hallucination filter is still active in `stt.rs`. It catches common
+hallucinations on noisy/silent audio:
 - "thank you for watching", "you", "bye", "okay", etc.
 - Text with < 2 alphabetic characters
 Filtered text is replaced with empty string, triggering the frontend's
@@ -93,7 +97,7 @@ Checks 5 services and logs a formatted table on startup:
 
 | Service | Check method | Expected |
 |---------|-------------|----------|
-| STT | In-process Moonshine readiness (hardcoded ready) | Always OK (in-process) |
+| STT | HTTP GET to port 39217/health | OK if running, LAZY if not yet started |
 | TTS | In-process Kokoro/Fish Audio readiness (hardcoded ready) | Always OK |
 | Cloudflare Worker | HTTPS GET to /health | OK if reachable |
 | GitHub | HTTPS GET to Worker /oauth/status | OK if OAuth connected |
@@ -198,11 +202,11 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 - Platform effects (DWM corners, macOS vibrancy) applied at creation time
   inside `get_or_create_window()`.
 
-### Fix 2: In-process Moonshine STT (replaces lazy STT server)
-- STT is now in-process Moonshine Tiny via `transcribe-rs` — no Python
-  server, no port, no idle timeout. See "STT Architecture" section above.
-- The old `lazy_stt.rs` and `stt_server.py` have been removed.
-- STT RAM is now ~0 MB at idle (model loaded lazily on first transcription).
+### Fix 2: Lazy faster-whisper STT server
+- STT uses faster-whisper tiny.en via a lazy-started Python sidecar on
+  port 39217. See "STT Architecture" section above.
+- `lazy_stt.rs` starts the server on first wake/hotkey, kills after 5min idle.
+- STT RAM is ~0 MB at idle (server not running), ~340 MB when active.
 
 ### Measured RAM (idle, after fix)
 | Component          | Before   | After    |
@@ -215,7 +219,7 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 ### Files changed
 - `src-tauri/tauri.conf.json` — removed 4 windows, kept only `main`
 - `src-tauri/src/dyn_windows.rs` — NEW: dynamic window creation/destruction
-- `src-tauri/src/stt.rs` — in-process Moonshine (replaces lazy_stt.rs)
+- `src-tauri/src/stt.rs` — HTTP proxy to faster-whisper sidecar
 - `src-tauri/src/lib.rs` — registered new modules, removed startup sidebar vibrancy
 - `src-tauri/src/commands.rs` — all show/hide functions use dyn_windows
 - `src-tauri/src/architect.rs` — uses dyn_windows for architect window
@@ -419,7 +423,7 @@ this — the Vite server serves any HTML file on demand).
 
 | Service           | Port    | Notes                                        |
 | ----------------- | ------- | -------------------------------------------- |
-| STT (Moonshine)   | —       | In-process Rust, no port (transcribe-rs)     |
+| STT (faster-whisper) | 39217 | Lazy-started Python sidecar (POST /transcribe) |
 | NLU server        | `39218` | Lazy Python sidecar (BERT-Mini ONNX). Override: `NLU_PORT` |
 | Sidecar (legacy)  | `41098` | Legacy FastAPI sidecar, not used at runtime  |
 | Vite dev server   | `5173`  | Dev only                                     |
