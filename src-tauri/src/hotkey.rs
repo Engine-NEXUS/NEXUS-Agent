@@ -1,10 +1,12 @@
-//! Global hotkey (Ctrl/Cmd+Shift+Space) → wakes the assistant.
+//! Global hotkey (Ctrl/Cmd+Shift+Space) → wakes the assistant AND dismisses the sidebar.
 //!
-//! On press: shows the overlay window and calls `window.__NEXUS_WAKE__()` in the
-//! WebView via `eval()`. This is more reliable than the Tauri event system for
-//! repeated rapid events.
+//! On press:
+//!   1. Hides the response sidebar (if visible) by emitting "sidebar:hide".
+//!   2. Shows the overlay window and calls `window.__NEXUS_WAKE__()` in the
+//!      WebView via `eval()`. This is more reliable than the Tauri event system
+//!      for repeated rapid events.
 
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const HOTKEY: &str = "CommandOrControl+Shift+Space";
@@ -18,7 +20,12 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     app.global_shortcut()
         .on_shortcut(sc, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
-                tracing::info!("hotkey → wake");
+                tracing::info!("hotkey → wake (sidebar dismissed if visible)");
+
+                // Dismiss the response sidebar — the user is starting a new
+                // interaction, so the previous response is no longer needed.
+                // The sidebar window listens for this event and slides out.
+                let _ = handle.emit("sidebar:hide", ());
 
                 if let Some(win) = handle.get_webview_window("main") {
                     let _ = win.show();

@@ -4,29 +4,22 @@ import { speak, stopTts } from "../audio/ttsPlayer";
 /**
  * Sidebar event helpers — emit events to the sidebar window.
  * The sidebar only shows for server responses (n8n/Ollama/Hermes),
- * NOT for local commands.
+ * NOT for local commands. It slides in WITH the response already rendered
+ * (no "Thinking…" state) and stays until dismissed via Ctrl+Shift+Space.
  */
-async function emitSidebarShow(query: string): Promise<void> {
+async function emitSidebarShow(query: string, text: string): Promise<void> {
   if (!isTauri()) return;
   try {
     const { emit } = await import("@tauri-apps/api/event");
-    await emit("sidebar:show", { query });
+    await emit("sidebar:show", { query, text });
   } catch (e) {
     console.warn("[NEXUS] sidebar:show emit failed:", e);
   }
 }
 
-async function emitSidebarResponse(text: string): Promise<void> {
-  if (!isTauri()) return;
-  try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit("sidebar:response", { text });
-  } catch (e) {
-    console.warn("[NEXUS] sidebar:response emit failed:", e);
-  }
-}
-
-async function emitSidebarHide(): Promise<void> {
+/** Emit sidebar:hide from the frontend. Currently the hotkey (Rust) emits
+ * this directly, but this is exported for programmatic dismissal if needed. */
+export async function emitSidebarHide(): Promise<void> {
   if (!isTauri()) return;
   try {
     const { emit } = await import("@tauri-apps/api/event");
@@ -35,6 +28,33 @@ async function emitSidebarHide(): Promise<void> {
     console.warn("[NEXUS] sidebar:hide emit failed:", e);
   }
 }
+
+/**
+ * Decide whether a server response warrants the sidebar.
+ *
+ * Three gates, all must pass:
+ *   1. Response length >= 80 chars — short replies ("Done, sir") don't need a panel.
+ *   2. Query is not a local-command verb (open/close/play/…) — those are handled by the orb.
+ *   3. Query contains an info/research intent keyword (check/show/find/what/…).
+ *
+ * If the server sends an explicit `display: "sidebar"` hint in the result
+ * payload, that overrides the heuristic.
+ */
+function shouldShowSidebar(query: string, response: string): boolean {
+  // Gate 1: too short to be worth reading in a panel
+  if (response.length < 80) return false;
+
+  // Gate 2: local-command style queries never use the sidebar
+  const localVerbs = /^(open|launch|start|close|quit|exit|kill|play|pause|stop|mute|volume|set|turn)\b/i;
+  if (localVerbs.test(query.trim())) return false;
+
+  // Gate 3: info/research/server intent markers
+  const infoIntent = /\b(check|show|list|find|search|look up|what|who|when|where|why|how|explain|summar|review|status|pr|pull request|issue|repo|commit|branch|deploy|log|error|analyz|tell me|give me|get|fetch|read|display)\b/i;
+  return infoIntent.test(query);
+}
+
+/** Track the pending query so the result handler can decide whether to show the sidebar. */
+let pendingQuery = "";
 
 /**
  * WebSocket bridge facade.
@@ -170,15 +190,15 @@ export function hasSession(): boolean {
 
 /** Send the transcribed text to the server for processing.
  * Throws if no session is open so the caller can handle the local-only case.
- * On success, emits sidebar:show so the response sidebar slides in. */
+ * Does NOT show the sidebar — the sidebar appears only when the response
+ * arrives (in the "result" handler), and only if shouldShowSidebar() agrees. */
 export async function sendTranscript(text: string): Promise<void> {
   if (!isTauri()) return;
   if (!sessionOpen) {
     throw new Error("no backend session — local-only mode");
   }
+  pendingQuery = text;
   await tauriInvoke("send_transcript", { text });
-  // Server request succeeded — show the response sidebar
-  await emitSidebarShow(text);
 }
 
 /** Cancel the current turn. */
@@ -224,11 +244,14 @@ function handle(ev: ServerEvent): void {
       break;
     case "result":
       // Final result text from n8n — speak it locally and add to transcript.
+      // Show the sidebar ONLY here (with the response already rendered),
+      // and only if shouldShowSidebar() agrees this is an info/research query.
       if (ev.data) {
         store.addAssistantMessage(ev.data);
         store.setState("speaking");
-        // Show the response in the sidebar
-        void emitSidebarResponse(ev.data);
+        if (shouldShowSidebar(pendingQuery, ev.data)) {
+          void emitSidebarShow(pendingQuery, ev.data);
+        }
         void speak(ev.data, () => {
           // After result finishes, the done event will reset to idle.
         });
@@ -238,8 +261,8 @@ function handle(ev: ServerEvent): void {
       sessionOpen = false;
       stopTts();
       store.reset();
-      // Hide the sidebar after the response is done
-      void emitSidebarHide();
+      // Do NOT auto-hide the sidebar — it stays until the user presses
+      // Ctrl+Shift+Space (the global hotkey) or starts a new interaction.
       break;
     case "error":
       sessionOpen = false;
@@ -247,8 +270,7 @@ function handle(ev: ServerEvent): void {
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       stopTts();
       store.reset();
-      // Hide the sidebar on error too
-      void emitSidebarHide();
+      // Do NOT auto-hide on error — the user may want to read the error.
       break;
   }
 }
