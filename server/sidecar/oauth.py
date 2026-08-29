@@ -370,3 +370,62 @@ async def get_auth_url(provider: str, user_id: str, code_challenge: str) -> JSON
 
     else:
         return JSONResponse({"error": f"unsupported provider: {provider}"}, status_code=400)
+
+
+# ---- Device registration ----
+
+@router.post("/device/register")
+async def register_device_endpoint(request: Request) -> JSONResponse:
+    """
+    Register a new device for a user. Called during first-run setup.
+
+    Body: {
+      "user_id": "lakshya",
+      "device_id": "laptop-abc123",
+      "device_token": "optional_existing_token"
+    }
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    user_id = body.get("user_id", "")
+    device_id = body.get("device_id", "")
+    device_token = body.get("device_token")
+
+    if not user_id or not device_id:
+        return JSONResponse({"error": "user_id and device_id required"}, status_code=400)
+
+    db.register_device(user_id, device_id, device_token)
+    log.info("device registered: user=%s device=%s", user_id, device_id)
+    return JSONResponse({"ok": True, "user_id": user_id, "device_id": device_id})
+
+
+@router.get("/device/validate")
+async def validate_device_endpoint(user_id: str, device_id: str) -> JSONResponse:
+    """Check if a device is registered for a user."""
+    valid = db.validate_device(user_id, device_id)
+    return JSONResponse({"valid": valid})
+
+
+# ---- Configuration check ----
+
+@router.get("/config/check")
+async def config_check() -> JSONResponse:
+    """
+    Report which OAuth providers and services are configured.
+    Used by the setup page to show available integrations.
+    Does NOT expose secrets — only boolean flags.
+    """
+    return JSONResponse({
+        "google": {
+            "configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+            "scopes": GOOGLE_SCOPES if GOOGLE_CLIENT_ID else "",
+        },
+        "github": {
+            "configured": bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET),
+            "scopes": GITHUB_SCOPES if GITHUB_CLIENT_ID else "",
+        },
+        "redirect_uri": OAUTH_REDIRECT_URI,
+    })

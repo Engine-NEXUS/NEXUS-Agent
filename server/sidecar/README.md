@@ -89,12 +89,15 @@ Sidecar → client:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Health check |
+| GET | `/health` | Health check (includes TTS config status) |
+| GET | `/config/check` | Report which OAuth providers are configured (no secrets) |
 | GET | `/oauth/auth-url?provider=google&user_id=X&code_challenge=Y` | Get OAuth authorization URL |
 | POST | `/oauth/exchange` | Exchange auth code for tokens |
 | POST | `/oauth/refresh` | Refresh an expired token |
 | GET | `/oauth/status?user_id=X` | Check connected providers |
 | DELETE | `/oauth/disconnect` | Remove a provider's tokens |
+| POST | `/device/register` | Register a new device for a user |
+| GET | `/device/validate?user_id=X&device_id=Y` | Validate a device registration |
 | POST | `/apikeys/add` | Store an API key (Claude, Devin, etc.) |
 | DELETE | `/apikeys/remove` | Remove an API key |
 | GET | `/apikeys/list?user_id=X` | List stored API key providers |
