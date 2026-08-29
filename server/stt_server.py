@@ -44,8 +44,9 @@ from faster_whisper import WhisperModel
 log = logging.getLogger("NEXUS.stt")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-# Default to tiny.en — 75% faster than base with only 0.75% higher WER.
+# Default to tiny.en — fastest model (~0.5s transcription on CPU).
 # The .en variant is English-only, which is faster and smaller than multilingual.
+# STT corrections in recorder.ts + Worker fuzzy matching handle mishearings.
 MODEL_NAME = os.getenv("WHISPER_MODEL", "tiny.en")
 DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE", "int8")
@@ -78,8 +79,9 @@ _DEFAULT_HOTWORDS = [
     "open", "launch", "start", "search", "find", "close",
     # Analysis commands (improves recognition of NEXUS commands)
     "analyse", "analyze", "analysis", "review", "pull request", "PR",
+    "branch", "commit", "merge", "diff",
     # Known user repos (add more via stt_hotwords.txt)
-    "servx", "NEXUS", "ULTRON", "zync",
+    "servx", "NEXUS", "ULTRON", "zync", "ledger ai", "ledger-ai",
 ]
 
 # Path to the dynamic hotwords file — NEXUS writes repo names here.
