@@ -18,7 +18,11 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 const HOTKEYS: &[&str] = &[
     "CommandOrControl+Shift+Space",
     "CommandOrControl+Alt+Space",
-    "Alt+Space",
+    // NOTE: "Alt+Space" was removed — it conflicts with the Windows system
+    // menu shortcut (Restore/Move/Size/Minimize/Maximize/Close). Registering
+    // it as a global hotkey intercepts ALL Alt+Space events system-wide,
+    // which caused WhatsApp (and other apps) to glitch — windows would
+    // flash open/close because the system menu event was being swallowed.
 ];
 
 /// Cancel hotkey — instantly cancels the current recording/session and hides the orb.
