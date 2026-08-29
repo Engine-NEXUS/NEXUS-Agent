@@ -54,56 +54,92 @@ function writeString(view: DataView, offset: number, string: string) {
 }
 
 /**
- * Transcribe speech using Google Gemini 3.5 Transcribe API.
+ * Transcribe speech using Google Gemini Transcribe (gemini-2.0-flash with gemini-1.5-flash fallback).
  */
 export async function transcribeGeminiAudio(
   samples: Int16Array,
   apiKey: string,
 ): Promise<string> {
-  try {
-    const base64Wav = pcmToWavBase64(samples, 16000);
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe:generateContent?key=${apiKey.trim()}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  inline_data: {
-                    mime_type: "audio/wav",
-                    data: base64Wav,
+  const models = ["gemini-2.0-flash", "gemini-1.5-flash"];
+  const base64Wav = pcmToWavBase64(samples, 16000);
+
+  for (const model of models) {
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    inline_data: {
+                      mime_type: "audio/wav",
+                      data: base64Wav,
+                    },
                   },
-                },
-                {
-                  text: "Transcribe the spoken audio accurately into text. Return ONLY the raw transcript text without markdown or conversational commentary.",
-                },
-              ],
-            },
-          ],
-        }),
-      },
-    );
+                  {
+                    text: "Transcribe the spoken audio accurately into text. Return ONLY the raw transcript text without markdown, quotes, or conversational commentary.",
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      );
 
-    if (!response.ok) {
-      throw new Error(`Gemini 3.5 Transcribe API error: ${response.status}`);
+      if (!response.ok) {
+        continue;
+      }
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      if (text.trim()) {
+        return text.trim();
+      }
+    } catch {
+      // Try next model
     }
-
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    return text.trim();
-  } catch (err) {
-    console.warn("[STT] Gemini 3.5 Transcribe failed, falling back to local Whisper:", err);
-    return "";
   }
+
+  return "";
 }
 
 /**
- * Transcribe raw 16-bit mono PCM audio to text via Gemini 3.5 Transcribe or local STT.
+ * Transcribe speech via Cloudflare Worker serverless endpoint (@cf/openai/whisper).
+ */
+export async function transcribeWorkerAudio(
+  samples: Int16Array,
+  serverUrl: string,
+): Promise<string> {
+  if (!serverUrl || serverUrl.includes("example.workers.dev")) return "";
+  try {
+    const base64Wav = pcmToWavBase64(samples, 16000);
+    const endpoint = `${serverUrl.replace(/\/+$/, "")}/api/transcribe`;
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ audio_base64: base64Wav }),
+    });
+    if (resp.ok) {
+      const data = await resp.json() as any;
+      if (data.text) return data.text.trim();
+    }
+  } catch (err) {
+    console.warn("[STT] Worker transcribe failed:", err);
+  }
+  return "";
+}
+
+/**
+ * Transcribe raw 16-bit mono PCM audio to text with multi-tier fallbacks:
+ * 1. Gemini Transcribe (gemini-2.0-flash)
+ * 2. Local Faster-Whisper (127.0.0.1:39217)
+ * 3. Cloudflare Worker (@cf/openai/whisper)
  *
  * @param samples - Raw 16-bit LE mono PCM at 16 kHz
  * @returns Transcribed text, or empty string on failure
@@ -111,17 +147,19 @@ export async function transcribeGeminiAudio(
 export async function transcribeAudio(samples: Int16Array): Promise<string> {
   if (!isTauri()) return "";
 
-  // Check if Gemini API key is configured
+  let settings: any = null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const settings = await invoke<any>("get_settings").catch(() => null);
-    if (settings?.geminiApiKey) {
-      const geminiText = await transcribeGeminiAudio(samples, settings.geminiApiKey);
-      if (geminiText) return geminiText;
-    }
+    settings = await invoke<any>("get_settings").catch(() => null);
   } catch {}
 
-  // Local STT fallback
+  // Tier 1: Gemini 2.0 / 1.5 Flash Transcribe
+  if (settings?.geminiApiKey && settings.geminiApiKey.startsWith("AIza")) {
+    const geminiText = await transcribeGeminiAudio(samples, settings.geminiApiKey);
+    if (geminiText) return geminiText;
+  }
+
+  // Tier 2: Local Faster-Whisper STT (127.0.0.1:39217)
   const payload = Array.from(samples);
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -131,11 +169,18 @@ export async function transcribeAudio(samples: Int16Array): Promise<string> {
         setTimeout(() => reject(new Error("STT timeout")), STT_TIMEOUT_MS),
       ),
     ]);
-    return text;
-  } catch (err) {
-    console.error("local STT failed:", err);
-    return "";
+    if (text && text.trim()) return text.trim();
+  } catch {
+    // Local STT not running, fall through to Tier 3
   }
+
+  // Tier 3: Cloudflare Worker Whisper
+  if (settings?.serverUrl) {
+    const workerText = await transcribeWorkerAudio(samples, settings.serverUrl);
+    if (workerText) return workerText;
+  }
+
+  return "";
 }
 
 /**

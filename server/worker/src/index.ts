@@ -935,6 +935,25 @@ export default {
       });
     }
 
+    // ---- STT: Transcribe audio via Workers AI Whisper ----
+    if (path === "/api/transcribe" && method === "POST") {
+      try {
+        const body = await request.json() as { audio_base64?: string };
+        if (!body.audio_base64) return json({ error: "missing audio_base64" }, 400);
+        const binaryStr = atob(body.audio_base64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const whisperResp = await env.AI.run("@cf/openai/whisper", {
+          audio: [...bytes],
+        });
+        return json({ text: (whisperResp as any)?.text || "" });
+      } catch (e) {
+        return json({ error: (e as Error).message, text: "" }, 500);
+      }
+    }
+
     // ---- Main: process transcript ----
     if (path === "/" && method === "POST") {
       return handleTranscript(request, env, json);
