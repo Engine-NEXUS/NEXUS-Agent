@@ -449,7 +449,6 @@ function doubleMetaphone(word: string): string[] {
         break;
 
       case "W":
-      case "Y":
         if (current === 0 && isVowel(next)) {
           add("A");
         }
