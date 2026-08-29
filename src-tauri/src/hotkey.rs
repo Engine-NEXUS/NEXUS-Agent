@@ -21,6 +21,11 @@ const HOTKEYS: &[&str] = &[
     "Alt+Space",
 ];
 
+/// Cancel hotkey — instantly cancels the current recording/session and hides the orb.
+/// Separate from the wake hotkeys so the user can abort without waiting for the
+/// no-speech timeout. Uses Ctrl+Space (AK repo contribution).
+const HOTKEY_CANCEL: &str = "CommandOrControl+Space";
+
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     for &hk in HOTKEYS {
         let sc: Shortcut = match hk.parse() {
@@ -71,6 +76,29 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         } else {
             tracing::info!("Registered global hotkey handler: {hk}");
         }
+    }
+
+    // Register the cancel hotkey (Ctrl+Space).
+    // This instantly cancels the current recording/session and hides the orb.
+    let sc_cancel: Shortcut = match HOTKEY_CANCEL.parse() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to parse cancel hotkey '{HOTKEY_CANCEL}': {e}");
+            return Ok(());
+        }
+    };
+    let handle_cancel = app.clone();
+    if let Err(e) = app.global_shortcut().on_shortcut(sc_cancel, move |_app, _shortcut, event| {
+        if event.state() == ShortcutState::Pressed {
+            tracing::info!("hotkey (cancel) → cancelling current turn");
+            if let Some(win) = handle_cancel.get_webview_window("main") {
+                let _ = win.eval("window.__NEXUS_CANCEL__ && window.__NEXUS_CANCEL__()");
+            }
+        }
+    }) {
+        tracing::warn!("Failed to register cancel hotkey '{HOTKEY_CANCEL}': {e}");
+    } else {
+        tracing::info!("Registered cancel hotkey: {HOTKEY_CANCEL}");
     }
 
     Ok(())

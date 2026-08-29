@@ -548,6 +548,8 @@ pub fn run() {
             commands::show_sidebar,
             commands::show_sidebar_with_content,
             commands::hide_sidebar,
+            commands::pause_wakeword,
+            commands::resume_wakeword,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,

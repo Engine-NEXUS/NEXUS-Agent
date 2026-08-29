@@ -15,8 +15,11 @@ interface AssistantStore {
   transcript: TranscriptEntry[];
   /** Index of the TTS chunk currently playing (for avatar mouth animation). */
   speakSeq: number | null;
+  /** Current microphone audio volume (RMS, 0.0 - ~1.0) for avatar reactivity. */
+  audioVolume: number;
   setState: (s: AssistantState) => void;
   setVisible: (v: boolean) => void;
+  setAudioVolume: (v: number) => void;
   addUserMessage: (text: string) => void;
   addAssistantMessage: (text: string) => void;
   setSpeakSeq: (n: number | null) => void;
@@ -31,8 +34,10 @@ export const useAssistant = create<AssistantStore>((set) => ({
   visible: false,
   transcript: [],
   speakSeq: null,
+  audioVolume: 0,
   setState: (s) => set({ state: s }),
   setVisible: (v) => set({ visible: v }),
+  setAudioVolume: (v) => set({ audioVolume: v }),
   addUserMessage: (text) =>
     set((st) => ({
       transcript: [...st.transcript, { role: "user", text, timestamp: Date.now() }],
@@ -42,7 +47,7 @@ export const useAssistant = create<AssistantStore>((set) => ({
       transcript: [...st.transcript, { role: "assistant", text, timestamp: Date.now() }],
     })),
   setSpeakSeq: (n) => set({ speakSeq: n }),
-  reset: () => set({ state: "idle", speakSeq: null }),
+  reset: () => set({ state: "idle", speakSeq: null, audioVolume: 0 }),
   clearTranscript: () => set({ transcript: [] }),
 }));
 
