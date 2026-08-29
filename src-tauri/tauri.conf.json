@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "pnpm --dir ../frontend dev",
-    "beforeBuildCommand": "pnpm --dir ../frontend build"
+    "beforeDevCommand": "npm --prefix ../frontend run dev",
+    "beforeBuildCommand": "npm --prefix ../frontend run build"
   },
   "app": {
     "withGlobalTauri": false,
@@ -101,8 +101,6 @@
     "longDescription": "A cross-platform floating AI assistant that bridges to a remote n8n/Ollama backend."
   },
   "plugins": {
-    "global-shortcut": { "shortcuts": ["CommandOrControl+Shift+Space"] },
-    "autostart": { "macosExtra": { "application": false, "service": true } },
     "deep-link": {
       "desktop": {
         "schemes": ["nexus"]
