@@ -998,6 +998,66 @@ static WAKE_TX: OnceCell<std::sync::mpsc::Sender<()>> = OnceCell::new();
 static MEETING_STATE: OnceCell<std::sync::Arc<crate::meeting_detect::MeetingState>> =
     OnceCell::new();
 
+/// Global cpal stream handle for pause/resume (mic baton pass).
+/// Stored in a RwLock so the frontend can pause the wake-word engine
+/// before acquiring the mic via getUserMedia(), and resume it after
+/// releasing the mic. Without this, Windows Intel SST drivers deadlock
+/// when two processes try to capture the mic simultaneously.
+///
+/// cpal::Stream is not Send/Sync on all platforms (it contains a *mut ()),
+/// so we wrap it in a newtype with manual unsafe impls. This is safe because:
+/// - pause() and play() are the only operations we perform
+/// - These are called from the Tauri IPC thread, never from the audio callback
+/// - The stream is never moved or cloned after being stored
+#[cfg(not(feature = "mock-wake"))]
+struct SendStream(cpal::Stream);
+#[cfg(not(feature = "mock-wake"))]
+unsafe impl Send for SendStream {}
+#[cfg(not(feature = "mock-wake"))]
+unsafe impl Sync for SendStream {}
+
+#[cfg(not(feature = "mock-wake"))]
+static CPAL_STREAM: once_cell::sync::Lazy<parking_lot::RwLock<Option<SendStream>>> =
+    once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(None));
+
+/// Pause the wake-word audio stream (release the OS mic lock).
+/// Called by the frontend via `pause_wakeword` IPC before getUserMedia().
+#[cfg(not(feature = "mock-wake"))]
+pub fn pause_stream() {
+    use cpal::traits::StreamTrait;
+    let guard = CPAL_STREAM.read();
+    if let Some(ref stream) = *guard {
+        match stream.0.pause() {
+            Ok(()) => tracing::info!("wake: cpal stream paused (mic baton pass — frontend acquiring mic)"),
+            Err(e) => tracing::warn!("wake: cpal stream pause failed: {e}"),
+        }
+    } else {
+        tracing::warn!("wake: pause_stream called but no stream stored");
+    }
+}
+
+/// Resume the wake-word audio stream (re-acquire the OS mic lock).
+/// Called by the frontend via `resume_wakeword` IPC after releasing the mic.
+#[cfg(not(feature = "mock-wake"))]
+pub fn resume_stream() {
+    use cpal::traits::StreamTrait;
+    let guard = CPAL_STREAM.read();
+    if let Some(ref stream) = *guard {
+        match stream.0.play() {
+            Ok(()) => tracing::info!("wake: cpal stream resumed (mic baton pass — frontend released mic)"),
+            Err(e) => tracing::warn!("wake: cpal stream resume failed: {e}"),
+        }
+    } else {
+        tracing::warn!("wake: resume_stream called but no stream stored");
+    }
+}
+
+/// Mock-wake stubs for non-OWW builds.
+#[cfg(feature = "mock-wake")]
+pub fn pause_stream() {}
+#[cfg(feature = "mock-wake")]
+pub fn resume_stream() {}
+
 /// Set the global meeting state reference. Called from `lib.rs` during setup.
 #[cfg(not(feature = "mock-wake"))]
 pub fn set_meeting_state(state: std::sync::Arc<crate::meeting_detect::MeetingState>) {
@@ -1072,9 +1132,10 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
-        let _ = app.emit("assistant:wake", ());
-        let _ = app.emit("nexus://wake", ());
-
+        // Only use the direct eval — the frontend's __NEXUS_WAKE__ handler
+        // calls wakeWithGreeting(). Do NOT also emit Tauri events, as the
+        // frontend listens to those too and would call wakeWithGreeting()
+        // multiple times (causing "on it sir" to fire twice).
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
             let _ = crate::window_manager::configure_non_activating_overlay(&win);
@@ -1345,7 +1406,9 @@ fn try_device_silent(
         "audio: stream started on '{}', OWW KWS listening for 'nexus'...",
         device.name().unwrap_or_else(|_| "unknown".into())
     );
-    std::mem::forget(stream);
+    // Store the stream in the global so pause_stream/resume_stream can
+    // access it for the mic baton pass. Keep it alive forever.
+    *CPAL_STREAM.write() = Some(SendStream(stream));
     Ok(())
 }
 
@@ -1564,7 +1627,9 @@ fn try_device(
         "audio: stream started on '{}', OWW KWS listening for 'nexus'...",
         device.name().unwrap_or_else(|_| "unknown".into())
     );
-    std::mem::forget(stream);
+    // Store the stream in the global so pause_stream/resume_stream can
+    // access it for the mic baton pass. Keep it alive forever.
+    *CPAL_STREAM.write() = Some(SendStream(stream));
     Ok(())
 }
 

@@ -119,6 +119,16 @@ let nativeSampleRate = 48000;
  *  from clearing floatBuffer mid-transcription (race condition fix). */
 let captureInProgress = false;
 
+/** Retry counter for "didn't catch that" — allows up to 3 retries before
+ *  giving up and hiding the orb. (AK port) */
+let didntCatchRetryCount = 0;
+const MAX_DIDNT_CATCH_RETRIES = 3;
+
+/** Reset the retry counter — called on successful transcript or new wake. */
+export function resetRetryCount(): void {
+  didntCatchRetryCount = 0;
+}
+
 /**
  * Start recording from an EXISTING MediaStream (acquired by the caller).
  * Uses ScriptProcessorNode — the proven approach for WebView2/Electron.
@@ -332,14 +342,29 @@ export async function finishCapture(): Promise<void> {
 
   if (!transcript) {
     console.warn("STT returned empty transcript");
-    useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that sir");
-    useAssistant.getState().setVisible(false);
-    setTimeout(() => useAssistant.getState().reset(), 550);
+    didntCatchRetryCount++;
+    if (didntCatchRetryCount <= MAX_DIDNT_CATCH_RETRIES) {
+      console.log(`[NEXUS] didn't catch that (retry ${didntCatchRetryCount}/${MAX_DIDNT_CATCH_RETRIES}) — staying listening`);
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+      await speak("Didn't catch that sir");
+      await waitForTtsIdle();
+      useAssistant.getState().setState("listening");
+      import("./vad").then(({ resumeVad }) => resumeVad()).catch(() => {});
+    } else {
+      console.log("[NEXUS] didn't catch that — max retries exceeded, hiding");
+      didntCatchRetryCount = 0;
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+      await speak("Didn't catch that sir");
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+    }
     captureInProgress = false;
     return;
   }
+  // Successful transcript — reset retry counter
+  didntCatchRetryCount = 0;
 
   // 1b. Post-process the transcript to fix common STT mishearings.
   transcript = correctSttTranscript(transcript);
@@ -503,14 +528,29 @@ export async function finishCaptureFromVad(
 
   if (!transcript) {
     console.warn("STT returned empty transcript");
-    useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that sir");
-    useAssistant.getState().setVisible(false);
-    setTimeout(() => useAssistant.getState().reset(), 550);
+    didntCatchRetryCount++;
+    if (didntCatchRetryCount <= MAX_DIDNT_CATCH_RETRIES) {
+      console.log(`[NEXUS] didn't catch that (retry ${didntCatchRetryCount}/${MAX_DIDNT_CATCH_RETRIES}) — staying listening`);
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+      await speak("Didn't catch that sir");
+      await waitForTtsIdle();
+      useAssistant.getState().setState("listening");
+      import("./vad").then(({ resumeVad }) => resumeVad()).catch(() => {});
+    } else {
+      console.log("[NEXUS] didn't catch that — max retries exceeded, hiding");
+      didntCatchRetryCount = 0;
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
+      await speak("Didn't catch that sir");
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+    }
     captureInProgress = false;
     return;
   }
+  // Successful transcript — reset retry counter
+  didntCatchRetryCount = 0;
 
   // 1b. Post-process the transcript to fix common STT mishearings.
   transcript = correctSttTranscript(transcript);

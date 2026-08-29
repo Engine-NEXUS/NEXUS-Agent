@@ -858,3 +858,21 @@ pub fn refresh_app_registry() -> Result<String, String> {
     app_registry::force_refresh();
     Ok("App registry refreshed".to_string())
 }
+
+/// IPC: Pause the wake-word engine's cpal stream.
+/// Called by the frontend before acquiring the microphone via getUserMedia()
+/// to avoid OS-level mic lock contention (Intel Smart Sound Technology).
+#[tauri::command]
+pub fn pause_wakeword() -> Result<(), String> {
+    crate::wakeword_oww::pause_stream();
+    Ok(())
+}
+
+/// IPC: Resume the wake-word engine's cpal stream.
+/// Called by the frontend after releasing the microphone so the wake-word
+/// engine can resume listening for "NEXUS".
+#[tauri::command]
+pub fn resume_wakeword() -> Result<(), String> {
+    crate::wakeword_oww::resume_stream();
+    Ok(())
+}

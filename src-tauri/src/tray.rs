@@ -36,8 +36,8 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                     let _ = w.show();
                     let _ = crate::window_manager::configure_non_activating_overlay(&w);
                     let _ = w.set_ignore_cursor_events(false);
-                    let _ = app.emit("assistant:wake", ());
-                    let _ = app.emit("nexus://wake", ());
+                    // Only use direct eval — frontend listens to __NEXUS_WAKE__
+                    // and also to Tauri events, so emitting both causes double wake.
                     let _ = w.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
                 }
             }
@@ -86,7 +86,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                 let app = tray.app_handle();
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.show();
-                    let _ = app.emit("assistant:wake", ());
+                    let _ = w.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
                 }
             }
         })
