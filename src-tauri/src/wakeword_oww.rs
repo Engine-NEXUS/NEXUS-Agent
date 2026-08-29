@@ -111,6 +111,20 @@ mod engine {
     /// but is lenient enough for the 78.6% accuracy model)
     const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
 
+    /// Single-frame high-confidence threshold.
+    /// If any single frame exceeds this, trigger immediately without
+    /// requiring MIN_POSITIVE_DETECTIONS frames. This fixes the case where
+    /// the model produces one high probability (e.g. 0.67 or 0.89) but the
+    /// adjacent frames are below threshold — the 2-frame smoothing was
+    /// killing valid detections with 58.2%-recall models.
+    /// 0.5 is above the 0.45 trigger threshold and far above noise
+    /// (silence gate already blocks RMS < 0.0005, and the model produces
+    /// <0.01 on non-wake speech), so a single 0.5+ frame is a real wake.
+    /// The model produces lower probabilities for voices it wasn't trained
+    /// on (e.g. 0.67 for a non-enrolled speaker vs 0.89 for the owner),
+    /// so 0.5 covers both cases while still rejecting noise.
+    const SINGLE_FRAME_HIGH_CONFIDENCE: f32 = 0.5;
+
     /// Refractory period after a detection (ms)
     const NO_DETECTION_MS: u64 = 2000;
 
@@ -608,6 +622,14 @@ mod engine {
 
             let since_last = self.last_detection_time.elapsed().as_millis();
 
+            // Log which trigger path is being taken (for debugging)
+            if avg >= SINGLE_FRAME_HIGH_CONFIDENCE {
+                tracing::info!(
+                    "wake: high-confidence single-frame trigger (avg={:.3}, prob={:.3})",
+                    avg, probability
+                );
+            }
+
             // Trigger when smoothed average exceeds threshold (with refractory period)
             let wake_detected = if avg > self.threshold && since_last > NO_DETECTION_MS as u128 {
                 self.last_detection_time = std::time::Instant::now();
@@ -710,8 +732,31 @@ mod engine {
         }
 
         /// Calculate average of positive detections in the buffer.
+        ///
+        /// Two trigger paths:
+        /// 1. **High-confidence single frame:** If any frame in the buffer
+        ///    exceeds `SINGLE_FRAME_HIGH_CONFIDENCE` (0.7), return it
+        ///    immediately. This fixes the root cause where a single 0.89
+        ///    probability detection was silently discarded because
+        ///    `positive_count (1.0) < MIN_POSITIVE_DETECTIONS (2.0)`.
+        ///    A single 0.7+ frame is a real wake — the silence gate already
+        ///    blocks digital silence, and the model produces <0.01 on
+        ///    non-wake speech.
+        /// 2. **Smoothed multi-frame:** Otherwise, require at least
+        ///    `MIN_POSITIVE_DETECTIONS` (2) frames above threshold and
+        ///    return their average. This filters transient noise spikes
+        ///    that don't reach high confidence.
         fn calculate_average(&self) -> f32 {
             let all = self.detections_buffer.to_vec();
+
+            // Path 1: single high-confidence frame triggers immediately
+            for &d in &all {
+                if d >= SINGLE_FRAME_HIGH_CONFIDENCE {
+                    return d;
+                }
+            }
+
+            // Path 2: smoothed multi-frame detection
             let mut cumulative = 0.0f32;
             let mut positive_count = 0.0f32;
             for d in all {
