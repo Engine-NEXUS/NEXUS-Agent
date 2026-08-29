@@ -94,8 +94,8 @@ NEXUS laptop → HTTP POST → Cloudflare Worker → APIs → text response
 - **NEXUS_SERVER_URL**: Baked into the installer at build time. Points to
   the Worker URL (e.g. `https://nexus-worker.xxx.workers.dev`).
 
-The old sidecar (`server/sidecar/`) is kept in the repo but no longer
-spawned at startup. `sidecar_manager.rs` is `#[allow(dead_code)]`.
+The old sidecar (`server/sidecar/`) is kept in the repo for reference but
+no longer spawned at startup. `sidecar_manager.rs` has been removed.
 
 ### Building the installer with the Worker URL
 
@@ -120,17 +120,21 @@ pwsh ./scripts/build.ps1
   80ms chunk and skips the classifier entirely if RMS < 0.002 (~-54dBFS).
   The `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence
   (out-of-distribution input), which caused spontaneous false wakes. The
-  gate prevents the model from ever seeing silence. Also raised threshold
-  0.5 -> 0.7 and min positive detections 2 -> 3. Regression test:
-  `test_silence_never_triggers_wake`.
+  gate prevents the model from ever seeing silence. Min positive detections
+  = 3. Regression test: `test_silence_never_triggers_wake`.
   - **AGC (Automatic Gain Control):** If RMS passes the gate but is below
     TARGET_RMS (0.03), the chunk is amplified up to 30x before feeding the
     classifier. This makes quiet/whispered "NEXUS" produce the same model
     input as loud "NEXUS", so the model (trained on normal-volume TTS)
     recognizes low-volume speech without retraining.
-  - Gate lowered 0.005 -> 0.002 and threshold 0.7 -> 0.6 to allow quiet
-    speech through. Pure silence (RMS=0) and mic noise floor (~0.0005)
-    are still blocked.
+  - Gate: 0.002, threshold: 0.6. Pure silence (RMS=0) and mic noise floor
+    (~0.0005) are still blocked.
+- **Mic device enumeration (2026-08-27):** `start_audio_capture` enumerates
+  ALL input devices, probes each for 5 seconds, and picks the first one
+  that produces non-silent audio (RMS > 0.0001). If all devices are silent
+  (Intel SST bug), falls back to the best device anyway. This fixes the
+  "wake word doesn't work, only hotkey" issue caused by cpal getting
+  silence from the Intel Smart Sound Technology driver.
 - **FIXED (2026-08-24):** The wake word now works — probability 0.991 for real
   "NEXUS" speech. The root cause was a 32768x input scaling mismatch: cpal
   produces f32 audio in [-1.0, 1.0] but the openWakeWord melspectrogram model

@@ -24,8 +24,6 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-positioner = "2"
 
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
@@ -33,12 +31,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
 once_cell = "1"
 anyhow = "1"
-thiserror = "1"
 
 # Audio capture (16k mono) for wake word detection
 cpal = "0.15"
-# Porcupine is loaded at runtime via libloading to avoid GPL/compile-time FFI.
-libloading = "0.8"
 # sherpa-onnx: on-device keyword spotting + speaker verification (Apache 2.0)
 # Provides KWS (wake word "NEXUS") and speaker embedding extraction (voice lock).
 sherpa-onnx = "1.13.4"
@@ -49,12 +44,6 @@ circular-buffer = "1.2"
 # Opus encoder for streaming mic to server — OPTIONAL (requires CMake on the build machine).
 # The recorder streams raw 16 kHz PCM by default; enable `opus-encode` to compress upstream.
 opus = { version = "0.3", optional = true }
-
-# Secret storage for AccessKey / device token
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-
-# WebSocket framing helpers
-base64 = "0.22"
 
 # HTTP client for local STT (faster-whisper on localhost)
 reqwest = { version = "0.12", features = ["json", "multipart"] }
