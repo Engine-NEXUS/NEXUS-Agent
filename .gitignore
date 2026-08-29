@@ -51,6 +51,5 @@ src-tauri/resources/porcupine/*.so
 src-tauri/resources/porcupine/*.ppn
 src-tauri/resources/porcupine/*.pv
 
-# Lock files (we use pnpm for frontend, cargo generates Cargo.lock)
-frontend/package-lock.json
+# Lock files (cargo generates Cargo.lock; npm uses package-lock.json)
 frontend/yarn.lock
