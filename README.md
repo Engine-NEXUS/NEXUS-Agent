@@ -1,48 +1,82 @@
-# NEXUS â€” Floating Desktop AI Assistant (Thin Client)
+# NEXUS — Voice-First AI Desktop Assistant & Architecture Mapper
 
-A cross-platform, Siri-like floating overlay assistant. The **client** (Tauri v2 + Rust + React/TS) is a thin audio/visual IO bridge; all LLM/TTS/NLP runs on a remote **Fat Server** (n8n supervisor + Ollama).
+A cross-platform, Siri-like floating overlay assistant designed specifically for software engineers. NEXUS combines a **native desktop client** (Tauri v2 + Rust + React/TS) with a **serverless edge backend** (Cloudflare Workers + D1) for blazing-fast, privacy-respecting AI interactions.
 
-> **Read the full spec: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
+NEXUS was built to answer the ultimate developer question: *"If I change this, what breaks?"* — and was submitted for the **Autonomous Codebase Architecture Mapper** Hackathon.
 
-## Highlights
-- Transparent, frameless, always-on-top overlay with **region-aware click-through** (clicks over transparent pixels fall through to the OS app beneath).
-- **Low-power wake word** via native Porcupine C-FFI in Rust (~0.5% CPU, offline). Global hotkey fallback (`Ctrl/Cmd+Shift+Space`).
-- **VAD** (Silero ONNX / RMS fallback) ends the utterance and streams Opus/PCM to the server.
-- **Streaming TTS** played back gaplessly over WebAudio.
-- Idle RAM < 90 MB, near-zero idle CPU, webview can be torn down between interactions.
-- Signed installers for Windows (NSIS `.exe`), macOS (notarized `.dmg`, universal), Linux (AppImage + `.deb`).
+> **Hackathon Jury:** Please read our official submission document at [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
 
-## Repo layout
-See the file manifest in `docs/ARCHITECTURE.md Â§11`.
+---
 
-## Quick start (dev)
-```bash
-# Frontend
-pnpm --dir frontend install
-pnpm --dir frontend dev
+## ?? Key Features
 
-# Rust + Tauri (use mock-wake to skip the Porcupine native lib in dev/CI)
+### ??? Autonomous Architecture Mapper (Hackathon Highlight)
+* **Instant Layering:** Analyzes any GitHub repo and clusters files into architectural layers (Frontend, Backend, DB, etc.) in under 10 seconds.
+* **Deep Dependency Graph:** Clones the repo, parses AST imports in parallel via ayon, and builds a directed petgraph mapping out every file dependency.
+* **Impact Analysis (Blast Radius):** Runs sub-10ms Reverse-BFS to show you exactly which files break if you modify a target file, reconstructing the shortest dependency paths.
+* **Risk Scoring:** Automatically detects circular dependencies (via Tarjan's SCC) and architectural hotspots (in_degree centrality).
+
+### ??? Advanced Voice Pipeline
+* **Local Wake Word:** openWakeWord (ONNX in Rust) detects "NEXUS" locally with <0.5% CPU overhead. No audio is streamed until you wake it.
+* **Smart VAD:** Silero Voice Activity Detection with a dynamic silence gate and Automatic Gain Control (AGC) ensures perfect cutoffs.
+* **Multi-Voice TTS:** Gapless streaming playback via WebAudio, supporting Gemini 3.1 Flash TTS, ElevenLabs, and Fish Audio.
+* **STT Fallbacks:** Defaults to local aster-whisper for maximum privacy, with optional Gemini 3.5 Transcribe integration.
+
+### ?? Developer-First Integrations
+* **Voice-Triggered PR Reviews:** *"NEXUS, analyze PR 5 in servx."* Fetches diffs, commits, and comments, returning a Senior-Engineer grade review right to your sidebar.
+* **Fuzzy Repo Matching:** Intelligent Levenshtein matching on the edge catches STT mishearings (e.g., "service" instead of "servx").
+* **Linux MPRIS:** Native D-Bus media controls integrated directly via zbus.
+
+### ?? Stunning Native UI
+* **Non-Activating Overlay:** Floats above your IDE without stealing keyboard focus.
+* **Liquid Frosted Glass:** The response sidebar utilizes true native OS compositor blurs (Windows DWM acrylic) matching Apple Music's dark theme aesthetics.
+* **Streaming Text Animations:** Cursor-style text rendering with sequential word fade-ins.
+
+---
+
+## ??? Architecture Overview
+
+NEXUS is fully **Serverless**:
+\\\
+NEXUS laptop -> HTTP POST -> Cloudflare Worker -> APIs -> Text Response
+                              |
+                              -> D1 Database (OAuth tokens, Device registration)
+                              -> Workers AI (Intent classification)
+\\\
+No sidecar, no n8n, no heavy local LLMs required. 
+
+> **Read the full feature log:** [\docs/NEXUS_FEATURES_IMPLEMENTED.md\](docs/NEXUS_FEATURES_IMPLEMENTED.md)
+
+---
+
+## ?? Quick Start (Dev)
+
+### Prerequisites
+* Node.js 20+ and pnpm
+* Rust toolchain
+* Cloudflare Wrangler (for the edge worker)
+
+### 1. Frontend
+\\\ash
+npm --prefix frontend install
+npm --prefix frontend run dev
+\\\
+
+### 2. Rust + Tauri
+\\\ash
 cd src-tauri
-cargo run --no-default-features --features mock-wake
-```
+# Must pass custom-protocol for the Vite dev server to connect properly
+cargo build --release --features custom-protocol 
+\\\
 
-## Production build
-```bash
-pwsh ./scripts/build.ps1 -Release
-```
-Set signing env vars (see `scripts/build.ps1` and `.github/workflows/release.yml`).
+---
 
-## Configuration points
-- **Backend WSS URL / device token:** `frontend/src/App.tsx` (`SERVER_URL`, `DEVICE_TOKEN`) â€” replace `REPLACE_FROM_KEYCHAIN` with a keychain read in production.
-- **Porcupine assets:** drop `libpv_porcupine.*`, `porcupine_params.pv`, `NEXUS.ppn` into `src-tauri/resources/porcupine/` (bundled via `tauri.conf.json` resources). AccessKey goes in the OS keychain under `NEXUS`/`porcupine-access-key`.
-- **n8n server:** import `server/n8n/master_supervisor.blueprint.json` and point it at your Ollama (`http://localhost:11434`) and piper (`http://localhost:5000`) instances.
+## ?? Production Build
 
-## Platforms
-| OS | Notes |
-|---|---|
-| Windows 10/11 | NSIS installer; WebView2 bootstrapper. |
-| macOS (AS + Intel) | Universal `.dmg`, notarized; `LSUIElement=true` hides dock. |
-| Linux (X11/Wayland) | AppImage + `.deb`; compositor required for true transparency. |
+\\\ash
+pwsh ./scripts/build.ps1
+\\\
+Signed installers are generated for Windows (NSIS .exe), macOS (notarized .dmg, universal), and Linux (AppImage + .deb).
 
-## License
-Proprietary â€” Â© 2026 NEXUS.
+## ?? License
+Proprietary — © 2026 NEXUS.
