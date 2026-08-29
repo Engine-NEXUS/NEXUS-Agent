@@ -299,6 +299,41 @@ pub fn delete_voice_profile<R: Runtime>(
     Ok(())
 }
 
+// ─── Boot greeting ─────────────────────────────────────────────────────────
+
+/// Seconds of system uptime below which a launch counts as a fresh boot.
+/// If NEXUS starts while uptime < 15 min, it was almost certainly launched by
+/// Windows autostart after a restart — greet the user.
+const FRESH_BOOT_UPTIME_SECS: u64 = 15 * 60;
+
+/// IPC: the frontend calls this once it has loaded. Returns true if the
+/// frontend should greet ("Hello sir, how can I assist you today?").
+///
+/// Conditions: fresh boot (uptime < 15 min) AND no meeting active AND not
+/// manually paused. The frontend signals readiness instead of Rust pushing on
+/// a timer, so the greeting can't fire before speechSynthesis is usable.
+#[tauri::command]
+pub fn frontend_ready<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let uptime = sysinfo::System::uptime();
+    let fresh_boot = uptime < FRESH_BOOT_UPTIME_SECS;
+
+    let (meeting, paused) = match app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+    {
+        Some(state) => (state.is_meeting_active(), state.is_paused()),
+        None => (false, false),
+    };
+
+    let should_greet = fresh_boot && !meeting && !paused;
+    tracing::info!(
+        "frontend ready: uptime={}s fresh_boot={} meeting={} paused={} → greet={}",
+        uptime, fresh_boot, meeting, paused, should_greet
+    );
+    Ok(should_greet)
+}
+
 // ─── Meeting / privacy mode commands ─────────────────────────────────
 
 /// IPC: Check if a meeting is active (TTS should be suppressed).
