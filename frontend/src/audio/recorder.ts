@@ -1,26 +1,35 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useAssistant } from "../store/assistant";
-import { openSession, endAudio, closeSession } from "../net/wsBridge";
+import { openSession, closeSession, sendTranscript } from "../net/wsBridge";
+import { transcribeAudio } from "./stt";
 
 /**
  * Audio recorder using an AudioWorklet that emits raw PCM frames.
- * Frames are forwarded to the Rust network bridge via `send_audio_chunk` (base64).
- * VAD (`vad.ts`) controls start/stop of the recorder.
  *
- * The MediaStream is acquired ONCE in App.tsx and shared between the recorder and VAD
- * to avoid opening two mic streams (which causes echo-cancellation conflicts).
+ * AUDIO STAYS LOCAL: PCM frames are buffered in memory on the device.
+ * They are NOT sent to the server. When VAD detects silence, the buffered
+ * audio is sent to the LOCAL STT server (localhost:8000) for transcription.
+ * Only the resulting TEXT is sent to the remote NEXUS server.
+ *
+ * VAD (`vad.ts`) controls start/stop of the recorder.
+ * The MediaStream is acquired ONCE in App.tsx and shared between the
+ * recorder and VAD to avoid opening two mic streams.
  */
 
 let audioCtx: AudioContext | null = null;
 let workletNode: AudioWorkletNode | null = null;
 let workletReady = false;
 
+/** Local buffer of all PCM frames captured during this turn. */
+let pcmBuffer: Int16Array[] = [];
+
 /**
  * Start recording from an EXISTING MediaStream (acquired by the caller).
- * Opens the session, loads the worklet, and pumps PCM frames to Rust.
+ * Opens the session, loads the worklet, and buffers PCM frames locally.
  */
 export async function startRecording(stream: MediaStream): Promise<void> {
   if (audioCtx) return; // already recording
+
+  pcmBuffer = []; // reset buffer for new turn
 
   audioCtx = new AudioContext({ sampleRate: 16000, latencyHint: "interactive" });
 
@@ -40,15 +49,13 @@ export async function startRecording(stream: MediaStream): Promise<void> {
     channelCount: 1,
   });
 
-  // The worklet posts 16-bit PCM buffers; we base64-encode and ship to Rust.
-  workletNode.port.onmessage = async (ev: MessageEvent) => {
+  // The worklet posts 16-bit PCM buffers — we buffer them LOCALLY.
+  // They are NOT sent to the server. They will be sent to the local
+  // STT server when VAD detects silence.
+  workletNode.port.onmessage = (ev: MessageEvent) => {
     const pcm: Int16Array = ev.data.pcm;
-    const b64 = int16ToBase64(pcm);
-    try {
-      await invoke("send_audio_chunk", { payload: b64 });
-    } catch {
-      // session may not be open yet; ignore
-    }
+    // Copy the frame because the worklet transfers ownership of the buffer.
+    pcmBuffer.push(new Int16Array(pcm));
   };
 
   src.connect(workletNode);
@@ -68,8 +75,9 @@ export async function stopRecording(): Promise<void> {
 }
 
 /**
- * Open the session, record from the given stream until VAD silence, then signal
- * end-of-audio so the sidecar flushes to STT + n8n.
+ * Open the session and record from the given stream until VAD silence.
+ * The session is opened immediately so the server is ready to receive
+ * the transcript text.
  */
 export async function captureUntilSilence(
   stream: MediaStream,
@@ -80,27 +88,59 @@ export async function captureUntilSilence(
   await startRecording(stream);
 }
 
-/** Called by VAD on silence: stop the recorder, signal end_audio, move to thinking. */
+/**
+ * Called by VAD on silence: stop the recorder, run local STT on the
+ * buffered audio, send the transcript text to the server, and speak
+ * the acknowledgement locally.
+ *
+ * This is the key function — audio is processed locally, only text
+ * crosses the network.
+ */
 export async function finishCapture(): Promise<void> {
   await stopRecording();
-  await endAudio();
+
+  // Concatenate all buffered PCM frames into a single Int16Array.
+  const totalSamples = pcmBuffer.reduce((sum, arr) => sum + arr.length, 0);
+  const allPcm = new Int16Array(totalSamples);
+  let offset = 0;
+  for (const chunk of pcmBuffer) {
+    allPcm.set(chunk, offset);
+    offset += chunk.length;
+  }
+  pcmBuffer = []; // free the buffer
+
+  if (totalSamples === 0) {
+    console.warn("no audio captured");
+    useAssistant.getState().reset();
+    return;
+  }
+
+  // 1. Local STT — audio goes to localhost:8000, never to the remote server.
   useAssistant.getState().setState("thinking");
+  const transcript = await transcribeAudio(allPcm);
+
+  if (!transcript) {
+    console.warn("STT returned empty transcript");
+    useAssistant.getState().reset();
+    return;
+  }
+
+  // 2. Add the transcript to the UI.
+  useAssistant.getState().addUserMessage(transcript);
+
+  // 3. Send ONLY the transcript text to the remote server.
+  await sendTranscript(transcript);
+
+  // The server will respond with:
+  //   {type:"ack", data:"On it, sir."}  → spoken locally by wsBridge
+  //   {type:"result", data:"..."}       → spoken locally by wsBridge
+  //   {type:"done"}                     → reset to idle
 }
 
 /** Called on error / cancel: stop everything and close the session. */
 export async function abortCapture(): Promise<void> {
   await stopRecording();
+  pcmBuffer = [];
   await closeSession();
   useAssistant.getState().reset();
-}
-
-// --- helpers ---
-function int16ToBase64(pcm: Int16Array): string {
-  const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
 }
