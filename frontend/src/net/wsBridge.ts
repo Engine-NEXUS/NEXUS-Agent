@@ -2,6 +2,41 @@ import { useAssistant, transition } from "../store/assistant";
 import { speak, stopTts } from "../audio/ttsPlayer";
 
 /**
+ * Sidebar event helpers — emit events to the sidebar window.
+ * The sidebar only shows for server responses (n8n/Ollama/Hermes),
+ * NOT for local commands.
+ */
+async function emitSidebarShow(query: string): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("sidebar:show", { query });
+  } catch (e) {
+    console.warn("[NEXUS] sidebar:show emit failed:", e);
+  }
+}
+
+async function emitSidebarResponse(text: string): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("sidebar:response", { text });
+  } catch (e) {
+    console.warn("[NEXUS] sidebar:response emit failed:", e);
+  }
+}
+
+async function emitSidebarHide(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("sidebar:hide", {});
+  } catch (e) {
+    console.warn("[NEXUS] sidebar:hide emit failed:", e);
+  }
+}
+
+/**
  * WebSocket bridge facade.
  *
  * The Rust main process owns the actual WSS connection (so the webview can be torn down
@@ -134,13 +169,16 @@ export function hasSession(): boolean {
 }
 
 /** Send the transcribed text to the server for processing.
- * Throws if no session is open so the caller can handle the local-only case. */
+ * Throws if no session is open so the caller can handle the local-only case.
+ * On success, emits sidebar:show so the response sidebar slides in. */
 export async function sendTranscript(text: string): Promise<void> {
   if (!isTauri()) return;
   if (!sessionOpen) {
     throw new Error("no backend session — local-only mode");
   }
   await tauriInvoke("send_transcript", { text });
+  // Server request succeeded — show the response sidebar
+  await emitSidebarShow(text);
 }
 
 /** Cancel the current turn. */
@@ -189,6 +227,8 @@ function handle(ev: ServerEvent): void {
       if (ev.data) {
         store.addAssistantMessage(ev.data);
         store.setState("speaking");
+        // Show the response in the sidebar
+        void emitSidebarResponse(ev.data);
         void speak(ev.data, () => {
           // After result finishes, the done event will reset to idle.
         });
@@ -198,6 +238,8 @@ function handle(ev: ServerEvent): void {
       sessionOpen = false;
       stopTts();
       store.reset();
+      // Hide the sidebar after the response is done
+      void emitSidebarHide();
       break;
     case "error":
       sessionOpen = false;
@@ -205,6 +247,8 @@ function handle(ev: ServerEvent): void {
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       stopTts();
       store.reset();
+      // Hide the sidebar on error too
+      void emitSidebarHide();
       break;
   }
 }

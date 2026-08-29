@@ -384,6 +384,8 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::clear_transcript,
+            commands::show_sidebar,
+            commands::hide_sidebar,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,
