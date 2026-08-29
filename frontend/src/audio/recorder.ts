@@ -94,8 +94,15 @@ function correctSttTranscript(transcript: string): string {
   let t = transcript;
   const logFixes: string[] = [];
 
+  // Strip leading "and " prefix that tiny.en often inserts
+  if (/^and\s+/i.test(t)) {
+    t = t.replace(/^and\s+/i, "");
+    logFixes.push("and→(stripped)");
+  }
+
   // Fix "analyse" mishearings: "unless", "analyze", "and let's", "anlsys",
-  // "anlyss", "anlys", "anlss", "analis", "analys" (without trailing e)
+  // "anlyss", "anlys", "anlss", "analis", "analys" (without trailing e),
+  // "analysis" (noun form → verb form)
   // tiny.en often drops or garbles the "analyse" word
   if (/^unless\b/i.test(t)) {
     t = t.replace(/^unless\b/i, "analyse");
@@ -108,6 +115,11 @@ function correctSttTranscript(transcript: string): string {
   if (/^and let's\b/i.test(t)) {
     t = t.replace(/^and let's\b/i, "analyse");
     logFixes.push("and let's→analyse");
+  }
+  // "analysis" → "analyse" (noun form misheard for verb)
+  if (/^analysis\b/i.test(t)) {
+    t = t.replace(/^analysis\b/i, "analyse");
+    logFixes.push("analysis→analyse");
   }
   // "anlsys", "anlyss", "anlys", "anlss", "analis" → "analyse"
   if (/^an(?:l|n)?s[yi]?s\b/i.test(t)) {

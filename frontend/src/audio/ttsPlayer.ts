@@ -254,21 +254,28 @@ function playWebSpeech(text: string, voice: VoiceOption, onEnd?: () => void): Pr
       resolve();
     };
 
-    // 4-second safety watchdog in case WebKitGTK drops speech synthesis events
+    // 6-second safety watchdog in case WebKitGTK/WebView2 drops speech synthesis events
     const safetyTimer = setTimeout(() => {
       if (!finished) {
         console.warn("[TTS] WebSpeech watchdog triggered — falling back to synth voice");
         try {
           speechSynthesis.cancel();
         } catch {}
+        // Try synth voice fallback before giving up
+        void playSynthVoiceSignature(voice.id, onEnd).then(resolve);
         cleanup();
       }
-    }, 4000);
+    }, 6000);
 
     utterance.onend = cleanup;
     utterance.onerror = (e) => {
       console.warn("[TTS] WebSpeech error:", e);
-      cleanup();
+      // Don't immediately give up — try synth voice fallback
+      if (!finished) {
+        clearTimeout(safetyTimer);
+        finished = true;
+        void playSynthVoiceSignature(voice.id, onEnd).then(resolve);
+      }
     };
 
     try {
@@ -279,9 +286,19 @@ function playWebSpeech(text: string, voice: VoiceOption, onEnd?: () => void): Pr
       );
       if (match) utterance.voice = match;
 
-      speechSynthesis.speak(utterance);
+      // WebView2 bug: calling speak() immediately after cancel() can cause
+      // SpeechSynthesisErrorEvent. Add a 50ms delay to let the cancel settle.
+      setTimeout(() => {
+        if (finished) return;
+        try {
+          speechSynthesis.speak(utterance);
+        } catch (err) {
+          console.warn("[TTS] speechSynthesis.speak failed:", err);
+          cleanup();
+        }
+      }, 50);
     } catch (err) {
-      console.warn("[TTS] speechSynthesis.speak failed:", err);
+      console.warn("[TTS] speechSynthesis setup failed:", err);
       cleanup();
     }
   });
