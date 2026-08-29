@@ -7,6 +7,8 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, Runtime};
+#[cfg(not(target_os = "windows"))]
+use tauri_plugin_autostart::ManagerExt;
 
 #[cfg(feature = "wakeword-sherpa")]
 use crate::voice_profile;
@@ -969,13 +971,48 @@ pub fn save_settings<R: Runtime>(
     let path = dir.join("settings.json");
     let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    // Also save server config separately (so existing code can read it)
-    let config = serde_json::json!({
-        "serverUrl": settings.server_url,
-        "userId": settings.user_id,
-        "deviceId": settings.device_id,
-    });
+
+    // Also save server config separately — but NEVER overwrite an existing
+    // identity (user_id / device_id) with empty values. This prevents
+    // identity loss if settings.json is stale or nexus-config.json was
+    // temporarily missing.
     let config_path = dir.join("nexus-config.json");
+    let default_url = option_env!("NEXUS_SERVER_URL")
+        .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
+
+    // Read existing config to preserve identity if needed
+    let existing = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+
+    let (server_url, user_id, device_id) = if let Some(ref existing) = existing {
+        let preserved_url = if settings.server_url.is_empty() {
+            existing["serverUrl"].as_str().unwrap_or(default_url).to_string()
+        } else {
+            settings.server_url.clone()
+        };
+        let preserved_uid = if settings.user_id.is_empty() {
+            existing["userId"].as_str().unwrap_or("").to_string()
+        } else {
+            settings.user_id.clone()
+        };
+        let preserved_did = if settings.device_id.is_empty() {
+            existing["deviceId"].as_str().unwrap_or("").to_string()
+        } else {
+            settings.device_id.clone()
+        };
+        (preserved_url, preserved_uid, preserved_did)
+    } else {
+        // No existing config — use what we have, with URL fallback
+        let url = if settings.server_url.is_empty() { default_url.to_string() } else { settings.server_url.clone() };
+        (url, settings.user_id.clone(), settings.device_id.clone())
+    };
+
+    let config = serde_json::json!({
+        "serverUrl": server_url,
+        "userId": user_id,
+        "deviceId": device_id,
+    });
     std::fs::write(&config_path, config.to_string()).map_err(|e| e.to_string())?;
     tracing::info!("settings saved to {:?}", path);
     Ok(())

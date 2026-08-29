@@ -206,9 +206,14 @@ function keywordFallback(transcript: string): string {
   }
 
   // STT often mishears "analyse" as "unless", "analyze" (without the 's'), etc.
-  // If the transcript contains "PR <number>" + "in <something>", treat it as
+  // If the transcript contains "PR <number>" + "in/on <something>", treat it as
   // github_analyse — the user clearly wants a PR analysis.
-  if (/\bpr\s*#?\s*\d+\b/.test(t) && /\b(in|of|from)\b/.test(t)) {
+  // Also catches "PR number 24 on NEXUS agent" (STT inserts "number")
+  if (/\bpr\s*(?:number|#\s*)?\s*#?\s*\d+\b/.test(t) && /\b(in|of|from|on)\b/.test(t)) {
+    return "github_analyse";
+  }
+  // "analyse PR number 24 on NEXUS agent" — analyse + PR + number
+  if (/\b(analy[sz]e|review)\b/.test(t) && /\bpr\s*(?:number|#\s*)?\s*#?\s*\d+\b/.test(t)) {
     return "github_analyse";
   }
 
@@ -756,15 +761,15 @@ async function handleGitHubWrite(req: NexusRequest, env: Env, token: string): Pr
 function parsePRRequest(transcript: string): { prNumber: number | null; repoName: string | null } {
   const tLower = transcript.toLowerCase();
 
-  // "PR 24", "PR #24", "pull request 24"
-  const prNumMatch = tLower.match(/(?:pr|pull\s*request)\s*#?\s*(\d+)/);
+  // "PR 24", "PR #24", "pull request 24", "PR number 24" (STT variation)
+  const prNumMatch = tLower.match(/(?:pr|pull\s*request)\s*(?:number|#\s*)?\s*#?\s*(\d+)/);
   const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
 
-  // "in zync", "of zync", "in owner/repo", "from owner/repo",
+  // "in zync", "of zync", "on NEXUS agent", "from owner/repo",
   // "in ledger ai", "in ledger-ai" — support multi-word repo names
   // Exclude "of PR" and "of pull" — those are not repo names
-  // Also exclude common English words that follow "of/in/from"
-  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
+  // Also exclude common English words that follow "of/in/from/on"
+  const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
   if (!repoMatch || !repoMatch[1]) {
     return { prNumber, repoName: null };
   }
@@ -792,7 +797,7 @@ function parseBranchRequest(transcript: string): { branchName: string | null; re
   const branchName = branchMatch ? branchMatch[1] : null;
 
   // Extract repo name (same logic as parsePRRequest)
-  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b|branch\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
+  const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b|branch\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
   if (!repoMatch || !repoMatch[1]) {
     return { branchName, repoName: null };
   }

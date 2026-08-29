@@ -431,13 +431,18 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
     None
 }
 
-/// Parse "PR <num> [in|of|for|from] <repo>" patterns.
+/// Parse "PR <num> [in|of|for|from|on] <repo>" patterns.
 fn parse_pr_analyse(text: &str) -> Option<ParseResult> {
-    // Match: "PR <num> [in|of|for|from] <repo>" or "pull request <num> ..."
+    // Match: "PR <num> [in|of|for|from|on] <repo>" or "pull request <num> ..."
+    // Also handles "PR number <num>" and "PR # <num>" (STT variations)
     let pr_patterns = [
+        // "PR number 24 on NEXUS agent" / "PR number 24 in repo"
+        regex::Regex::new(r"^pr\s*(?:number|#\s*)?\s*#?\s*(\d+)\s+(?:in|of|for|from|on)\s+(.+)$").ok()?,
+        // "PR number 24 NEXUS agent" (no preposition)
+        regex::Regex::new(r"^pr\s*number\s*#?\s*(\d+)\s+(.+)$").ok()?,
         regex::Regex::new(r"^pr\s*#?\s*(\d+)\s+(?:in|of|for|from)\s+(.+)$").ok()?,
         regex::Regex::new(r"^pr\s*#?\s*(\d+)\s+(.+)$").ok()?,
-        regex::Regex::new(r"^pull\s+request\s*#?\s*(\d+)\s+(?:in|of|for|from)\s+(.+)$").ok()?,
+        regex::Regex::new(r"^pull\s+request\s*#?\s*(\d+)\s+(?:in|of|for|from|on)\s+(.+)$").ok()?,
         regex::Regex::new(r"^pull\s+request\s*#?\s*(\d+)\s+(.+)$").ok()?,
         // "PR <num> owner/repo"
         regex::Regex::new(r"^pr\s*#?\s*(\d+)\s+(\S+/\S+)$").ok()?,
