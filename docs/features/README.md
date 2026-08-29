@@ -53,6 +53,15 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 | 15 | Architecture Decisions | [15-architecture-decisions.md](15-architecture-decisions.md) | Serverless model, sidebar delivery, done event timing |
 | 16 | Conflict Resolution | [16-conflict-resolution.md](16-conflict-resolution.md) | How 3 overlapping files were merged from both branches |
 
+### AK Repo Port (2026-08-29 — this session)
+
+| # | Feature | File | Description |
+|---|---|---|---|
+| 17 | Mic Baton Pass | [17-ak-port-mic-baton-pass.md](17-ak-port-mic-baton-pass.md) | Pause/resume cpal stream around getUserMedia to fix Intel SST mic lock |
+| 18 | Cancel Hotkey + Double Wake Fix | [18-ak-port-cancel-hotkey-double-wake-fix.md](18-ak-port-cancel-hotkey-double-wake-fix.md) | Ctrl+Space cancel hotkey + fix triple event emission causing "on it sir" twice |
+| 19 | Audio Volume + Multi-Turn VAD | [19-ak-port-audio-volume-multi-turn-vad.md](19-ak-port-audio-volume-multi-turn-vad.md) | RMS volume tracking for avatar reactivity + "didn't catch that" retry (max 3) |
+| 20 | STT Fix + Wake Reliability | [20-stt-fix-wakeword-reliability.md](20-stt-fix-wakeword-reliability.md) | STT server missing __main__ block + wake word model assessment |
+
 ---
 
 ## Quick Summary
@@ -83,3 +92,9 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 - `hotkey.rs` — Combined multi-hotkey + state-dependent logic
 - `wakeword_oww.rs` — Took prem224k's precise high-confidence approach
 - `tauri.conf.json` — Combined visible:true + CSP changes
+
+### AK repo port (4 features, all implemented and tested)
+- Mic baton pass (pause/resume cpal stream for Intel SST compatibility)
+- Cancel hotkey (Ctrl+Space) + double "on it sir" fix (triple event emission)
+- Audio volume RMS tracking + multi-turn VAD resume + "didn't catch that" retry
+- STT server missing `__main__` block fix + wake word reliability assessment

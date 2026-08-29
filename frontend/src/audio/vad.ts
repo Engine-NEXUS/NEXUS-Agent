@@ -105,6 +105,14 @@ function resetSpeculation(): void {
 function onVadFrame(probs: { isSpeech: number }, frame: Float32Array): void {
   if (!active || !frame || frame.length === 0) return;
 
+  // Compute RMS volume and update store for avatar reactivity (AK port).
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) {
+    sum += frame[i] * frame[i];
+  }
+  const rms = Math.sqrt(sum / frame.length);
+  useAssistant.getState().setAudioVolume(rms);
+
   const frameMs = (frame.length / 16000) * 1000;
 
   // The library may reuse the frame buffer — copy before retaining it.
@@ -363,6 +371,7 @@ export async function startVad(stream: MediaStream): Promise<void> {
  */
 export function stopVad(): void {
   active = false;
+  useAssistant.getState().setAudioVolume(0);
   if (micVad) {
     try { micVad.pause(); } catch {}
     // DON'T set micVad = null — keep it alive for instant resume
@@ -371,6 +380,23 @@ export function stopVad(): void {
   // Drop any buffered frames / in-flight speculation so the next command
   // starts clean. onSpeechEnd has already captured the promise it needs.
   resetSpeculation();
+}
+
+/**
+ * Resume VAD using the existing stream (for multi-turn hot-mic loop).
+ * Used by the "didn't catch that" retry flow — after NEXUS says it didn't
+ * catch the command, it resumes listening without requiring a new wake.
+ * (AK port)
+ */
+export async function resumeVad(): Promise<void> {
+  if (micVad && micVadStream) {
+    active = true;
+    await micVad.start();
+    console.log("[NEXUS] VAD: Silero VAD resumed (multi-turn loop)");
+  } else if (micVadStream) {
+    // Fallback: re-start from scratch if micVad was lost
+    await startVad(micVadStream);
+  }
 }
 
 // ─── Silero VAD ────────────────────────────────────────────────────────────

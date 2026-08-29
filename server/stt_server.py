@@ -228,3 +228,10 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
         len(audio_bytes), len(text), _elapsed,
     )
     return JSONResponse({"text": text})
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("NEXUS_STT_PORT", "39217"))
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

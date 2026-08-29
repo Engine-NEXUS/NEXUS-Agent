@@ -142,6 +142,16 @@ async function startListening() {
   // If the mic stream is already warm (acquired at startup), reuse it.
   // Only call getUserMedia() if the stream was lost or never acquired.
   if (!micStream || !micStream.active) {
+    // THE BATON PASS: Tell Rust to pause the wake-word cpal stream so the
+    // OS mic lock is released. Without this, Windows Intel SST drivers
+    // deadlock when WebView2 tries to capture the mic simultaneously.
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("pause_wakeword").catch((e: unknown) => console.warn("pause_wakeword failed:", e));
+      console.log("[NEXUS] baton pass: Rust wakeword paused");
+    } catch (err) {
+      console.warn("[NEXUS] pause_wakeword invocation failed:", err);
+    }
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -195,17 +205,11 @@ async function startListening() {
   void wakeWithGreeting();
 };
 
-// Also listen for native Tauri IPC wake events
-import("@tauri-apps/api/event").then(({ listen }) => {
-  void listen("assistant:wake", () => {
-    console.log("[NEXUS] assistant:wake event received");
-    void wakeWithGreeting();
-  });
-  void listen("nexus://wake", () => {
-    console.log("[NEXUS] nexus://wake event received");
-    void wakeWithGreeting();
-  });
-}).catch((e) => console.warn("[NEXUS] Failed to attach Tauri wake listeners:", e));
+// Tauri IPC wake events are NOT listened to here anymore.
+// The Rust side calls window.__NEXUS_WAKE__() directly via eval(),
+// which is more reliable than the event system for repeated rapid events.
+// Listening to both caused wakeWithGreeting() to fire 2-3x, resulting in
+// "on it sir" being spoken twice.
 
 /**
  * Wake handler with first-of-day greeting.
@@ -425,6 +429,13 @@ void setupCommandDetectionListener();
   if (micStream) {
     micStream.getTracks().forEach((t) => (t.enabled = false));
   }
+  // THE BATON PASS: Tell Rust to resume wake-word detection now that
+  // the frontend is done with the mic. Without this, the wake-word
+  // engine stays deaf after the first voice command.
+  import("@tauri-apps/api/core").then(({ invoke }) => {
+    invoke("resume_wakeword").catch((e: unknown) => console.warn("resume_wakeword failed:", e));
+    console.log("[NEXUS] baton pass: Rust wakeword resumed");
+  }).catch(() => {});
 };
 
 /** Called by paramCapture to get the existing mic stream (or null if not active). */
