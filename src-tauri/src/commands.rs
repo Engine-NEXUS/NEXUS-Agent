@@ -18,14 +18,20 @@ pub fn open_setup_window<R: Runtime>(
     Ok(())
 }
 
-/// IPC: close/hide the setup window.
+/// IPC: close/hide the setup window and activate the main assistant orb.
 #[tauri::command]
 pub fn close_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("setup")
-        .ok_or_else(|| "setup window not found".to_string())?;
-    win.hide().map_err(|e| e.to_string())?;
+    if let Some(win) = app.get_webview_window("setup") {
+        let _ = win.hide();
+    }
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+        let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
+        let _ = main_win.set_ignore_cursor_events(false);
+        let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+    }
     Ok(())
 }
 
@@ -615,8 +621,10 @@ fn show_sidebar_inner<R: Runtime>(
 
         #[cfg(target_os = "macos")]
         let taskbar = (70.0 * scale) as i32;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         let taskbar = (48.0 * scale) as i32;
+        #[cfg(target_os = "linux")]
+        let taskbar = (36.0 * scale) as i32;
         let gap = (12.0 * scale) as i32;
 
         let x = screen.width as i32 - phys_w - gap;
@@ -638,6 +646,24 @@ fn show_sidebar_inner<R: Runtime>(
     // Linux:   No native API — CSS backdrop-filter is the fallback.
 
     win.show().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::PhysicalPosition;
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let screen = monitor.size();
+            let sidebar_w = 600i32;
+            let sidebar_h = 1000i32;
+            let phys_w = (sidebar_w as f64 * scale) as i32;
+            let phys_h = (sidebar_h as f64 * scale) as i32;
+            let taskbar = (36.0 * scale) as i32;
+            let gap = (12.0 * scale) as i32;
+            let x = screen.width as i32 - phys_w - gap;
+            let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -707,6 +733,18 @@ pub struct NexusSettings {
     pub device_id: String,
     pub tts_voice: String,
     pub speech_rate: f64,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+    #[serde(default)]
+    pub elevenlabs_api_key: String,
+    #[serde(default)]
+    pub fish_audio_api_key: String,
+    #[serde(default)]
+    pub gemini_api_key: String,
+}
+
+fn default_tts_provider() -> String {
+    "neural".to_string()
 }
 
 impl Default for NexusSettings {
@@ -727,8 +765,12 @@ impl Default for NexusSettings {
                 .to_string(),
             user_id: String::new(),
             device_id: String::new(),
-            tts_voice: "default".to_string(),
+            tts_voice: "jarvis".to_string(),
             speech_rate: 1.0,
+            tts_provider: "neural".to_string(),
+            elevenlabs_api_key: String::new(),
+            fish_audio_api_key: String::new(),
+            gemini_api_key: String::new(),
         }
     }
 }
@@ -761,6 +803,16 @@ pub fn get_settings<R: Runtime>(
                     settings.device_id = did.to_string();
                 }
             }
+        }
+    }
+    if settings.fish_audio_api_key.is_empty() {
+        if let Ok(key) = std::env::var("FISH_AUDIO_API_KEY").or_else(|_| std::env::var("NEXUS_FISH_AUDIO_API_KEY")) {
+            settings.fish_audio_api_key = key;
+        }
+    }
+    if settings.gemini_api_key.is_empty() {
+        if let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("NEXUS_GEMINI_API_KEY")) {
+            settings.gemini_api_key = key;
         }
     }
     Ok(settings)

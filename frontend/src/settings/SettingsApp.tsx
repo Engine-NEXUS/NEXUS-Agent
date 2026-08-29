@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { motion, AnimatePresence } from "framer-motion";
+
+import { CURATED_VOICES, previewVoice, stopTts } from "../audio/ttsPlayer";
 
 /**
  * NEXUS Settings Window
@@ -31,6 +32,9 @@ interface Settings {
   deviceId: string;
   ttsVoice: string;
   speechRate: number;
+  ttsProvider?: string;
+  elevenlabsApiKey?: string;
+  fishAudioApiKey?: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -47,13 +51,16 @@ const DEFAULT_SETTINGS: Settings = {
   serverUrl: "",
   userId: "local-user",
   deviceId: "local-device",
-  ttsVoice: "default",
+  ttsVoice: "jarvis",
   speechRate: 1.0,
+  ttsProvider: "neural",
+  elevenlabsApiKey: "",
+  fishAudioApiKey: "",
 };
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: "general", label: "General", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
-  { id: "audio", label: "Audio", icon: "M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" },
+  { id: "audio", label: "Audio & Voice", icon: "M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" },
   { id: "wake", label: "Wake Word", icon: "M15 10.5a3 3 0 11-6 0 3 3 0 016 0z M19 10.5a7 7 0 11-14 0 7 7 0 0114 0z" },
   { id: "privacy", label: "Privacy", icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" },
   { id: "backend", label: "Backend", icon: "M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" },
@@ -134,36 +141,27 @@ export function SettingsApp() {
           {saved && <span className="nx-badge nx-badge--ok">Saved</span>}
         </div>
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, x: 12 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -12 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            style={{ display: "flex", flexDirection: "column", gap: "var(--nx-space-5)" }}
-          >
-            {tab === "general" && (
-              <GeneralTab settings={settings} update={update} />
-            )}
-            {tab === "audio" && (
-              <AudioTab settings={settings} update={update} />
-            )}
-            {tab === "wake" && (
-              <WakeTab settings={settings} update={update} />
-            )}
-            {tab === "privacy" && (
-              <PrivacyTab settings={settings} update={update} />
-            )}
-            {tab === "backend" && (
-              <BackendTab
-                settings={settings}
-                update={update}
-                connected={serverConnected}
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--nx-space-5)" }}>
+          {tab === "general" && (
+            <GeneralTab settings={settings} update={update} />
+          )}
+          {tab === "audio" && (
+            <AudioTab settings={settings} update={update} />
+          )}
+          {tab === "wake" && (
+            <WakeTab settings={settings} update={update} />
+          )}
+          {tab === "privacy" && (
+            <PrivacyTab settings={settings} update={update} />
+          )}
+          {tab === "backend" && (
+            <BackendTab
+              settings={settings}
+              update={update}
+              connected={serverConnected}
+            />
+          )}
+        </div>
       </main>
 
       {/* Footer */}
@@ -229,10 +227,29 @@ function GeneralTab({ settings, update }: { settings: Settings; update: <K exten
 }
 
 function AudioTab({ settings, update }: { settings: Settings; update: <K extends keyof Settings>(k: K, v: Settings[K]) => void }) {
-  const [voices] = useState<SpeechSynthesisVoice[]>(() => {
-    if (typeof speechSynthesis === "undefined") return [];
-    return speechSynthesis.getVoices();
-  });
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+
+  const handlePreview = async (voiceId: string) => {
+    if (playingVoice === voiceId) {
+      stopTts();
+      setPlayingVoice(null);
+      return;
+    }
+    const voice = CURATED_VOICES.find((v) => v.id === voiceId) || {
+      id: voiceId,
+      name: voiceId,
+      provider: "system" as const,
+      accent: "Default",
+      description: "Default voice",
+      locale: "en-US",
+      gender: "male" as const,
+      sampleText: "Hello sir, NEXUS is ready to assist you.",
+    };
+    setPlayingVoice(voiceId);
+    await previewVoice(voice, settings.elevenlabsApiKey, () => {
+      setPlayingVoice(null);
+    });
+  };
 
   return (
     <>
@@ -248,19 +265,51 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
       </section>
 
       <section className="nx-section">
-        <div className="nx-section-title">Output</div>
+        <div className="nx-section-title">Persona & Voice Engine</div>
         <div className="nx-row">
           <div className="nx-row-label">
-            <span className="nx-row-name">TTS Voice</span>
-            <span className="nx-row-hint">Voice used for spoken responses</span>
+            <span className="nx-row-name">Assistant Voice</span>
+            <span className="nx-row-hint">Curated AI persona voice for spoken answers</span>
           </div>
-          <select className="nx-select" value={settings.ttsVoice} onChange={(e) => update("ttsVoice", e.target.value)}>
-            <option value="default">System Default</option>
-            {voices.filter((v) => v.lang.startsWith("en")).map((v) => (
-              <option key={v.name} value={v.name}>{v.name}</option>
-            ))}
-          </select>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <select
+              className="nx-select"
+              value={settings.ttsVoice}
+              onChange={(e) => update("ttsVoice", e.target.value)}
+            >
+              {CURATED_VOICES.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name} ({v.accent})
+                </option>
+              ))}
+              <option value="default">System Default (Local)</option>
+            </select>
+            <button
+              type="button"
+              className="nx-btn"
+              style={{ padding: "6px 12px", fontSize: "var(--nx-text-xs)" }}
+              onClick={() => handlePreview(settings.ttsVoice)}
+            >
+              {playingVoice === settings.ttsVoice ? "⏹ Stop" : "▶ Play Sample"}
+            </button>
+          </div>
         </div>
+
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">ElevenLabs API Key</span>
+            <span className="nx-row-hint">Optional: Enables ultra-realistic neural streaming</span>
+          </div>
+          <input
+            type="password"
+            className="nx-input"
+            placeholder="xi-api-key..."
+            value={settings.elevenlabsApiKey || ""}
+            onChange={(e) => update("elevenlabsApiKey", e.target.value)}
+            style={{ width: 220 }}
+          />
+        </div>
+
         <div className="nx-row">
           <div className="nx-row-label">
             <span className="nx-row-name">Speech Rate</span>
