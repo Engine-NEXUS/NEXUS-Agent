@@ -1,104 +1,82 @@
-# NEXUS â€” Edge-Driven Desktop AI Assistant
+# NEXUS — Voice-First AI Desktop Assistant & Architecture Mapper
 
-A cross-platform, Siri-like floating overlay assistant. NEXUS employs a **thin-client architecture** where the desktop app (Tauri v2 + Rust + React/TS) manages local hardware (wake-word, VAD, local STT, system automation), while all heavy reasoning, LLM processing, and OAuth authentication run securely on a **Serverless Edge** (Cloudflare Workers + D1).
+A cross-platform, Siri-like floating overlay assistant designed specifically for software engineers. NEXUS combines a **native desktop client** (Tauri v2 + Rust + React/TS) with a **serverless edge backend** (Cloudflare Workers + D1) for blazing-fast, privacy-respecting AI interactions.
 
-## System Architecture
+NEXUS was built to answer the ultimate developer question: *"If I change this, what breaks?"* — and was submitted for the **Autonomous Codebase Architecture Mapper** Hackathon.
 
-NEXUS has transitioned to a fully serverless backend. No sidecars, no Docker, and no local Ollama required for core reasoning.
+> **Hackathon Jury:** Please read our official submission document at [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
 
-```mermaid
-graph TD
-    A[Desktop Mic] -->|cpal / openWakeWord| B(Tauri Rust Core)
-    B -->|PCM| C[Local faster-whisper STT]
-    C -->|Transcript| B
-    B -->|HTTP POST| D{Cloudflare Worker Edge}
-    D <-->|State/Ack/Result| B
-    B -->|Tauri IPC| E[React Frontend / Zustand]
-    D <-->|Read/Write Tokens| F[(Cloudflare D1)]
-    D <-->|Intent / Summarize| G[Cloudflare Workers AI]
-    D <-->|OAuth / APIs| H[GitHub / Google / etc.]
-```
+---
 
-### 1. Desktop Thin Client (Rust & Tauri v2)
-* **Wake Word**: Offline, low-power (~0.5% CPU) `openWakeWord` inference using `tract-onnx` (pure Rust, no C++ deps). Uses AGC (Automatic Gain Control) and silence gating (RMS < 0.0005) to prevent false triggers.
-* **Command Classifiers (Tier 3)**: Lightweight ONNX models bypass STT for known commands (e.g., `open`, `close`, `search`, `play`).
-* **VAD (Voice Activity Detection)**: Ends utterances automatically and streams audio.
-* **App Registry**: A pre-indexed, Raycast/Alfred-style disk cache with fuzzy matching for instantaneous `O(1)` app launching without slow shell commands.
-* **UI Windows**: Frameless, region-aware click-through overlay. Uses native window blurring (Acrylic on Windows, Vibrancy on macOS).
+## ?? Key Features
 
-### 2. Privacy-First Local STT
-* Transcriptions are handled **locally** by a Python `faster-whisper` server on port `39217`.
-* Voice audio never leaves your machine. Only the resulting text transcript is POSTed to the Cloudflare Worker.
+### ??? Autonomous Architecture Mapper (Hackathon Highlight)
+* **Instant Layering:** Analyzes any GitHub repo and clusters files into architectural layers (Frontend, Backend, DB, etc.) in under 10 seconds.
+* **Deep Dependency Graph:** Clones the repo, parses AST imports in parallel via ayon, and builds a directed petgraph mapping out every file dependency.
+* **Impact Analysis (Blast Radius):** Runs sub-10ms Reverse-BFS to show you exactly which files break if you modify a target file, reconstructing the shortest dependency paths.
+* **Risk Scoring:** Automatically detects circular dependencies (via Tarjan's SCC) and architectural hotspots (in_degree centrality).
 
-### 3. Serverless Edge (Cloudflare Workers & AI)
-* **Stateless API**: Receives transcripts, classifies intent, fetches external data, and returns actions/text. Cold starts in <5ms.
-* **Workers AI**: Uses free-tier Edge AI models.
-  * *Intent Classification*: Llama 3.2 1B (`@cf/meta/llama-3.2-1b-instruct`)
-  * *Summarization*: Mistral 3.1 24B (`@cf/mistral/mistral-small-3.1-24b-instruct`)
-  * *Deep PR Analysis*: GLM-4.7-Flash / GLM-5.3-Flash (for complex 1M+ token context GitHub PR analysis).
+### ??? Advanced Voice Pipeline
+* **Local Wake Word:** openWakeWord (ONNX in Rust) detects "NEXUS" locally with <0.5% CPU overhead. No audio is streamed until you wake it.
+* **Smart VAD:** Silero Voice Activity Detection with a dynamic silence gate and Automatic Gain Control (AGC) ensures perfect cutoffs.
+* **Multi-Voice TTS:** Gapless streaming playback via WebAudio, supporting Gemini 3.1 Flash TTS, ElevenLabs, and Fish Audio.
+* **STT Fallbacks:** Defaults to local aster-whisper for maximum privacy, with optional Gemini 3.5 Transcribe integration.
 
-## Authentication & API Keys
+### ?? Developer-First Integrations
+* **Voice-Triggered PR Reviews:** *"NEXUS, analyze PR 5 in servx."* Fetches diffs, commits, and comments, returning a Senior-Engineer grade review right to your sidebar.
+* **Fuzzy Repo Matching:** Intelligent Levenshtein matching on the edge catches STT mishearings (e.g., "service" instead of "servx").
+* **Linux MPRIS:** Native D-Bus media controls integrated directly via zbus.
 
-NEXUS handles secrets using a highly secure, decentralized approach:
-1. **No Local Secrets**: The desktop app never stores 3rd-party API keys or OAuth secrets.
-2. **Device Identity**: Upon installation, the client generates a local `user_id` and `device_id` (UUIDv4) stored in `%APPDATA%\com.nexus.assistant\nexus-config.json`.
-3. **Cloudflare D1**: OAuth tokens (Google, GitHub) and user-supplied API keys are encrypted at the edge (via Fernet / `NEXUS_ENCRYPTION_KEY`) and stored in Cloudflare's D1 SQLite database.
-4. **OAuth Flow**: Triggered from the client (`nexus://oauth/callback` deep link), handled entirely by the Cloudflare Worker.
+### ?? Stunning Native UI
+* **Non-Activating Overlay:** Floats above your IDE without stealing keyboard focus.
+* **Liquid Frosted Glass:** The response sidebar utilizes true native OS compositor blurs (Windows DWM acrylic) matching Apple Music's dark theme aesthetics.
+* **Streaming Text Animations:** Cursor-style text rendering with sequential word fade-ins.
 
-## Languages, Frameworks, & Packages
+---
 
-### Backend (Rust / Tauri)
-* **Tauri v2**: Core IPC and window management.
-* **cpal**: Raw 16kHz mono audio capture.
-* **tract-onnx**: Pure Rust ONNX execution for `openWakeWord` models (`melspectrogram`, `embedding`, `nexus` classifier).
-* **reqwest**: HTTP client for edge communication.
-* **window-vibrancy**: Native UI blurring.
-* **sysinfo / winreg**: Application discovery and process management.
+## ??? Architecture Overview
 
-### Frontend (TypeScript / React)
-* **React 18 & Vite**: Fast UI rendering and dev server bundling.
-* **Zustand**: Strict state machine (`idle` -> `listening` -> `thinking` -> `speaking` -> `idle`).
-* **framer-motion / lottie-web**: Advanced SVG and UI state animations (e.g., the glowing NEXUS orb).
-* **@ricky0123/vad-web**: Browser-side VAD fallback.
+NEXUS is fully **Serverless**:
+\\\
+NEXUS laptop -> HTTP POST -> Cloudflare Worker -> APIs -> Text Response
+                              |
+                              -> D1 Database (OAuth tokens, Device registration)
+                              -> Workers AI (Intent classification)
+\\\
+No sidecar, no n8n, no heavy local LLMs required. 
 
-### Edge Worker (TypeScript)
-* **Cloudflare Workers**: Edge compute.
-* **Cloudflare D1**: SQL storage for configuration.
+> **Read the full feature log:** [\docs/NEXUS_FEATURES_IMPLEMENTED.md\](docs/NEXUS_FEATURES_IMPLEMENTED.md)
 
-## Developer Quick Start
+---
 
-### 1. Build the Frontend
-```powershell
+## ?? Quick Start (Dev)
+
+### Prerequisites
+* Node.js 20+ and pnpm
+* Rust toolchain
+* Cloudflare Wrangler (for the edge worker)
+
+### 1. Frontend
+\\\ash
 npm --prefix frontend install
-npm --prefix frontend run build
-```
+npm --prefix frontend run dev
+\\\
 
-### 2. Run the Rust Backend
-If running locally without building an installer, you **must** pass the `custom-protocol` feature so Tauri correctly loads the Vite assets instead of failing on `localhost refused to connect`.
-
-```powershell
+### 2. Rust + Tauri
+\\\ash
 cd src-tauri
-cargo run --release --features custom-protocol
-```
+# Must pass custom-protocol for the Vite dev server to connect properly
+cargo build --release --features custom-protocol 
+\\\
 
-*Note: For CI or testing without native audio dependencies, you can compile with `--features mock-wake` to trigger the assistant via hotkey only.*
+---
 
-### 3. Deploy the Edge Worker
-```bash
-cd server/worker
-npx wrangler d1 create nexus-db
-npx wrangler d1 execute nexus-db --file=schema.sql --remote
-npx wrangler secret put NEXUS_ENCRYPTION_KEY
-npx wrangler deploy
-```
-Update `$env:NEXUS_SERVER_URL` in your build environment before compiling the desktop app to point to your new worker.
+## ?? Production Build
 
-## Platforms
-| OS | Notes |
-|---|---|
-| Windows 10/11 | Primary target. NSIS installer; WebView2 bootstrapper. Skip-taskbar overlay. |
-| macOS (AS + Intel) | Universal `.dmg`, notarized; `LSUIElement=true` hides dock. |
-| Linux (X11/Wayland) | AppImage + `.deb`; compositor required for true transparency. |
+\\\ash
+pwsh ./scripts/build.ps1
+\\\
+Signed installers are generated for Windows (NSIS .exe), macOS (notarized .dmg, universal), and Linux (AppImage + .deb).
 
-## License
-Proprietary â€” Â© 2026 NEXUS.
+## ?? License
+Proprietary — © 2026 NEXUS.
