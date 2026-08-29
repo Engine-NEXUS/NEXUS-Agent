@@ -61,9 +61,11 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            server_url: "ws://127.0.0.1:49152/ws".to_string(),
-            user_id: "local-user".to_string(),
-            device_id: "local-device".to_string(),
+            server_url: option_env!("NEXUS_SERVER_URL")
+                .unwrap_or("ws://127.0.0.1:49152/ws")
+                .to_string(),
+            user_id: String::new(),
+            device_id: String::new(),
         }
     }
 }
@@ -83,9 +85,11 @@ pub fn get_server_config<R: Runtime>(
     let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     Ok(ServerConfig {
-        server_url: json["serverUrl"].as_str().unwrap_or("ws://127.0.0.1:49152/ws").to_string(),
-        user_id: json["userId"].as_str().unwrap_or("local-user").to_string(),
-        device_id: json["deviceId"].as_str().unwrap_or("local-device").to_string(),
+        server_url: json["serverUrl"].as_str()
+            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("ws://127.0.0.1:49152/ws"))
+            .to_string(),
+        user_id: json["userId"].as_str().unwrap_or("").to_string(),
+        device_id: json["deviceId"].as_str().unwrap_or("").to_string(),
     })
 }
 
@@ -575,9 +579,11 @@ impl Default for NexusSettings {
             meeting_mode_auto: true,
             suppress_tts_in_meetings: true,
             local_stt_only: true,
-            server_url: String::new(),
-            user_id: "local-user".to_string(),
-            device_id: "local-device".to_string(),
+            server_url: option_env!("NEXUS_SERVER_URL")
+                .unwrap_or("ws://127.0.0.1:49152/ws")
+                .to_string(),
+            user_id: String::new(),
+            device_id: String::new(),
             tts_voice: "default".to_string(),
             speech_rate: 1.0,
         }

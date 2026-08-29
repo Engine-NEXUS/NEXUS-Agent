@@ -2887,6 +2887,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
+ "uuid",
  "webview2-com",
  "windows 0.36.1",
  "windows-core 0.61.2",
