@@ -617,6 +617,8 @@ pub struct NexusSettings {
     pub elevenlabs_api_key: String,
     #[serde(default)]
     pub fish_audio_api_key: String,
+    #[serde(default)]
+    pub gemini_api_key: String,
 }
 
 fn default_tts_provider() -> String {
@@ -646,6 +648,7 @@ impl Default for NexusSettings {
             tts_provider: "neural".to_string(),
             elevenlabs_api_key: String::new(),
             fish_audio_api_key: String::new(),
+            gemini_api_key: String::new(),
         }
     }
 }
@@ -683,6 +686,11 @@ pub fn get_settings<R: Runtime>(
     if settings.fish_audio_api_key.is_empty() {
         if let Ok(key) = std::env::var("FISH_AUDIO_API_KEY").or_else(|_| std::env::var("NEXUS_FISH_AUDIO_API_KEY")) {
             settings.fish_audio_api_key = key;
+        }
+    }
+    if settings.gemini_api_key.is_empty() {
+        if let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("NEXUS_GEMINI_API_KEY")) {
+            settings.gemini_api_key = key;
         }
     }
     Ok(settings)

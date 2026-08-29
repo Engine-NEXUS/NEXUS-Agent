@@ -3,17 +3,29 @@ import { useAssistant } from "../store/assistant";
 export interface VoiceOption {
   id: string;
   name: string;
-  provider: "neural" | "elevenlabs" | "fish_audio" | "system";
+  provider: "neural" | "elevenlabs" | "fish_audio" | "gemini_tts" | "system";
   accent: string;
   description: string;
   elevenVoiceId?: string;
   fishModelId?: string;
+  geminiModelId?: string;
   locale: string;
   gender: "male" | "female";
   sampleText: string;
 }
 
 export const CURATED_VOICES: VoiceOption[] = [
+  {
+    id: "gemini_flash",
+    name: "Gemini Flash (Google AI)",
+    provider: "gemini_tts",
+    accent: "Natural Expressive (US)",
+    description: "Ultra low-latency speech powered by Gemini 3.1 Flash TTS Preview.",
+    geminiModelId: "gemini-3.1-flash-tts-preview",
+    locale: "en-US",
+    gender: "male",
+    sampleText: "Hello! I'm Gemini Flash TTS, ready for instant speech synthesis.",
+  },
   {
     id: "ethan",
     name: "Ethan (Fish Audio)",
@@ -370,6 +382,58 @@ export async function playFishAudio(
 }
 
 /**
+ * Stream speech from Gemini 3.1 Flash TTS Preview model.
+ */
+export async function playGeminiTts(
+  text: string,
+  apiKey: string,
+  onEnd?: () => void,
+): Promise<void> {
+  stopTts();
+  void emitTtsEvent("tts-started");
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent?key=${apiKey.trim()}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `Read the following text aloud with natural tone: ${text}`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: "audio/mp3",
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gemini Flash TTS API error: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    return playAudioUrl(blobUrl, () => {
+      URL.revokeObjectURL(blobUrl);
+      onEnd?.();
+    });
+  } catch (err) {
+    console.warn("[TTS] Gemini Flash TTS failed, falling back to WebSpeech:", err);
+    return playWebSpeech(text, CURATED_VOICES[0], onEnd);
+  }
+}
+
+/**
  * Preview / test a voice sample instantly (from Setup Wizard or Settings).
  */
 export async function previewVoice(
@@ -380,6 +444,13 @@ export async function previewVoice(
   stopTts();
 
   const settings = await getSavedSettings();
+
+  if (voice.provider === "gemini_tts") {
+    const apiKey = customApiKey || settings?.geminiApiKey;
+    if (apiKey) {
+      return playGeminiTts(voice.sampleText, apiKey, onEnd);
+    }
+  }
 
   if (voice.provider === "fish_audio" && voice.fishModelId) {
     const apiKey = customApiKey || settings?.fishAudioApiKey;
@@ -408,11 +479,16 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
   }
 
   const settings = await getSavedSettings();
-  const voiceId = settings?.ttsVoice || "ethan";
+  const voiceId = settings?.ttsVoice || "gemini_flash";
   const elevenKey = settings?.elevenlabsApiKey;
   const fishKey = settings?.fishAudioApiKey;
+  const geminiKey = settings?.geminiApiKey;
 
   const curated = CURATED_VOICES.find((v) => v.id === voiceId) || CURATED_VOICES[0];
+
+  if (curated?.provider === "gemini_tts" && geminiKey) {
+    return playGeminiTts(text, geminiKey, onEnd);
+  }
 
   if (curated?.fishModelId && fishKey) {
     return playFishAudio(text, curated.fishModelId, fishKey, onEnd);
