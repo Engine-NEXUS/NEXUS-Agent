@@ -135,8 +135,14 @@ Intent:`;
   }
 }
 
-function keywordFallback(transcript: string): string {
-  const t = transcript.toLowerCase();
+  // Architecture Mapper intent — e.g. "analyze this repo", "map the codebase", "architecture", "what breaks"
+  if (/\b(analy[sz]e|map|understand|explore|scan|visuali[sz]e)\b/.test(t)
+      && /\b(repo|repository|codebase|project|architecture|dependencies|dependency)\b/.test(t)) {
+    return "analyze_repo";
+  }
+  if (/\b(what breaks|blast radius|impact analysis|consequence)\b/.test(t)) {
+    return "analyze_repo";
+  }
 
   // Deep analysis intent — keywords like "analyse", "analyze", "review", "deep dive"
   // Must match BEFORE the generic github check
@@ -1103,6 +1109,25 @@ export default {
       });
     }
 
+    // ---- STT: Transcribe audio via Workers AI Whisper ----
+    if (path === "/api/transcribe" && method === "POST") {
+      try {
+        const body = await request.json() as { audio_base64?: string };
+        if (!body.audio_base64) return json({ error: "missing audio_base64" }, 400);
+        const binaryStr = atob(body.audio_base64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const whisperResp = await env.AI.run("@cf/openai/whisper", {
+          audio: [...bytes],
+        });
+        return json({ text: (whisperResp as any)?.text || "" });
+      } catch (e) {
+        return json({ error: (e as Error).message, text: "" }, 500);
+      }
+    }
+
     // ---- Main: process transcript ----
     if (path === "/" && method === "POST") {
       return handleTranscript(request, env, json);
@@ -1479,7 +1504,9 @@ async function handleTranscript(
   let replyText: string;
 
   try {
-    if (intent === "github_analyse") {
+    if (intent === "analyze_repo") {
+      replyText = await handleAnalyzeRepo(req, env);
+    } else if (intent === "github_analyse") {
       const token = await getValidGithubToken(env, userId);
       if (!token) {
         replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup to analyse PRs.";
@@ -1518,3 +1545,14 @@ async function handleTranscript(
 
   return json({ request_id: req.request_id, reply_text: replyText, intent });
 }
+
+// ---- Architecture Mapper Intent Handler ----
+
+async function handleAnalyzeRepo(req: NexusRequest, env: Env): Promise<string> {
+  const prompt = `The developer asked: "${req.task.request}".
+Explain concisely that NEXUS is launching the Architecture Mapper to explore the codebase.
+Highlight that NEXUS clusters directories into architectural layers (client, server, data, infra, shared), builds a real AST import dependency graph with cycle & hotspot detection, and runs sub-10ms reverse BFS impact analysis for any file changes. Keep your answer under 3 sentences.`;
+
+  return await summarize(prompt, env);
+}
+

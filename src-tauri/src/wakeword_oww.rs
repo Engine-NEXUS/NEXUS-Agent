@@ -29,11 +29,15 @@
 use tauri::{AppHandle, Runtime};
 
 #[cfg(feature = "mock-wake")]
-pub async fn run<R: Runtime>(_app: AppHandle<R>) -> Result<(), String> {
+pub fn run<R: Runtime>(_app: AppHandle<R>) -> Result<(), String> {
     tracing::info!("wake-word: mock mode (no native listener)");
-    std::future::pending::<()>().await;
-    Ok(())
+    loop {
+        std::thread::park();
+    }
 }
+
+#[cfg(feature = "mock-wake")]
+pub fn set_meeting_state(_state: std::sync::Arc<crate::meeting_detect::MeetingState>) {}
 
 #[cfg(not(feature = "mock-wake"))]
 mod engine {
@@ -311,6 +315,7 @@ mod engine {
         #[cfg(feature = "wakeword-sherpa")]
         pub speaker: Option<crate::voice_profile::SpeakerVerifier>,
         #[cfg(not(feature = "wakeword-sherpa"))]
+        #[allow(dead_code)]
         pub speaker: (),  // placeholder — speaker verification not compiled in default builds
         pub sample_rate: i32,
         pub chunk_buffer: Vec<f32>,
@@ -394,7 +399,7 @@ mod engine {
     }
 
     impl WakeEngine {
-        pub fn new(resource_dir: PathBuf, app_data_dir: PathBuf) -> anyhow::Result<Self> {
+        pub fn new(resource_dir: PathBuf, #[allow(unused_variables)] app_data_dir: PathBuf) -> anyhow::Result<Self> {
             let oww_dir = resolve_oww_dir(&resource_dir).ok_or_else(|| {
                 anyhow::anyhow!(
                     "oww model files not found. Checked resource_dir/oww, \
