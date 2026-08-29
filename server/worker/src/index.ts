@@ -75,6 +75,10 @@ const ANALYSIS_MODEL = "@cf/zai-org/glm-4.7-flash";
 // $0.15/M input, $0.50/M output, 1M context, multimodal
 const DEEP_ANALYSIS_MODEL = "@cf/zai-org/glm-5.3-flash";
 
+// Repo analysis model — FREE on Workers Free plan, 131K context, reasoning
+// Used for rich repository analysis (languages, frameworks, databases, features)
+const REPO_ANALYSIS_MODEL = "@cf/zai-org/glm-4.7-flash";
+
 // Context threshold: if PR context exceeds this, use deep model (131K tokens ≈ 520K chars)
 const FLASH_CONTEXT_LIMIT_CHARS = 520000;
 
@@ -135,13 +139,57 @@ Intent:`;
   }
 }
 
-  // Architecture Mapper intent — e.g. "analyze this repo", "map the codebase", "architecture", "what breaks"
-  if (/\b(analy[sz]e|map|understand|explore|scan|visuali[sz]e)\b/.test(t)
+function keywordFallback(transcript: string): string {
+  const t = transcript.toLowerCase();
+
+  // Fast repo analyse — "analyse owner/repo", "analyze owner/repo"
+  // This is DIFFERENT from the architecture mapper (which uses "analyze THIS repo")
+  // and from PR analysis (which uses "analyse PR #123").
+  // Pattern: "analyse <owner>/<repo>" or "analyse <repo-name>"
+  // Must NOT match: "analyse this repo", "analyse PR", "analyse branch"
+  if (/\b(deep\s+analy[sz]e|deep\s+scan)\b/.test(t)
+      && /\b([a-z0-9_.\-]+\/[a-z0-9_.\-]+|repo|repository)\b/.test(t)) {
+    return "deep_analyse";
+  }
+
+  if (/\b(analy[sz]e)\b/.test(t)
+      && !/\b(this|that|the)\s+repo\b/.test(t)
+      && !/\bpr\s*#?\s*\d+\b/.test(t)
+      && !/\bbranch\b/.test(t)
+      && !/\bpull\s*request\b/.test(t)
+      && !/\barchitecture\b/.test(t)
+      && /\b([a-z0-9_.\-]+\/[a-z0-9_.\-]+|[a-z0-9_\-]+)\b/.test(t)) {
+    // Make sure it's not "analyse the codebase" or similar
+    if (!/\b(codebase|project|architecture|dependencies|dependency)\b/.test(t)) {
+      return "fast_analyse";
+    }
+  }
+
+  // Architecture Mapper intent — e.g. "analyze this repo", "map the codebase",
+  // "create architecture", "build architecture", "show architecture"
+  if (/\b(analy[sz]e|map|understand|explore|scan|visuali[sz]e|create|build|show|generate|make)\b/.test(t)
       && /\b(repo|repository|codebase|project|architecture|dependencies|dependency)\b/.test(t)) {
+    return "analyze_repo";
+  }
+  // Also catch "architecture" alone or "architecture in <repo>" patterns
+  if (/\barchitecture\b/.test(t) && /\b(in|of|for|from)\b/.test(t)) {
     return "analyze_repo";
   }
   if (/\b(what breaks|blast radius|impact analysis|consequence)\b/.test(t)) {
     return "analyze_repo";
+  }
+
+  // GitHub write operations — MUST be checked BEFORE github_analyse
+  // because "merge PR", "close PR", "approve PR" contain keywords that
+  // would otherwise match the analyse intent.
+  if (/\b(merge|approve|close|comment)\b/.test(t)
+      && /\b(pr|pull\s*request|issue)\b/.test(t)) {
+    return "github_write";
+  }
+  if (/\b(create|open)\b/.test(t)
+      && /\b(pr|pull\s*request|issue)\b/.test(t)
+      && !/\b(analy[sz]e|review|deep\s*dive)\b/.test(t)) {
+    return "github_write";
   }
 
   // Deep analysis intent — keywords like "analyse", "analyze", "review", "deep dive"
@@ -164,9 +212,10 @@ Intent:`;
     return "github_analyse";
   }
 
-  if (/\b(pr|pull request|repo|repository|commit|issue|branch|merge|github)\b/.test(t)) return "github";
+  if (/\b(pr|pull request|repo|repository|commit|issue|branch|merge|github|list\s+prs)\b/.test(t)) return "github";
+
   if (/\b(email|inbox|mail|message|gmail|send to)\b/.test(t)) return "gmail";
-  if (/\b(calendar|schedule|meeting|event|appointment|today|tomorrow)\b/.test(t)) return "calendar";
+  if (/\b(calendar|schedule|meeting|event|appointment)\b/.test(t)) return "calendar";
   if (/\b(search|google|look up|find|what is|who is|where is)\b/.test(t)) return "search";
   return "general";
 }
@@ -186,6 +235,26 @@ async function summarize(prompt: string, env: Env, useLarge = true): Promise<str
 }
 
 // ---- D1 credential helpers ----
+
+/**
+ * Convert a GitHub API error status into a user-friendly spoken message.
+ * 401 → "token revoked/expired, reconnect GitHub"
+ * 403 → "permission denied, check OAuth scopes"
+ * 404 → "not found"
+ * other → generic error
+ */
+function githubErrorMessage(status: number, context: string): string {
+  if (status === 401) {
+    return `Your GitHub token has expired or been revoked, sir. Please reconnect GitHub in the NEXUS setup wizard to ${context}.`;
+  }
+  if (status === 403) {
+    return `GitHub denied permission for that action, sir. Your OAuth scopes may not include the required access. Needed: ${context}.`;
+  }
+  if (status === 404) {
+    return `I couldn't find that on GitHub, sir. It may not exist or you don't have access.`;
+  }
+  return `GitHub API error: ${status}`;
+}
 
 async function getCredentialsFromD1(env: Env, userId: string): Promise<{
   google?: { access_token: string; scopes: string; refresh_token?: string; expires_at?: number };
@@ -253,9 +322,78 @@ async function getValidGoogleToken(env: Env, userId: string): Promise<string | n
 
 async function getValidGithubToken(env: Env, userId: string): Promise<string | null> {
   const row = await env.DB.prepare(
-    "SELECT access_token FROM oauth_tokens WHERE user_id = ? AND provider = 'github'"
+    "SELECT access_token, refresh_token, expires_at FROM oauth_tokens WHERE user_id = ? AND provider = 'github'"
   ).bind(userId).first();
-  return row?.access_token as string | null;
+  if (!row) return null;
+
+  const now = Date.now() / 1000;
+  const expiresAt = row.expires_at as number;
+
+  // If expires_at is 0, this is a classic OAuth App token (never expires)
+  // Just return it as-is.
+  if (!expiresAt) {
+    return row.access_token as string;
+  }
+
+  // GitHub App expiring token — refresh if within 5 minutes of expiry
+  if (now > expiresAt - 300 && row.refresh_token) {
+    try {
+      const refreshed = await refreshGithubToken(env, row.refresh_token as string);
+      const newExpiresAt = now + refreshed.expires_in;
+      await env.DB.prepare(
+        "UPDATE oauth_tokens SET access_token = ?, refresh_token = ?, expires_at = ? WHERE user_id = ? AND provider = 'github'"
+      ).bind(refreshed.access_token, refreshed.refresh_token, newExpiresAt, userId).run();
+      tracing.log(`GitHub token refreshed for user ${userId}`);
+      return refreshed.access_token;
+    } catch (err) {
+      // Refresh failed — return old token (might still work briefly)
+      console.error(`GitHub refresh failed: ${(err as Error).message}`);
+      return row.access_token as string;
+    }
+  }
+
+  return row.access_token as string;
+}
+
+/**
+ * Refresh a GitHub App expiring token.
+ * Only works with GitHub Apps that have expiring tokens enabled.
+ * Classic OAuth App tokens don't have refresh tokens.
+ */
+async function refreshGithubToken(env: Env, refreshToken: string): Promise<{
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+}> {
+  const resp = await fetch(GITHUB_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+    },
+    body: JSON.stringify({
+      client_id: env.GITHUB_CLIENT_ID,
+      client_secret: env.GITHUB_CLIENT_SECRET,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`GitHub refresh failed: ${resp.status} ${body}`);
+  }
+
+  const data = await resp.json() as any;
+  if (!data.access_token) {
+    throw new Error(`GitHub refresh returned no token: ${JSON.stringify(data)}`);
+  }
+
+  return {
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    expires_in: data.expires_in || 28800, // GitHub App tokens default to 8 hours
+  };
 }
 
 // ---- GitHub handler ----
@@ -296,7 +434,7 @@ async function handleGitHub(req: NexusRequest, env: Env, token: string): Promise
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}`, { headers });
-      if (!resp.ok) return `I couldn't find PR #${prNum} in ${repo}. Error: ${resp.status}`;
+      if (!resp.ok) return githubErrorMessage(resp.status, `read PR #${prNum} in ${repo}`);
       const pr = await resp.json() as Record<string, unknown>;
       const prInfo = `PR #${pr["number"]}: ${pr["title"]}
 State: ${pr["state"]}, Mergeable: ${pr["mergeable_state"] || "unknown"}
@@ -318,7 +456,7 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=open&per_page=10`, { headers });
-      if (!resp.ok) return `I couldn't fetch PRs from ${repo}. Error: ${resp.status}`;
+      if (!resp.ok) return githubErrorMessage(resp.status, `list PRs in ${repo}`);
       const prs = await resp.json() as Array<Record<string, unknown>>;
       if (prs.length === 0) return `There are no open pull requests in ${repo}.`;
       const prList = prs.map((pr, i) =>
@@ -340,7 +478,7 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNum}`, { headers });
-      if (!resp.ok) return `I couldn't find issue #${issueNum} in ${repo}. Error: ${resp.status}`;
+      if (!resp.ok) return githubErrorMessage(resp.status, `read issue #${issueNum} in ${repo}`);
       const issue = await resp.json() as Record<string, unknown>;
       const issueInfo = `Issue #${issue["number"]}: ${issue["title"]}
 State: ${issue["state"]}
@@ -357,6 +495,252 @@ Body: ${(issue["body"] as string || "").slice(0, 500)}`;
   } catch (err) {
     return `I had trouble reaching GitHub. Error: ${(err as Error).message}`;
   }
+}
+
+// ---- GitHub Write Operations handler ----
+//
+// Handles: create PR, merge PR, close PR, approve PR, comment on PR,
+//          close issue, create issue.
+// Destructive operations (merge, close) include a confirmation step.
+
+async function handleGitHubWrite(req: NexusRequest, env: Env, token: string): Promise<string> {
+  const transcript = req.task.request;
+  const t = transcript.toLowerCase();
+  const headers: Record<string, string> = {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "NEXUS-Worker",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  // Parse repo name from transcript
+  let repo: string | null = null;
+  const repoMatch = transcript.match(/(?:in|from|on|of)\s+([a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+)/i);
+  if (repoMatch) {
+    repo = repoMatch[1];
+  } else {
+    const repoMatch2 = transcript.match(/(?:in|from|on|of)\s+([a-zA-Z0-9_.\-]+)/i);
+    if (repoMatch2) {
+      repo = await resolveRepo(token, repoMatch2[1]);
+    }
+  }
+
+  // ─── MERGE PR ────────────────────────────────────────────────────
+  // "merge PR #123", "merge pull request 123 in owner/repo"
+  if (/\bmerge\b/.test(t) && /\bpr\s*#?\s*\d+\b/.test(t)) {
+    if (!repo) return "Which repository is this PR in? Say something like 'merge PR 123 in owner/repo'.";
+    const prNum = (t.match(/\bpr\s*#?\s*(\d+)\b/) || [])[1];
+    if (!prNum) return "Which PR number should I merge?";
+
+    // Check if confirmation is in the transcript
+    const isConfirmed = /\b(yes|confirm|do it|go ahead|proceed)\b/.test(t);
+
+    if (!isConfirmed) {
+      // First pass — ask for confirmation
+      return `Are you sure you want to merge PR #${prNum} in ${repo}? Say "yes merge PR ${prNum} in ${repo}" to confirm.`;
+    }
+
+    // Confirmed — merge
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}`, { headers });
+      if (!resp.ok) return githubErrorMessage(resp.status, `merge PR #${prNum} in ${repo}`);
+      const pr = await resp.json() as any;
+      if (!pr.mergeable) return `PR #${prNum} is not mergeable. It may have conflicts.`;
+
+      const mergeResp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}/merge`, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          commit_title: pr.title || `Merge PR #${prNum}`,
+          merge_method: "squash",
+        }),
+      });
+
+      if (mergeResp.ok) {
+        return `PR #${prNum} has been merged successfully into ${repo}, sir.`;
+      } else {
+        return githubErrorMessage(mergeResp.status, `merge PR #${prNum} in ${repo}`);
+      }
+    } catch (err) {
+      return `Error merging PR: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── APPROVE PR ──────────────────────────────────────────────────
+  // "approve PR #123", "approve pull request 123"
+  if (/\bapprove\b/.test(t) && /\bpr\s*#?\s*\d+\b/.test(t)) {
+    if (!repo) return "Which repository is this PR in? Say 'approve PR 123 in owner/repo'.";
+    const prNum = (t.match(/\bpr\s*#?\s*(\d+)\b/) || [])[1];
+    if (!prNum) return "Which PR number should I approve?";
+
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}/reviews`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "APPROVE" }),
+      });
+
+      if (resp.ok) {
+        return `PR #${prNum} in ${repo} has been approved, sir.`;
+      } else {
+        return githubErrorMessage(resp.status, `approve PR #${prNum} in ${repo}`);
+      }
+    } catch (err) {
+      return `Error approving PR: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── CLOSE PR ────────────────────────────────────────────────────
+  // "close PR #123"
+  if (/\bclose\b/.test(t) && /\bpr\s*#?\s*\d+\b/.test(t)) {
+    if (!repo) return "Which repository is this PR in? Say 'close PR 123 in owner/repo'.";
+    const prNum = (t.match(/\bpr\s*#?\s*(\d+)\b/) || [])[1];
+    if (!prNum) return "Which PR number should I close?";
+
+    const isConfirmed = /\b(yes|confirm|do it|go ahead|proceed)\b/.test(t);
+    if (!isConfirmed) {
+      return `Are you sure you want to close PR #${prNum} in ${repo}? Say "yes close PR ${prNum} in ${repo}" to confirm.`;
+    }
+
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "closed" }),
+      });
+
+      if (resp.ok) {
+        return `PR #${prNum} in ${repo} has been closed, sir.`;
+      } else {
+        return githubErrorMessage(resp.status, `close PR #${prNum} in ${repo}`);
+      }
+    } catch (err) {
+      return `Error closing PR: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── COMMENT ON PR ───────────────────────────────────────────────
+  // "comment on PR #123 saying <text>"
+  if (/\bcomment\b/.test(t) && /\bpr\s*#?\s*\d+\b/.test(t)) {
+    if (!repo) return "Which repository is this PR in? Say 'comment on PR 123 in owner/repo saying <text>'.";
+    const prNum = (t.match(/\bpr\s*#?\s*(\d+)\b/) || [])[1];
+    if (!prNum) return "Which PR number should I comment on?";
+
+    // Extract comment text after "saying"
+    const sayingMatch = transcript.match(/saying\s+(.+)/i);
+    const commentText = sayingMatch ? sayingMatch[1].trim() : "";
+    if (!commentText) return "What should I say in the comment? Say 'comment on PR 123 saying <text>'.";
+
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/issues/${prNum}/comments`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ body: commentText }),
+      });
+
+      if (resp.ok) {
+        return `Comment posted on PR #${prNum} in ${repo}, sir.`;
+      } else {
+        return githubErrorMessage(resp.status, `comment on PR #${prNum} in ${repo}`);
+      }
+    } catch (err) {
+      return `Error commenting on PR: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── CLOSE ISSUE ─────────────────────────────────────────────────
+  // "close issue #45"
+  if (/\bclose\b/.test(t) && /\bissue\s*#?\s*\d+\b/.test(t)) {
+    if (!repo) return "Which repository is this issue in? Say 'close issue 45 in owner/repo'.";
+    const issueNum = (t.match(/\bissue\s*#?\s*(\d+)\b/) || [])[1];
+    if (!issueNum) return "Which issue number should I close?";
+
+    const isConfirmed = /\b(yes|confirm|do it|go ahead|proceed)\b/.test(t);
+    if (!isConfirmed) {
+      return `Are you sure you want to close issue #${issueNum} in ${repo}? Say "yes close issue ${issueNum} in ${repo}" to confirm.`;
+    }
+
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNum}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ state: "closed" }),
+      });
+
+      if (resp.ok) {
+        return `Issue #${issueNum} in ${repo} has been closed, sir.`;
+      } else {
+        return githubErrorMessage(resp.status, `close issue #${issueNum} in ${repo}`);
+      }
+    } catch (err) {
+      return `Error closing issue: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── CREATE ISSUE ────────────────────────────────────────────────
+  // "create issue titled <title> in owner/repo"
+  if (/\b(create|open)\b/.test(t) && /\bissue\b/.test(t)) {
+    if (!repo) return "Which repository should I create the issue in? Say 'create issue titled <title> in owner/repo'.";
+    const titleMatch = transcript.match(/titled\s+(.+?)(?:\s+in\s+|$)/i);
+    const title = titleMatch ? titleMatch[1].trim() : "";
+    if (!title) return "What should the issue title be? Say 'create issue titled <title> in owner/repo'.";
+
+    try {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+
+      if (resp.ok) {
+        const issue = await resp.json() as any;
+        return `Issue #${issue.number} created in ${repo} with title "${title}", sir.`;
+      } else {
+        return githubErrorMessage(resp.status, `create issue in ${repo}`);
+      }
+    } catch (err) {
+      return `Error creating issue: ${(err as Error).message}`;
+    }
+  }
+
+  // ─── CREATE PR ───────────────────────────────────────────────────
+  // "create a PR titled <title> from <branch> in owner/repo"
+  if (/\b(create|open)\b/.test(t) && /\bpr|pull\s*request\b/.test(t)) {
+    if (!repo) return "Which repository should I create the PR in? Say 'create PR titled <title> from <branch> in owner/repo'.";
+    const titleMatch = transcript.match(/titled\s+(.+?)(?:\s+from\s+|\s+in\s+)/i);
+    const title = titleMatch ? titleMatch[1].trim() : "";
+    if (!title) return "What should the PR title be? Say 'create PR titled <title> from <branch> in owner/repo'.";
+
+    // Extract source branch
+    const branchMatch = transcript.match(/from\s+([a-zA-Z0-9_\-\/]+)/i);
+    const head = branchMatch ? branchMatch[1] : "";
+    if (!head) return "Which branch should I create the PR from? Say 'create PR titled <title> from <branch> in owner/repo'.";
+
+    // Get default branch for base
+    try {
+      const metaResp = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+      if (!metaResp.ok) return githubErrorMessage(metaResp.status, `create PR in ${repo}`);
+      const meta = await metaResp.json() as any;
+      const base = meta.default_branch || "main";
+
+      const prResp = await fetch(`https://api.github.com/repos/${repo}/pulls`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ title, head, base }),
+      });
+
+      if (prResp.ok) {
+        const pr = await prResp.json() as any;
+        return `PR #${pr.number} created in ${repo} from ${head} to ${base}, sir. Title: "${title}".`;
+      } else {
+        return githubErrorMessage(prResp.status, `create PR in ${repo}`);
+      }
+    } catch (err) {
+      return `Error creating PR: ${(err as Error).message}`;
+    }
+  }
+
+  return "I can help you with GitHub write operations. Try saying 'merge PR 123 in owner/repo', 'approve PR 123', 'close issue 45', 'create issue titled <title> in owner/repo', or 'create PR titled <title> from <branch> in owner/repo'.";
 }
 
 // ---- GitHub deep analysis handler (GLM-5.2) ----
@@ -547,6 +931,7 @@ async function fetchPRContext(
   const prResp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, { headers });
   if (!prResp.ok) {
     if (prResp.status === 404) return `__ERROR__: PR #${prNumber} not found in ${repo}.`;
+    if (prResp.status === 401) return `__ERROR__: ${githubErrorMessage(401, `analyse PR #${prNumber}`)}`;
     return `__ERROR__: GitHub API returned ${prResp.status} for PR #${prNumber}.`;
   }
   const pr = await prResp.json() as Record<string, unknown>;
@@ -697,6 +1082,7 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
       };
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=all&per_page=1&sort=created&direction=desc`, { headers });
       if (!resp.ok) {
+        if (resp.status === 401) return githubErrorMessage(401, `find PRs in ${repo}`);
         return `I couldn't find any pull requests in ${repo}. Error: ${resp.status}. Try saying "analyse PR 24 in ${repo}".`;
       }
       const prs = await resp.json() as Array<Record<string, unknown>>;
@@ -1080,6 +1466,15 @@ export default {
       return handleOAuthStatus(url, env, json);
     }
 
+    // ---- OAuth: get github token (for architect) ----
+    if (path === "/oauth/github-token" && method === "GET") {
+      const userId = url.searchParams.get("user_id") || "";
+      if (!userId) return json({ error: "user_id required" }, 400);
+      const token = await getValidGithubToken(env, userId);
+      if (!token) return json({ error: "GitHub not connected" }, 404);
+      return json({ token });
+    }
+
     // ---- OAuth: disconnect ----
     if (path === "/oauth/disconnect" && method === "DELETE") {
       return handleOAuthDisconnect(request, env, json);
@@ -1278,11 +1673,12 @@ async function handleOAuthBrowserCallback(
 
     // Store in D1
     const now = Date.now() / 1000;
+    const expiresAt = tokens.expires_in ? now + tokens.expires_in : 0;
     await env.DB.prepare(
       "INSERT OR REPLACE INTO oauth_tokens (user_id, provider, access_token, refresh_token, expires_at, scopes, account_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(
       state, "github", tokens.access_token,
-      null, 0, GITHUB_SCOPES, accountId, now
+      tokens.refresh_token || null, expiresAt, GITHUB_SCOPES, accountId, now
     ).run();
 
     return new Response(
@@ -1497,15 +1893,36 @@ async function handleTranscript(
   const userId = req.requester?.id || "";
   if (!userId) return json({ error: "missing requester.id" }, 400);
 
-  // 1. Classify intent
-  const intent = await classifyIntent(req.task.request, env);
+  // 1. Classify intent — but allow explicit intent override from the task
+  // (e.g. architect sidebar sends intent="impact_narration" directly)
+  const explicitIntent = (req.task as any)?.intent;
+  const intent = explicitIntent || await classifyIntent(req.task.request, env);
 
   // 2. Get credentials from D1 based on intent
   let replyText: string;
+  let analysisData: any = null;
 
   try {
     if (intent === "analyze_repo") {
       replyText = await handleAnalyzeRepo(req, env);
+    } else if (intent === "fast_analyse") {
+      const token = await getValidGithubToken(env, userId);
+      if (!token) {
+        replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup to analyse repositories.";
+      } else {
+        const result = await handleFastAnalyse(req, env, token);
+        replyText = result.text;
+        if (result.analysis) {
+          analysisData = result.analysis;
+        }
+      }
+    } else if (intent === "deep_analyse") {
+      // Deep analyse triggers the client-side architect window with clone + AST
+      replyText = "Opening the architecture mapper for a deep scan, sir. This will clone the repository and build a full dependency graph. It may take 30 to 60 seconds.";
+    } else if (intent === "phase1_enrich") {
+      replyText = await handlePhase1Enrich(req, env);
+    } else if (intent === "impact_narration") {
+      replyText = await handleImpactNarration(req, env);
     } else if (intent === "github_analyse") {
       const token = await getValidGithubToken(env, userId);
       if (!token) {
@@ -1519,6 +1936,13 @@ async function handleTranscript(
         replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup.";
       } else {
         replyText = await handleGitHub(req, env, token);
+      }
+    } else if (intent === "github_write") {
+      const token = await getValidGithubToken(env, userId);
+      if (!token) {
+        replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup.";
+      } else {
+        replyText = await handleGitHubWrite(req, env, token);
       }
     } else if (intent === "gmail") {
       const token = await getValidGoogleToken(env, userId);
@@ -1543,15 +1967,578 @@ async function handleTranscript(
     replyText = `I ran into an error processing that request: ${(err as Error).message}`;
   }
 
+  if (analysisData) {
+    return json({ request_id: req.request_id, reply_text: replyText, intent, analysis: analysisData });
+  }
   return json({ request_id: req.request_id, reply_text: replyText, intent });
 }
 
 // ---- Architecture Mapper Intent Handler ----
 
 async function handleAnalyzeRepo(req: NexusRequest, env: Env): Promise<string> {
-  const prompt = `The developer asked: "${req.task.request}".
-Explain concisely that NEXUS is launching the Architecture Mapper to explore the codebase.
-Highlight that NEXUS clusters directories into architectural layers (client, server, data, infra, shared), builds a real AST import dependency graph with cycle & hotspot detection, and runs sub-10ms reverse BFS impact analysis for any file changes. Keep your answer under 3 sentences.`;
+  // The architect window is opened client-side by wsBridge when it detects
+  // this is an architect query. The Worker just returns a short spoken
+  // confirmation that NEXUS says aloud while the architect window loads.
+  return "Opening the architecture mapper, sir. I'll analyze the repository structure, build a real dependency graph, and have it ready for you to explore.";
+}
+
+// ---- Fast Repo Analyse (sidebar, no clone) ----
+//
+// "NEXUS, analyse eesh264/congi" → uses GitHub OAuth token to fetch
+// repo metadata + file tree + key file contents + languages, then uses
+// GLM-4.7-flash (free) to generate a rich analysis. Shows in the sidebar
+// with pie charts for languages and frameworks. Works with both public
+// and private repos (using the user's token).
+//
+// Returns a structured object with both spoken text and analysis data.
+
+interface RepoAnalysis {
+  repo: string;
+  visibility: string;
+  description: string;
+  stars: number;
+  forks: number;
+  totalFiles: number;
+  languages: { name: string; bytes: number; percentage: number }[];
+  frameworks: { name: string; category: string }[];
+  databases: { name: string; evidence: string }[];
+  features: string[];
+  tests: boolean;
+  ci: string;
+  docker: boolean;
+  architecture: string;
+  defaultBranch: string;
+}
+
+async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Promise<{ text: string; analysis: RepoAnalysis | null }> {
+  const transcript = req.task.request;
+  const userId = req.requester.id;
+
+  // Parse repo name from transcript: "analyse owner/repo" or "analyse repo"
+  const analyseMatch = transcript.match(/analy[sz]e\s+([a-zA-Z0-9_.\-]+\/[a-zA-Z0-9_.\-]+)/i);
+  let repoName: string | null = null;
+
+  if (analyseMatch) {
+    repoName = analyseMatch[1];
+  } else {
+    const singleMatch = transcript.match(/analy[sz]e\s+([a-zA-Z0-9_.\-]+)/i);
+    if (singleMatch) {
+      repoName = singleMatch[1];
+    }
+  }
+
+  if (!repoName) {
+    return { text: "Which repository would you like me to analyse? Say something like 'analyse owner/repo'.", analysis: null };
+  }
+
+  const authHeaders: Record<string, string> = {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "NEXUS-Worker",
+  };
+  const noAuthHeaders: Record<string, string> = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "NEXUS-Worker",
+  };
+
+  // Resolve repo name (if no owner/, search user's repos)
+  let fullRepo = repoName;
+  if (!repoName.includes("/")) {
+    const resolved = await resolveRepo(token, repoName);
+    if (!resolved) {
+      return {
+        text: `I couldn't find a repository matching "${repoName}" in your GitHub account. Your GitHub token may have expired — please reconnect GitHub in the NEXUS setup. Alternatively, specify the full name like "analyse owner/${repoName}".`,
+        analysis: null,
+      };
+    }
+    fullRepo = resolved;
+  }
+
+  try {
+    // ─── Step 1: Fetch repo metadata (try with token, fall back to no auth) ─
+    let metaResp = await fetch(`https://api.github.com/repos/${fullRepo}`, { headers: authHeaders });
+    let usingAuth = true;
+    if (metaResp.status === 401) {
+      metaResp = await fetch(`https://api.github.com/repos/${fullRepo}`, { headers: noAuthHeaders });
+      usingAuth = false;
+    }
+
+    if (!metaResp.ok) {
+      if (metaResp.status === 404) {
+        return {
+          text: `I couldn't find the repository "${fullRepo}", sir. It might not exist, or it's private and your GitHub token has been revoked. Please reconnect GitHub in the NEXUS setup wizard.`,
+          analysis: null,
+        };
+      }
+      return { text: githubErrorMessage(metaResp.status, `analyse ${fullRepo}`), analysis: null };
+    }
+
+    const meta = await metaResp.json() as Record<string, any>;
+    const isPrivate = meta.private === true;
+    const description = meta.description || "No description provided.";
+    const language = meta.language || "Unknown";
+    const defaultBranch = meta.default_branch || "main";
+    const stars = meta.stargazers_count || 0;
+    const forks = meta.forks_count || 0;
+
+    const reqHeaders = usingAuth ? authHeaders : noAuthHeaders;
+
+    // ─── Step 2: Fetch file tree, languages, and topics in parallel ──────
+    const [treeResp, langResp, topicsResp] = await Promise.all([
+      fetch(`https://api.github.com/repos/${fullRepo}/git/trees/HEAD?recursive=1`, { headers: reqHeaders }),
+      fetch(`https://api.github.com/repos/${fullRepo}/languages`, { headers: reqHeaders }),
+      fetch(`https://api.github.com/repos/${fullRepo}/topics`, { headers: { ...reqHeaders, "Accept": "application/vnd.github.mercy-preview+json" } }),
+    ]);
+
+    let filePaths: string[] = [];
+    if (treeResp.ok) {
+      const tree = await treeResp.json() as Record<string, any>;
+      if (Array.isArray(tree.tree)) {
+        filePaths = tree.tree
+          .filter((item: any) => item.type === "blob")
+          .map((item: any) => item.path as string);
+      }
+    }
+
+    // Language byte counts from GitHub API
+    let languages: { name: string; bytes: number; percentage: number }[] = [];
+    if (langResp.ok) {
+      const langData = await langResp.json() as Record<string, number>;
+      const totalBytes = Object.values(langData).reduce((a, b) => a + b, 0);
+      languages = Object.entries(langData)
+        .map(([name, bytes]) => ({
+          name,
+          bytes,
+          percentage: totalBytes > 0 ? Math.round((bytes / totalBytes) * 1000) / 10 : 0,
+        }))
+        .sort((a, b) => b.bytes - a.bytes);
+    }
+
+    // Topics
+    let topics: string[] = [];
+    if (topicsResp.ok) {
+      const topicsData = await topicsResp.json() as Record<string, any>;
+      topics = Array.isArray(topicsData.names) ? topicsData.names : [];
+    }
+
+    const totalFiles = filePaths.length;
+
+    // ─── Step 3: Fetch key file contents ────────────────────────────
+    const keyFilePatterns = [
+      "README.md", "package.json", "Cargo.toml", "pyproject.toml",
+      "requirements.txt", "go.mod", "tsconfig.json", "vite.config.ts",
+      "Dockerfile", "docker-compose.yml", ".github/workflows/ci.yml",
+      "src/main.tsx", "src/main.ts", "src/main.rs", "src/lib.rs",
+      "main.go", "app.py", "src/app.py",
+    ];
+
+    const fileSet = new Set(filePaths);
+    const filesToFetch = keyFilePatterns.filter(f => fileSet.has(f)).slice(0, 8);
+
+    const keyFileResults = await Promise.all(
+      filesToFetch.map(async (path) => {
+        try {
+          const resp = await fetch(
+            `https://api.github.com/repos/${fullRepo}/contents/${path}`,
+            { headers: reqHeaders }
+          );
+          if (!resp.ok) return null;
+          const data = await resp.json() as Record<string, any>;
+          const size = data.size || 0;
+          if (size > 50000) return { path, content: `[File too large: ${Math.round(size/1024)}KB]` };
+          const encoded = data.content || "";
+          const decoded = atob(encoded.replace(/\n/g, "").replace(/\r/g, ""));
+          const content = decoded.length > 10000 ? decoded.substring(0, 10000) + "\n...[truncated]" : decoded;
+          return { path, content };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    const keyFiles = keyFileResults.filter((f): f is {path: string, content: string} => f !== null);
+
+    // ─── Step 4: Detect tech stack ──────────────────────────────────
+    const frameworks: { name: string; category: string }[] = [];
+    const databases: { name: string; evidence: string }[] = [];
+    let buildTool = "unknown";
+    const hasTests = filePaths.some(p => /test|spec|__tests__/i.test(p));
+    const hasCI = filePaths.some(p => p.includes(".github/workflows"));
+    const hasDocker = filePaths.some(p => /dockerfile|docker-compose/i.test(p));
+
+    // Database detection patterns
+    const dbPatterns: Record<string, string[]> = {
+      "MongoDB": ["mongoose", "mongodb", "@prisma/client", "mongo"],
+      "PostgreSQL": ["pg", "postgres", "psycopg2", "sqlalchemy", "prisma", "diesel", "sqlx", "gorm", "pgx"],
+      "MySQL": ["mysql2", "mysql", "sequelize", "typeorm", "go-sql-driver"],
+      "Redis": ["redis", "ioredis", "bull", "sidekiq", "celery"],
+      "SQLite": ["sqlite", "better-sqlite3", "sql.js"],
+      "Supabase": ["supabase", "@supabase/supabase-js"],
+      "Firebase": ["firebase", "firestore", "@firebase"],
+      "Prisma": ["prisma", "@prisma/client"],
+      "Drizzle": ["drizzle-orm", "drizzle-kit"],
+    };
+
+    for (const kf of keyFiles) {
+      if (kf.path === "package.json") {
+        try {
+          const pkg = JSON.parse(kf.content);
+          const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+          // Frameworks
+          if (deps.next) frameworks.push({ name: "Next.js", category: "frontend" });
+          if (deps.react) frameworks.push({ name: "React", category: "frontend" });
+          if (deps.vue) frameworks.push({ name: "Vue", category: "frontend" });
+          if (deps.svelte) frameworks.push({ name: "Svelte", category: "frontend" });
+          if (deps.express) frameworks.push({ name: "Express", category: "backend" });
+          if (deps.fastify) frameworks.push({ name: "Fastify", category: "backend" });
+          if (deps.nestjs || deps["@nestjs/core"]) frameworks.push({ name: "NestJS", category: "backend" });
+          if (deps["@tauri-apps/api"]) frameworks.push({ name: "Tauri", category: "desktop" });
+          if (deps.electron) frameworks.push({ name: "Electron", category: "desktop" });
+          if (deps.tailwindcss) frameworks.push({ name: "Tailwind CSS", category: "styling" });
+          if (deps.styled) frameworks.push({ name: "Styled Components", category: "styling" });
+          if (deps.redux || deps["@reduxjs/toolkit"]) frameworks.push({ name: "Redux", category: "state" });
+          if (deps.zustand) frameworks.push({ name: "Zustand", category: "state" });
+          if (deps.jest) frameworks.push({ name: "Jest", category: "testing" });
+          if (deps.vitest) frameworks.push({ name: "Vitest", category: "testing" });
+          if (deps["@testing-library/react"]) frameworks.push({ name: "Testing Library", category: "testing" });
+          if (deps.vite || pkg.devDependencies?.vite) { frameworks.push({ name: "Vite", category: "build" }); buildTool = "Vite"; }
+          if (deps.webpack || pkg.devDependencies?.webpack) { buildTool = "Webpack"; frameworks.push({ name: "Webpack", category: "build" }); }
+          if (deps.typescript) frameworks.push({ name: "TypeScript", category: "language" });
+          // Databases
+          for (const [dbName, patterns] of Object.entries(dbPatterns)) {
+            if (patterns.some(p => deps[p] || deps[`@${p}`])) {
+              if (!databases.find(d => d.name === dbName)) {
+                databases.push({ name: dbName, evidence: `${p} in package.json` });
+              }
+            }
+          }
+        } catch {}
+      } else if (kf.path === "Cargo.toml") {
+        frameworks.push({ name: "Rust", category: "language" });
+        if (kf.content.includes("tauri")) frameworks.push({ name: "Tauri", category: "desktop" });
+        else if (kf.content.includes("actix")) frameworks.push({ name: "Actix Web", category: "backend" });
+        else if (kf.content.includes("axum")) frameworks.push({ name: "Axum", category: "backend" });
+        else if (kf.content.includes("rocket")) frameworks.push({ name: "Rocket", category: "backend" });
+        if (kf.content.includes("tokio")) frameworks.push({ name: "Tokio", category: "runtime" });
+        if (kf.content.includes("serde")) frameworks.push({ name: "Serde", category: "serialization" });
+        buildTool = "cargo";
+        // Databases
+        for (const [dbName, patterns] of Object.entries(dbPatterns)) {
+          if (patterns.some(p => kf.content.includes(p))) {
+            if (!databases.find(d => d.name === dbName)) {
+              databases.push({ name: dbName, evidence: `${p} in Cargo.toml` });
+            }
+          }
+        }
+      } else if (kf.path === "pyproject.toml" || kf.path === "requirements.txt") {
+        if (kf.content.includes("fastapi")) frameworks.push({ name: "FastAPI", category: "backend" });
+        if (kf.content.includes("flask")) frameworks.push({ name: "Flask", category: "backend" });
+        if (kf.content.includes("django")) frameworks.push({ name: "Django", category: "backend" });
+        if (kf.content.includes("streamlit")) frameworks.push({ name: "Streamlit", category: "frontend" });
+        if (kf.content.includes("pytest")) frameworks.push({ name: "pytest", category: "testing" });
+        buildTool = kf.path === "pyproject.toml" ? "poetry" : "pip";
+        for (const [dbName, patterns] of Object.entries(dbPatterns)) {
+          if (patterns.some(p => kf.content.includes(p))) {
+            if (!databases.find(d => d.name === dbName)) {
+              databases.push({ name: dbName, evidence: `${p} in ${kf.path}` });
+            }
+          }
+        }
+      } else if (kf.path === "go.mod") {
+        frameworks.push({ name: "Go", category: "language" });
+        if (kf.content.includes("gin-gonic")) frameworks.push({ name: "Gin", category: "backend" });
+        if (kf.content.includes("fiber")) frameworks.push({ name: "Fiber", category: "backend" });
+        if (kf.content.includes("echo")) frameworks.push({ name: "Echo", category: "backend" });
+        buildTool = "go";
+        for (const [dbName, patterns] of Object.entries(dbPatterns)) {
+          if (patterns.some(p => kf.content.includes(p))) {
+            if (!databases.find(d => d.name === dbName)) {
+              databases.push({ name: dbName, evidence: `${p} in go.mod` });
+            }
+          }
+        }
+      } else if (kf.path === "docker-compose.yml") {
+        // Detect database services in docker-compose
+        const content = kf.content.toLowerCase();
+        if (content.includes("postgres") || content.includes("postgresql")) {
+          if (!databases.find(d => d.name === "PostgreSQL")) databases.push({ name: "PostgreSQL", evidence: "docker-compose.yml" });
+        }
+        if (content.includes("mysql") || content.includes("mariadb")) {
+          if (!databases.find(d => d.name === "MySQL")) databases.push({ name: "MySQL", evidence: "docker-compose.yml" });
+        }
+        if (content.includes("redis")) {
+          if (!databases.find(d => d.name === "Redis")) databases.push({ name: "Redis", evidence: "docker-compose.yml" });
+        }
+        if (content.includes("mongo")) {
+          if (!databases.find(d => d.name === "MongoDB")) databases.push({ name: "MongoDB", evidence: "docker-compose.yml" });
+        }
+      }
+    }
+
+    // Check for Prisma schema
+    if (filePaths.some(p => p.includes("prisma/schema.prisma"))) {
+      if (!databases.find(d => d.name === "Prisma")) {
+        databases.push({ name: "Prisma", evidence: "prisma/schema.prisma" });
+      }
+    }
+
+    // ─── Step 5: Extract features from README ───────────────────────
+    let features: string[] = [];
+    const readme = keyFiles.find(kf => kf.path === "README.md");
+    if (readme) {
+      // Extract bullet points from Features/Features section
+      const lines = readme.content.split("\n");
+      let inFeaturesSection = false;
+      for (const line of lines) {
+        const headingMatch = line.match(/^#+\s*(features?|key features?|what it does|capabilities)/i);
+        if (headingMatch) {
+          inFeaturesSection = true;
+          continue;
+        }
+        if (inFeaturesSection) {
+          // Stop at next heading
+          if (/^#+\s/.test(line)) {
+            inFeaturesSection = false;
+            continue;
+          }
+          // Extract bullet points
+          const bulletMatch = line.match(/^\s*[-*+]\s+(.+)/);
+          if (bulletMatch) {
+            const feature = bulletMatch[1].replace(/\*\*(.+?)\*\*/g, "$1").replace(/\[(.+?)\]\(.+?\)/g, "$1").trim();
+            if (feature.length > 3 && feature.length < 100) {
+              features.push(feature);
+            }
+          }
+        }
+      }
+    }
+    // Add topics as features if we don't have enough
+    if (features.length < 3 && topics.length > 0) {
+      features = topics.slice(0, 8).map(t => t.replace(/-/g, " "));
+    }
+
+    // ─── Step 6: Build LLM prompt for GLM-4.7-flash ──────────────────
+    const privacyNote = isPrivate ? " (private repository)" : " (public repository)";
+    const fileTreeSample = filePaths.slice(0, 200).join("\n");
+    const keyFilesText = keyFiles.map(kf => `--- ${kf.path} ---\n${kf.content}`).join("\n\n");
+    const langText = languages.map(l => `${l.name}: ${l.percentage}%`).join(", ");
+    const fwText = frameworks.map(f => `${f.name} (${f.category})`).join(", ");
+    const dbText = databases.map(d => `${d.name} (${d.evidence})`).join(", ");
+
+    const prompt = `You are NEXUS, an AI assistant. The user asked you to analyse a GitHub repository. Provide a natural spoken summary.
+
+Repository: ${fullRepo}${privacyNote}
+Description: ${description}
+Languages: ${langText}
+Frameworks: ${fwText}
+Databases: ${dbText}
+Stars: ${stars} | Forks: ${forks}
+Total files: ${totalFiles}
+Build tool: ${buildTool}
+Tests: ${hasTests ? "yes" : "no"} | CI: ${hasCI ? "yes" : "no"} | Docker: ${hasDocker ? "yes" : "no"}
+Topics: ${topics.join(", ")}
+
+File tree (first 200 files):
+${fileTreeSample}
+
+Key file contents:
+${keyFilesText}
+
+Write a natural spoken summary (max 100 words) covering:
+1. What the project does
+2. Tech stack (languages, frameworks, databases)
+3. Architecture overview
+4. Notable aspects (tests, CI, Docker, scale)
+
+Speak naturally as NEXUS addressing the user as "sir". Start with "Ok sir, " for public repos or "Ok sir, I've accessed your private repository. " for private repos. Output ONLY the spoken summary text — no JSON, no reasoning, no markdown, no headers.`;
+
+    // ─── Step 7: Generate analysis via GLM-4.7-flash ─────────────────
+    let spokenSummary: string;
+    let architectureSummary = "";
+
+    try {
+      // Use mistral for spoken summary — no reasoning leakage, clean output
+      const response = await env.AI.run(SUMMARY_MODEL as any, {
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 300,
+      });
+      spokenSummary = extractText(response);
+      // Clean up: if the model includes reasoning, take only from "Ok sir"
+      if (spokenSummary.includes("Ok sir")) {
+        const idx = spokenSummary.indexOf("Ok sir");
+        spokenSummary = spokenSummary.substring(idx);
+      }
+      // If no "Ok sir" prefix, add it
+      if (!spokenSummary.startsWith("Ok sir")) {
+        spokenSummary = `Ok sir, ${spokenSummary}`;
+      }
+    } catch {
+      // Fallback: heuristic summary without LLM
+      spokenSummary = `Ok sir, ${fullRepo} is a ${language} repository${privacyNote}. ${description} It has ${totalFiles} files, built with ${frameworks.map(f => f.name).join(", ") || "unknown framework"} and ${buildTool}.`;
+      if (databases.length > 0) spokenSummary += ` Uses ${databases.map(d => d.name).join(" and ")} for data storage.`;
+      if (!hasTests) spokenSummary += " No tests were found.";
+      if (!hasCI) spokenSummary += " No CI/CD pipelines detected.";
+      if (!hasDocker) spokenSummary += " No Docker setup found.";
+    }
+
+    // Use extracted features from README + topics as the feature list
+    const finalFeatures = features.length > 0 ? features : topics.slice(0, 8).map(t => t.replace(/-/g, " "));
+
+    // Build architecture summary if LLM didn't provide one
+    if (!architectureSummary) {
+      const parts: string[] = [];
+      const frontend = frameworks.filter(f => f.category === "frontend").map(f => f.name);
+      const backend = frameworks.filter(f => f.category === "backend").map(f => f.name);
+      if (frontend.length) parts.push(`Frontend (${frontend.join("/")})`);
+      if (backend.length) parts.push(`Backend (${backend.join("/")})`);
+      if (databases.length) parts.push(`Database (${databases.map(d => d.name).join("/")})`);
+      architectureSummary = parts.join(" + ") || `${language} application`;
+    }
+
+    // ─── Step 8: Build structured analysis object ────────────────────
+    const analysis: RepoAnalysis = {
+      repo: fullRepo,
+      visibility: isPrivate ? "private" : "public",
+      description,
+      stars,
+      forks,
+      totalFiles,
+      languages,
+      frameworks: frameworks.length > 0 ? frameworks : [{ name: language, category: "language" }],
+      databases,
+      features: finalFeatures,
+      tests: hasTests,
+      ci: hasCI ? "GitHub Actions" : "none",
+      docker: hasDocker,
+      architecture: architectureSummary,
+      defaultBranch,
+    };
+
+    return { text: spokenSummary, analysis };
+
+  } catch (err) {
+    return { text: `I ran into an error analysing ${fullRepo}: ${(err as Error).message}`, analysis: null };
+  }
+}
+
+// ---- Architecture Mapper: Phase 1 LLM Enrichment ----
+// Called by the Rust client AFTER the instant heuristic-based Phase 1 diagram
+// is already shown to the user. The LLM enriches the generic layer labels
+// (e.g. "Client / Presentation Layer") with repo-specific intelligence
+// (e.g. "Next.js App Router — React 19 SSR pages") and writes a real summary.
+// This never blocks first paint — it streams in ~2-3s after the diagram appears.
+
+async function handlePhase1Enrich(req: NexusRequest, env: Env): Promise<string> {
+  const payload = req.task as any;
+  const owner: string = payload.owner || "";
+  const repo: string = payload.repo || "";
+  const primary_language: string = payload.primary_language || "TypeScript";
+  const description: string = payload.description || "";
+  const total_files: number = payload.total_files || 0;
+
+  // The Rust heuristic layers — the LLM rewrites labels/tech_stack per layer
+  const layers: Array<{
+    id: string; label: string; layer_type: string;
+    dirs: string[]; tech_stack: string; file_count: number;
+    sample_files: string[];
+  }> = Array.isArray(payload.layers) ? payload.layers : [];
+
+  // Top file paths (capped to keep prompt small — the LLM only needs
+  // enough to infer the tech stack and naming conventions)
+  const file_paths: string[] = Array.isArray(payload.file_paths)
+    ? payload.file_paths.slice(0, 300)
+    : [];
+
+  const layersStr = layers.map(l =>
+    `  - id=${l.id} type=${l.layer_type} files=${l.file_count} ` +
+    `dirs=[${l.dirs.join(", ")}] samples=[${l.sample_files.slice(0, 3).join(", ")}]`
+  ).join("\n");
+
+  const filesStr = file_paths.slice(0, 200).join("\n");
+
+  const prompt = `You are a senior software architect. Analyze the repository ${owner}/${repo}.
+
+Repository metadata:
+  Language: ${primary_language}
+  Description: ${description}
+  Total files: ${total_files}
+
+Heuristic architectural layers (from static file-tree clustering):
+${layersStr}
+
+Sample file paths from the repository:
+${filesStr}
+
+For each layer, write a SHORT repo-specific label (max 60 chars) that names the
+actual technology or framework used, not a generic category. For example:
+  - "Next.js App Router (React 19)" instead of "Client / Presentation Layer"
+  - "tRPC API Routes + Edge Middleware" instead of "Server / API Services"
+  - "Prisma ORM + Postgres Migrations" instead of "Data & State Management"
+
+Also write a 1-2 sentence plain-English summary of what this repository IS and
+does (not just its structure).
+
+Return STRICT JSON only, no markdown fences:
+{
+  "summary": "<1-2 sentence repo-specific summary>",
+  "layers": [
+    { "id": "<same id as input>", "label": "<repo-specific label>", "tech_stack": "<specific tech>" }
+  ]
+}`;
+
+  try {
+    const response = await env.AI.run(SUMMARY_MODEL as any, {
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 500,
+    });
+    const text = extractText(response) || "";
+    // Extract JSON from the response (handle markdown fences if present)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return jsonMatch[0];
+    }
+    // Fallback: return the raw text — the Rust side will handle gracefully
+    return JSON.stringify({ summary: text.slice(0, 200), layers: [] });
+  } catch {
+    return JSON.stringify({ summary: "", layers: [] });
+  }
+}
+
+// ---- Architecture Mapper: LLM Impact Narration ----
+// Called by the architect sidebar to get an LLM explanation of a reverse BFS
+// impact result. The graph algorithm discovers affected files + paths; the
+// LLM narrates WHY each path matters in plain English.
+
+async function handleImpactNarration(req: NexusRequest, env: Env): Promise<string> {
+  const payload = req.task as any;
+  const target_file: string = payload.target_file || "unknown";
+  const affected_files: string[] = Array.isArray(payload.affected_files) ? payload.affected_files : [];
+  const dependency_paths: string[][] = Array.isArray(payload.dependency_paths)
+    ? payload.dependency_paths.map((p: any) => Array.isArray(p) ? p.map(String) : [String(p)])
+    : [];
+  const direct_count: number = payload.direct_count || 0;
+  const transitive_count: number = payload.transitive_count || 0;
+  const test_files: string[] = Array.isArray(payload.test_files) ? payload.test_files : [];
+  const repo: string = payload.repo || "unknown";
+
+  const pathsStr = dependency_paths.slice(0, 5).map((p) => p.join(" → ")).join("\n  ");
+  const affectedStr = affected_files.slice(0, 10).join(", ");
+
+  const prompt = `You are a senior software architect analyzing the impact of changing a file in the ${repo} repository.
+
+The static dependency graph analysis found:
+- Target file: ${target_file}
+- Direct dependents (depth 1): ${direct_count}
+- Transitive dependents (depth 2+): ${transitive_count}
+- Test files affected: ${test_files.length}
+- Critical dependency paths (target → root):
+  ${pathsStr}
+- Affected files: ${affectedStr}
+
+Explain in plain English (under 150 words) what the developer should be careful about.
+Focus on PRODUCTION RISK, not file count. Be specific about the most dangerous path.
+If there are test files, note whether they provide adequate coverage.
+Do NOT list every file — focus on the highest-risk path and why it matters.`;
 
   return await summarize(prompt, env);
 }

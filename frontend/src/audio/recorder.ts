@@ -70,14 +70,16 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
 function isLongRunningQuery(transcript: string): boolean {
   const t = transcript.toLowerCase();
   // PR analysis: "analyse PR 5 in servx", "review PR 3", "analyse the pull request"
-  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|review|deep\s*dive|critique|evaluate|assess|inspect|examine)\b/.test(t);
+  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|review|deep\s*dive|critique|evaluate|assess|inspect|examine|map|understand|explore|create|build|show|generate)\b/.test(t);
   const hasPR = /\b(pr|pull\s*request)\b/.test(t);
-  const hasRepo = /\b(repo|repository)\b/.test(t);
+  const hasRepo = /\b(repo|repository|codebase|project|architecture|code)\b/.test(t);
   // Also catch "PR <number>" patterns even without "analyse" (STT may mishear)
   const hasPRNumber = /\bpr\s*#?\s*\d+\b/.test(t);
   // Branch analysis: "analyse branch X", "analyse the branch X"
   const hasBranch = /\bbranch\b/.test(t);
-  return (hasAnalyse && (hasPR || hasRepo || hasBranch)) || hasPRNumber;
+  // Architecture mapper: "analyze this repo", "map the codebase", "create architecture in servx"
+  const isArchitectQuery = (hasAnalyse && hasRepo) || (/\barchitecture\b/.test(t) && /\b(in|of|for|from)\b/.test(t));
+  return (hasAnalyse && (hasPR || hasRepo || hasBranch)) || hasPRNumber || isArchitectQuery;
 }
 
 /**
@@ -183,17 +185,17 @@ function correctSttTranscript(transcript: string): string {
 
 /**
  * Give an immediate "On it sir" acknowledgment for long-running queries,
- * then keep the orb visible with the thinking animation while the Worker
- * processes. The result handler in wsBridge will show the sidebar and
- * speak "Here is the analysis sir" when the response arrives.
+ * then HIDE the orb. The orb reappears when the Worker response arrives
+ * (handled in wsBridge result handler).
  */
 async function ackLongRunningQuery(): Promise<void> {
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("On it sir.");
   await speak("On it sir");
-  // Keep the orb visible with the thinking (loading circles) animation
-  // so the user sees NEXUS is actively processing their request.
-  useAssistant.getState().setState("thinking");
+  await waitForTtsIdle();
+  // Hide the orb — it will reappear when the response arrives
+  useAssistant.getState().setVisible(false);
+  setTimeout(() => useAssistant.getState().reset(), 550);
 }
 
 /**
@@ -489,6 +491,36 @@ export async function finishCapture(): Promise<void> {
   //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   const intent = parseIntent(transcript);
 
+  // Special case: open architecture mapper window directly
+  if (intent.action === "open_architect") {
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("Opening architecture mapper, sir.");
+    void speak("Opening architecture mapper, sir.");
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      try {
+        const active = await invoke<{ owner: string; repo: string } | null>("get_active_repo_url");
+        if (active && active.owner && active.repo) {
+          await invoke("open_architect_window", { owner: active.owner, repo: active.repo });
+        } else {
+          await invoke("open_architect_window");
+        }
+      } catch {
+        await invoke("open_architect_window");
+      }
+    } catch (err) {
+      console.error("[NEXUS] failed to open architect window:", err);
+    }
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    useAssistant.getState().setVisible(false);
+    setTimeout(() => useAssistant.getState().reset(), 550);
+    captureInProgress = false;
+    return;
+  }
+
   if (intent.action !== "unknown") {
     // Known local command — execute it directly.
     useAssistant.getState().setState("speaking");
@@ -600,6 +632,28 @@ export async function finishCaptureFromVad(
   }
   captureInProgress = true;
 
+  // Safety net: if STT hangs for >25s, force-reset so the next command works
+  const safetyTimeout = setTimeout(() => {
+    if (captureInProgress) {
+      console.warn("[NEXUS] captureInProgress stuck for 12s — force resetting");
+      captureInProgress = false;
+      useAssistant.getState().setState("idle");
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+    }
+  }, 12000);
+
+  try {
+    await _finishCaptureFromVadInner(audio, speculative);
+  } finally {
+    clearTimeout(safetyTimeout);
+  }
+}
+
+async function _finishCaptureFromVadInner(
+  audio: Float32Array,
+  speculative?: Promise<string> | null,
+): Promise<void> {
   // Stop the recorder if it's running (it may be if we fell back to RMS).
   await stopRecording();
 
@@ -687,6 +741,36 @@ export async function finishCaptureFromVad(
   //    to the remote backend. Only send to the backend if the intent is
   //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   const intent = parseIntent(transcript);
+
+  // Special case: open architecture mapper window directly
+  if (intent.action === "open_architect") {
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("Opening architecture mapper, sir.");
+    void speak("Opening architecture mapper, sir.");
+
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      try {
+        const active = await invoke<{ owner: string; repo: string } | null>("get_active_repo_url");
+        if (active && active.owner && active.repo) {
+          await invoke("open_architect_window", { owner: active.owner, repo: active.repo });
+        } else {
+          await invoke("open_architect_window");
+        }
+      } catch {
+        await invoke("open_architect_window");
+      }
+    } catch (err) {
+      console.error("[NEXUS] failed to open architect window:", err);
+    }
+
+    await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    useAssistant.getState().setVisible(false);
+    setTimeout(() => useAssistant.getState().reset(), 550);
+    captureInProgress = false;
+    return;
+  }
 
   if (intent.action !== "unknown") {
     // Known local command — execute it directly.

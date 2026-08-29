@@ -93,36 +93,13 @@ foreach ($f in @($sttLog, $sttErr, $nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
   if (Test-Path $f) { Clear-Content $f -Force }
 }
 
-# ─── Start STT Server ──────────────────────────────────────────────────────
-Write-Log "INIT" "Starting STT server (127.0.0.1:39217)..." $C_STT
-$sttProc = Start-Process -FilePath "python" `
-  -ArgumentList "stt_server.py" `
-  -WorkingDirectory "$ProjectRoot\server" `
-  -RedirectStandardOutput $sttLog `
-  -RedirectStandardError $sttErr `
-  -PassThru -WindowStyle Hidden
-
-$jobs.Add([PSCustomObject]@{ Name="STT"; Process=$sttProc }) | Out-Null
-
-# Wait for STT to be ready
-$sttReady = $false
-for ($i = 0; $i -lt 30; $i++) {
-  Start-Sleep 1
-  try {
-    $health = Invoke-RestMethod http://127.0.0.1:39217/health -TimeoutSec 2
-    if ($health.ok) {
-      Write-Log "STT" "Server ready: model=$($health.model) device=$($health.device)" $C_STT
-      $sttReady = $true
-      break
-    }
-  } catch {}
-}
-if (-not $sttReady) {
-  Write-Log "STT" "FAILED to start — check $sttErr" $C_ERR
-  Get-Content $sttErr | ForEach-Object { Write-Log "STT" $_ $C_ERR }
-  Stop-All
-  exit 1
-}
+# ─── STT Server ────────────────────────────────────────────────────────────
+# NOTE: STT server is now started LAZILY by the Rust app (lazy_stt.rs) when
+# the wake word fires, and killed after 60s of idle. This saves ~340 MB RAM
+# at idle. The script path is auto-detected by lazy_stt.rs.
+# If an external STT server is already running on port 39217, the Rust app
+# will detect it and skip spawning its own.
+Write-Log "INIT" "STT server will be started on-demand by NEXUS (lazy STT)" $C_STT
 
 # ─── Start NEXUS ───────────────────────────────────────────────────────────
 Write-Log "INIT" "Starting NEXUS desktop app..." $C_RUST

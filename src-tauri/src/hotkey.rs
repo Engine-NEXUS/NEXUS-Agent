@@ -48,18 +48,16 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                 if sidebar_visible {
                     // Sidebar is visible → close it only, do NOT wake NEXUS.
                     tracing::info!("hotkey ({}) → sidebar visible, closing sidebar only", hk);
-                    // Directly hide the native window + reset the CSS class
-                    // via JS eval (bypasses the event system which may not
-                    // be received by the sidebar window's listen() calls).
-                    if let Some(sidebar) = handle.get_webview_window("sidebar") {
-                        let _ = sidebar.eval(
-                            r#"(function(){var a=document.getElementById('sidebar-app');if(a)a.className='sidebar--hidden';})();"#,
-                        );
-                        let _ = sidebar.hide();
-                    }
+                    // Destroy the sidebar window to free ~250 MB of WebView2 processes.
+                    let _ = crate::dyn_windows::destroy_window(&handle, "sidebar");
                 } else {
                     // Sidebar is hidden → wake NEXUS, do NOT touch sidebar.
                     tracing::info!("hotkey ({}) → sidebar hidden, waking NEXUS", hk);
+
+                    // Start the STT server on-demand (same as wake-word path).
+                    // The hotkey bypasses the wake-word pipeline, so we must
+                    // ensure STT is running here too.
+                    crate::lazy_stt::ensure_stt_running();
 
                     if let Some(win) = handle.get_webview_window("main") {
                         let _ = win.show();
