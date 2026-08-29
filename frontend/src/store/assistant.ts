@@ -2,30 +2,48 @@ import { create } from "zustand";
 
 export type AssistantState = "idle" | "listening" | "thinking" | "speaking";
 
+interface TranscriptEntry {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: number;
+}
+
 interface AssistantStore {
   state: AssistantState;
   visible: boolean;
-  lastTranscript: string | null;
+  /** Conversation transcript for display in the sidebar. */
+  transcript: TranscriptEntry[];
   /** Index of the TTS chunk currently playing (for avatar mouth animation). */
   speakSeq: number | null;
   setState: (s: AssistantState) => void;
   setVisible: (v: boolean) => void;
-  setTranscript: (t: string | null) => void;
+  addUserMessage: (text: string) => void;
+  addAssistantMessage: (text: string) => void;
   setSpeakSeq: (n: number | null) => void;
   /** Reset to idle and hide after a short delay (driven by an effect in App). */
   reset: () => void;
+  /** Clear the transcript. */
+  clearTranscript: () => void;
 }
 
 export const useAssistant = create<AssistantStore>((set) => ({
   state: "idle",
   visible: false,
-  lastTranscript: null,
+  transcript: [],
   speakSeq: null,
   setState: (s) => set({ state: s }),
   setVisible: (v) => set({ visible: v }),
-  setTranscript: (t) => set({ lastTranscript: t }),
+  addUserMessage: (text) =>
+    set((st) => ({
+      transcript: [...st.transcript, { role: "user", text, timestamp: Date.now() }],
+    })),
+  addAssistantMessage: (text) =>
+    set((st) => ({
+      transcript: [...st.transcript, { role: "assistant", text, timestamp: Date.now() }],
+    })),
   setSpeakSeq: (n) => set({ speakSeq: n }),
-  reset: () => set({ state: "idle", speakSeq: null, lastTranscript: null }),
+  reset: () => set({ state: "idle", speakSeq: null }),
+  clearTranscript: () => set({ transcript: [] }),
 }));
 
 /**

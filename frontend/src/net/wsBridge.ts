@@ -11,8 +11,6 @@ import { playTtsChunk, stopTts } from "../audio/ttsPlayer";
  * open/close and reacts to `assistant:server` events forwarded by Rust.
  */
 
-// In production these come from the OS keychain (see README). For dev they can be
-// hardcoded or read from a local .env via Vite.
 const SERVER_URL = (import.meta.env.VITE_SERVER_URL as string) ?? "wss://supervisor.ultron.internal/ws";
 const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_FROM_KEYCHAIN";
 const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
@@ -65,13 +63,22 @@ function handle(ev: ServerEvent): void {
       break;
     }
     case "transcript":
-      if (ev.data) store.setTranscript(ev.data);
+      // User's transcribed speech — add to transcript display.
+      if (ev.data) store.addUserMessage(ev.data);
       break;
     case "tts_chunk":
       if (store.state !== "speaking") store.setState("speaking");
-      if (ev.data && typeof ev.seq === "number") {
-        void playTtsChunk(ev.seq, ev.data);
+      if (ev.data) {
+        void playTtsChunk(ev.seq ?? 0, ev.data);
       }
+      break;
+    case "ack":
+      // Acknowledgement text (e.g. "On it, sir.") — add to transcript.
+      if (ev.data) store.addAssistantMessage(ev.data);
+      break;
+    case "result":
+      // Final result text from n8n — add to transcript.
+      if (ev.data) store.addAssistantMessage(ev.data);
       break;
     case "done":
       stopTts();
@@ -79,6 +86,7 @@ function handle(ev: ServerEvent): void {
       break;
     case "error":
       console.error("server error:", ev.message);
+      if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       store.reset();
       break;
   }
