@@ -266,10 +266,12 @@ pub fn run() {
                 if let Ok(Some(monitor)) = win.current_monitor() {
                     let scale = monitor.scale_factor();
                     let screen = monitor.size();
-                    let orb = 200i32; // matches tauri.conf.json
-                    let phys_orb = (orb as f64 * scale) as i32;
+                    let orb_w = 320i32; // matches tauri.conf.json (expanded for transcript)
+                    let orb_h = 440i32; // matches tauri.conf.json
+                    let phys_w = (orb_w as f64 * scale) as i32;
+                    let phys_h = (orb_h as f64 * scale) as i32;
 
-                    let x = (screen.width as i32 - phys_orb) / 2;
+                    let x = (screen.width as i32 - phys_w) / 2;
                     // Position relative to the work area (excludes taskbar/dock).
                     // Use the monitor's work area if available, otherwise estimate.
                     // Windows taskbar ~48px, macOS dock ~70px.
@@ -279,7 +281,7 @@ pub fn run() {
                     let taskbar = (48.0 * scale) as i32;
                     // Small gap above the taskbar/dock
                     let gap = (12.0 * scale) as i32;
-                    let y = screen.height as i32 - phys_orb - taskbar - gap;
+                    let y = screen.height as i32 - phys_h - taskbar - gap;
 
                     let _ = win.set_position(PhysicalPosition::new(x, y));
                     tracing::info!("orb positioned at ({x}, {y})");
@@ -379,6 +381,11 @@ pub fn run() {
             commands::set_meeting_detection,
             commands::should_greet_today,
             commands::mark_greeted_today,
+            commands::open_settings_window,
+            commands::close_settings_window,
+            commands::get_settings,
+            commands::save_settings,
+            commands::clear_transcript,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,

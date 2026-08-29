@@ -63,7 +63,12 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                 }
             }
             "settings" => {
-                if let Some(w) = app.get_webview_window("setup") {
+                // Open the dedicated settings window (not the setup wizard)
+                if let Some(w) = app.get_webview_window("settings") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                } else if let Some(w) = app.get_webview_window("setup") {
+                    // Fallback to setup window if settings window not found
                     let _ = w.show();
                     let _ = w.set_focus();
                 } else {

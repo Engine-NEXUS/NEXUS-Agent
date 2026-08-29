@@ -458,3 +458,136 @@ pub struct MeetingStatus {
     pub tts_playing: bool,
     pub detection_enabled: bool,
 }
+
+// ─── Settings window + persistence ───────────────────────────────────
+
+/// IPC: Open the settings window.
+#[tauri::command]
+pub fn open_settings_window<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("settings")
+        .ok_or_else(|| "settings window not found".to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// IPC: Close/hide the settings window.
+#[tauri::command]
+pub fn close_settings_window<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let win = app.get_webview_window("settings")
+        .ok_or_else(|| "settings window not found".to_string())?;
+    win.hide().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Serialized settings returned by `get_settings` and accepted by `save_settings`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusSettings {
+    pub autostart: bool,
+    pub hotkey: String,
+    pub auto_hide_delay: u32,
+    pub wake_word_enabled: bool,
+    pub wake_phrase: String,
+    pub wake_sensitivity: String,
+    pub speaker_verification: bool,
+    pub meeting_mode_auto: bool,
+    pub suppress_tts_in_meetings: bool,
+    pub local_stt_only: bool,
+    pub server_url: String,
+    pub user_id: String,
+    pub device_id: String,
+    pub tts_voice: String,
+    pub speech_rate: f64,
+}
+
+impl Default for NexusSettings {
+    fn default() -> Self {
+        Self {
+            autostart: true,
+            hotkey: "Ctrl+Shift+Space".to_string(),
+            auto_hide_delay: 8,
+            wake_word_enabled: true,
+            wake_phrase: "NEXUS".to_string(),
+            wake_sensitivity: "medium".to_string(),
+            speaker_verification: false,
+            meeting_mode_auto: true,
+            suppress_tts_in_meetings: true,
+            local_stt_only: true,
+            server_url: String::new(),
+            user_id: "local-user".to_string(),
+            device_id: "local-device".to_string(),
+            tts_voice: "default".to_string(),
+            speech_rate: 1.0,
+        }
+    }
+}
+
+/// IPC: Get the current settings (merged with defaults for missing fields).
+#[tauri::command]
+pub fn get_settings<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<NexusSettings, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    if !path.exists() {
+        return Ok(NexusSettings::default());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut settings: NexusSettings = serde_json::from_str(&content)
+        .unwrap_or_default();
+    // Merge server config if present
+    let config_path = dir.join("nexus-config.json");
+    if config_path.exists() {
+        if let Ok(config) = std::fs::read_to_string(&config_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&config) {
+                if let Some(url) = json.get("serverUrl").and_then(|v| v.as_str()) {
+                    settings.server_url = url.to_string();
+                }
+                if let Some(uid) = json.get("userId").and_then(|v| v.as_str()) {
+                    settings.user_id = uid.to_string();
+                }
+                if let Some(did) = json.get("deviceId").and_then(|v| v.as_str()) {
+                    settings.device_id = did.to_string();
+                }
+            }
+        }
+    }
+    Ok(settings)
+}
+
+/// IPC: Save settings to disk.
+#[tauri::command]
+pub fn save_settings<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    settings: NexusSettings,
+) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("settings.json");
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // Also save server config separately (so existing code can read it)
+    let config = serde_json::json!({
+        "serverUrl": settings.server_url,
+        "userId": settings.user_id,
+        "deviceId": settings.device_id,
+    });
+    let config_path = dir.join("nexus-config.json");
+    std::fs::write(&config_path, config.to_string()).map_err(|e| e.to_string())?;
+    tracing::info!("settings saved to {:?}", path);
+    Ok(())
+}
+
+/// IPC: Clear the conversation transcript (frontend store).
+/// This is a no-op on the Rust side — the frontend handles it.
+/// The command exists so the settings UI can call it via IPC.
+#[tauri::command]
+pub fn clear_transcript() -> Result<(), String> {
+    tracing::info!("transcript cleared (frontend-side)");
+    Ok(())
+}
