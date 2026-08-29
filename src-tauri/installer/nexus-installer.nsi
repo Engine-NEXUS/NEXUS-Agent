@@ -664,18 +664,17 @@ Var PythonExe
 Function InstallPythonAndDeps
   StrCpy $PythonExe ""
 
-  ; 1. Check if python.exe is already on PATH via 'where' command.
+  ; 1. Check if a REAL python.exe is already on PATH via PowerShell.
   ; NOTE: 'where python.exe' on Windows 10/11 can return the Windows Store
   ; stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe — that's NOT a
-  ; real Python, it just opens the Store. We filter it out.
-  nsExec::ExecToStack 'where python.exe'
+  ; real Python, it just opens the Store. We filter it out safely.
+  nsExec::ExecToStack 'powershell -NoProfile -Command "$$py = Get-Command python.exe -ErrorAction SilentlyContinue | Where-Object { $$_.Path -notmatch \'WindowsApps\' } | Select-Object -First 1; if ($$py) { Write-Host $$py.Path -NoNewline; exit 0 } else { exit 1 }"'
   Pop $0
   Pop $1
   ${If} $0 == 0
     ${If} $1 != ""
-    ${AndIf} $1 != "$LOCALAPPDATA\Microsoft\WindowsApps\python.exe"
       DetailPrint "Python already installed: $1"
-      StrCpy $PythonExe "python"
+      StrCpy $PythonExe "$1"
       Goto install_pip_deps
     ${EndIf}
   ${EndIf}
