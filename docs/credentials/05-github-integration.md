@@ -102,8 +102,8 @@ GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 **Setup:**
 1. Go to [GitHub Settings → Developer settings → OAuth Apps](https://github.com/settings/developers).
 2. Create a new OAuth App.
-3. Set Authorization callback URL to `nexus://oauth/callback`.
-4. Copy the Client ID and Client Secret into the sidecar `.env`.
+3. Set Authorization callback URL to your Cloudflare Worker URL (e.g., `https://nexus-worker.<your-subdomain>.workers.dev/oauth/callback`).
+4. Copy the Client ID and Client Secret into the Cloudflare Worker secrets.
 
 ---
 

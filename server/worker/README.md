@@ -95,8 +95,8 @@ Get these from:
 - Google: https://console.cloud.google.com/apis/credentials
 - GitHub: https://github.com/settings/apps → New GitHub App
 
-**Important:** Set the redirect URI to `nexus://oauth/callback` in both
-Google Cloud Console and GitHub OAuth App settings.
+**Important:** You must set the redirect URI in both Google Cloud Console and GitHub Developer Settings to your Cloudflare Worker URL, NOT the desktop deep link.
+Format: `https://nexus-worker.<your-subdomain>.workers.dev/oauth/callback`
 
 ### 6. Deploy
 
