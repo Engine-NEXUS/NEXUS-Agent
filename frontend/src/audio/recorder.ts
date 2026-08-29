@@ -253,7 +253,7 @@ export async function finishCapture(): Promise<void> {
     console.warn("STT returned empty transcript");
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that, sir.");
+    await speak("Didn't catch that sir");
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
@@ -282,7 +282,7 @@ export async function finishCapture(): Promise<void> {
   if (intent.action === "unknown") {
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that, sir.");
+    await speak("Didn't catch that sir");
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
@@ -372,7 +372,7 @@ export async function finishCaptureFromVad(audio: Float32Array): Promise<void> {
     console.warn("STT returned empty transcript");
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that, sir.");
+    await speak("Didn't catch that sir");
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
@@ -398,7 +398,7 @@ export async function finishCaptureFromVad(audio: Float32Array): Promise<void> {
   if (intent.action === "unknown") {
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
-    await speak("Didn't catch that, sir.");
+    await speak("Didn't catch that sir");
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
