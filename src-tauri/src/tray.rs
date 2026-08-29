@@ -9,6 +9,7 @@ use tauri::{
     tray::{TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime, WebviewWindow,
 };
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::meeting_detect::MeetingState;
 
