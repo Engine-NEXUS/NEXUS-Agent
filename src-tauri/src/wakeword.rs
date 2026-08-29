@@ -236,10 +236,22 @@ mod engine {
                         let text = result.text.trim().to_lowercase();
                         if !text.is_empty() {
                             tracing::info!("ASR transcript: \"{}\"", text);
-                            if text.contains(super::WAKE_WORD) {
+
+                            // Check against personalized wake variants + global sound-alikes.
+                            // If a profile is enrolled, use its variants.
+                            // If no profile (open mode), use default ["nexus"] + sound_alikes.
+                            let wake_variants: Vec<String> = if let Some(ref verifier) = self.speaker {
+                                verifier.profile()
+                                    .map(|p| p.wake_variants.clone())
+                                    .unwrap_or_else(|| vec!["nexus".to_string()])
+                            } else {
+                                vec!["nexus".to_string()]
+                            };
+
+                            if crate::voice_profile::matches_wake_word(&text, &wake_variants) {
                                 tracing::info!(
-                                    "Wake word '{}' found in transcript!",
-                                    super::WAKE_WORD
+                                    "Wake word match found in transcript: \"{}\"",
+                                    text
                                 );
 
                                 // --- Speaker verification ---

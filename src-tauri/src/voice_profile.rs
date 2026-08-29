@@ -38,7 +38,30 @@ pub const MIN_ENROLLMENT_CLIPS: usize = 3;
 /// Speaker name used for the enrolled user.
 pub const ENROLLED_SPEAKER_NAME: &str = "owner";
 
-/// A voice profile: an averaged embedding + metadata.
+/// Maximum number of wake variants stored in a profile.
+/// Re-enrollment appends new variants up to this cap.
+pub const MAX_WAKE_VARIANTS: usize = 30;
+
+/// Global list of words that sound like "NEXUS" — common ASR mishearings.
+/// These are checked for ALL users, regardless of enrollment.
+/// Compiled from observed ASR outputs during testing.
+pub const SOUND_ALIKES: &[&str] = &[
+    "nexus",
+    "nixis",
+    "mixis",
+    "mexic",
+    "nixes",
+    "lexis",
+    "necess",
+    "nexis",
+    "nixus",
+    "naxus",
+    "noxus",
+    "nexcus",
+    "dnexus",
+];
+
+/// A voice profile: an averaged embedding + metadata + wake variants.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct VoiceProfile {
     /// The averaged embedding vector.
@@ -51,6 +74,16 @@ pub struct VoiceProfile {
     pub updated_at: i64,
     /// The similarity threshold for verification.
     pub threshold: f32,
+    /// Personalized wake-word variants from this user's enrollment.
+    /// ASR transcripts of the user saying "NEXUS" — accumulates on re-enrollment.
+    /// Always includes "nexus" as a baseline.
+    #[serde(default = "default_wake_variants")]
+    pub wake_variants: Vec<String>,
+}
+
+/// Default wake variants — always includes "nexus" as a baseline.
+fn default_wake_variants() -> Vec<String> {
+    vec!["nexus".to_string()]
 }
 
 impl VoiceProfile {
@@ -100,6 +133,59 @@ impl VoiceProfile {
         let sim = self.cosine_similarity(query);
         sim >= threshold
     }
+
+    /// Add new wake variants to this profile (append, deduplicate, cap at MAX_WAKE_VARIANTS).
+    /// Does NOT wipe existing variants — used for re-enrollment accumulation.
+    pub fn add_wake_variants(&mut self, new_variants: &[String]) {
+        for v in new_variants {
+            let v = v.trim().to_lowercase();
+            if v.is_empty() || v.len() < 3 {
+                continue;
+            }
+            if !self.wake_variants.contains(&v) {
+                self.wake_variants.push(v);
+            }
+        }
+        // Always ensure "nexus" is present
+        if !self.wake_variants.contains(&"nexus".to_string()) {
+            self.wake_variants.insert(0, "nexus".to_string());
+        }
+        // Cap at MAX_WAKE_VARIANTS — keep the most recently added
+        if self.wake_variants.len() > MAX_WAKE_VARIANTS {
+            let excess = self.wake_variants.len() - MAX_WAKE_VARIANTS;
+            self.wake_variants.drain(0..excess);
+        }
+    }
+}
+
+/// Check if a normalized ASR transcript matches any wake word.
+/// Checks both the user's personalized `wake_variants` and the global `SOUND_ALIKES` list.
+/// Matching is exact substring (no fuzzy/Levenshtein).
+pub fn matches_wake_word(transcript: &str, wake_variants: &[String]) -> bool {
+    let text = transcript.trim().to_lowercase();
+    if text.is_empty() {
+        return false;
+    }
+
+    // 1. Check personalized wake variants (from enrollment)
+    for variant in wake_variants {
+        let v = variant.trim().to_lowercase();
+        if v.is_empty() {
+            continue;
+        }
+        if text.contains(&v) {
+            return true;
+        }
+    }
+
+    // 2. Check global sound-alikes (common ASR mishearings)
+    for &alike in SOUND_ALIKES {
+        if text.contains(alike) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Average multiple embeddings into a single profile embedding.
@@ -232,7 +318,16 @@ impl SpeakerVerifier {
 
     /// Enroll a voice profile from multiple audio clips.
     /// Each clip should be 1-5 seconds of speech from the same speaker.
-    pub fn enroll(&mut self, clips: &[Vec<f32>], threshold: f32) -> anyhow::Result<()> {
+    ///
+    /// `wake_variants` are the ASR transcripts of the user saying "NEXUS" during
+    /// enrollment. They are appended to any existing variants (re-enrollment does
+    /// NOT wipe old data). Always includes "nexus" as a baseline.
+    pub fn enroll(
+        &mut self,
+        clips: &[Vec<f32>],
+        threshold: f32,
+        wake_variants: Vec<String>,
+    ) -> anyhow::Result<()> {
         if clips.len() < MIN_ENROLLMENT_CLIPS {
             anyhow::bail!(
                 "Need at least {} enrollment clips, got {}",
@@ -273,22 +368,49 @@ impl SpeakerVerifier {
         let avg = average_embeddings(&embeddings)?;
 
         let now = chrono::Utc::now().timestamp();
-        let profile = VoiceProfile {
+
+        // If re-enrolling, load existing profile to preserve wake_variants.
+        // New variants are APPENDED, not replaced.
+        let mut existing_variants: Vec<String> = vec!["nexus".to_string()];
+        let mut created_at = now;
+        let mut total_clips = embeddings.len();
+
+        if let Some(existing) = &self.profile {
+            existing_variants = existing.wake_variants.clone();
+            created_at = existing.created_at;
+            total_clips = existing.num_clips + embeddings.len();
+            tracing::info!(
+                "Re-enrollment: preserving {} existing wake variants, appending new ones",
+                existing_variants.len()
+            );
+        }
+
+        let mut profile = VoiceProfile {
             embedding: avg,
-            num_clips: embeddings.len(),
-            created_at: now,
+            num_clips: total_clips,
+            created_at,
             updated_at: now,
             threshold,
+            wake_variants: existing_variants,
         };
+
+        // Append new variants (dedup, cap at MAX_WAKE_VARIANTS)
+        profile.add_wake_variants(&wake_variants);
+
+        tracing::info!(
+            "Wake variants after enrollment: {:?}",
+            profile.wake_variants
+        );
 
         profile.save(&self.profile_path)?;
         self.profile = Some(profile);
 
         tracing::info!(
-            "Voice profile enrolled and saved to {} ({} clips, threshold {})",
+            "Voice profile enrolled and saved to {} ({} total clips, threshold {}, {} variants)",
             self.profile_path.display(),
-            embeddings.len(),
-            threshold
+            total_clips,
+            threshold,
+            self.profile.as_ref().unwrap().wake_variants.len()
         );
 
         Ok(())
@@ -374,6 +496,11 @@ impl SpeakerVerifier {
 
     /// Get the profile status for UI display.
     pub fn status(&self) -> VoiceProfileStatus {
+        let sound_alikes: Vec<String> = SOUND_ALIKES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
         if let Some(profile) = &self.profile {
             VoiceProfileStatus {
                 enrolled: true,
@@ -381,6 +508,8 @@ impl SpeakerVerifier {
                 threshold: profile.threshold,
                 created_at: profile.created_at,
                 updated_at: profile.updated_at,
+                wake_variants: profile.wake_variants.clone(),
+                sound_alikes,
             }
         } else {
             VoiceProfileStatus {
@@ -389,6 +518,8 @@ impl SpeakerVerifier {
                 threshold: DEFAULT_THRESHOLD,
                 created_at: 0,
                 updated_at: 0,
+                wake_variants: vec!["nexus".to_string()],
+                sound_alikes,
             }
         }
     }
@@ -402,6 +533,10 @@ pub struct VoiceProfileStatus {
     pub threshold: f32,
     pub created_at: i64,
     pub updated_at: i64,
+    /// The user's personalized wake variants (from enrollment).
+    pub wake_variants: Vec<String>,
+    /// The global sound-alikes list (same for all users).
+    pub sound_alikes: Vec<String>,
 }
 
 /// Resolve the voice profile path. Stored in the app data directory.
