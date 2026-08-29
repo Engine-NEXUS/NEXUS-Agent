@@ -10,7 +10,7 @@ import { parseIntent } from "../intent/parser";
  * AUDIO STAYS LOCAL: Float32 samples are buffered in memory on the device.
  * They are NOT sent to the server. When VAD detects silence, the buffered
  * audio is downsampled to 16kHz, converted to Int16 PCM, and sent to the
- * LOCAL STT server (127.0.0.1:18765) for transcription.
+ * LOCAL STT server (127.0.0.1:39217) for transcription.
  * Only the resulting TEXT is sent to the remote NEXUS server.
  *
  * VAD (`vad.ts`) controls start/stop of the recorder.
@@ -242,7 +242,7 @@ export async function finishCapture(): Promise<void> {
   const allPcm = downsampleAndConvert(allFloat, nativeSampleRate, 16000);
   console.log(`[NEXUS] downsampled to ${allPcm.length} Int16 samples @ 16kHz`);
 
-  // 1. Local STT — audio goes to 127.0.0.1:18765, never to the remote server.
+  // 1. Local STT — audio goes to 127.0.0.1:39217, never to the remote server.
   useAssistant.getState().setState("thinking");
   const transcript = await transcribeAudio(allPcm);
 
@@ -374,7 +374,7 @@ export async function finishCaptureFromVad(
   // Release the mic stream — Silero's MicVAD has already captured the audio.
   releaseMicStream();
 
-  // 1. Local STT — audio goes to 127.0.0.1:18765, never to the remote server.
+  // 1. Local STT — audio goes to 127.0.0.1:39217, never to the remote server.
   //
   // If the VAD fired a speculative transcription when speech first dropped to
   // silence, that request has been running during the redemption window and is

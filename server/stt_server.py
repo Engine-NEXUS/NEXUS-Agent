@@ -1,7 +1,7 @@
 """
 Minimal faster-whisper STT server for NEXUS.
 
-This server runs LOCALLY on the user's device (127.0.0.1:18765).
+This server runs LOCALLY on the user's device (127.0.0.1:39217).
 Audio is sent from the NEXUS client to this local server, transcribed,
 and only the resulting TEXT is sent to the remote NEXUS server.
 Audio NEVER leaves the device.
@@ -14,7 +14,7 @@ Requirements:
   pip install faster-whisper fastapi uvicorn python-multipart
 
 Run locally on the device:
-  uvicorn stt_server:app --host 127.0.0.1 --port 18765
+  uvicorn stt_server:app --host 127.0.0.1 --port 39217
 
 Environment:
   WHISPER_MODEL    — model name (default: tiny.en)

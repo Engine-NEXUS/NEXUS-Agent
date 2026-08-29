@@ -68,7 +68,8 @@ this — the Vite server serves any HTML file on demand).
 
 | Service           | Port    | Notes                                        |
 | ----------------- | ------- | -------------------------------------------- |
-| STT (faster-whisper) | `18765` | Deliberately uncommon to avoid clashing with dev servers on 8000. Override: `NEXUS_STT_PORT` |
+| STT (faster-whisper) | `39217` | Registered range (1024-49151), avoids ephemeral and dev ports. Override: `NEXUS_STT_PORT` |
+| Sidecar (FastAPI)    | `41098` | Registered range, not ephemeral. Override: `SIDECAR_PORT` |
 | Vite dev server   | `5173`  | Dev only                                     |
 
 ## Architecture (serverless — 2026-08-27)
