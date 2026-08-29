@@ -29,11 +29,15 @@
 use tauri::{AppHandle, Runtime};
 
 #[cfg(feature = "mock-wake")]
-pub async fn run<R: Runtime>(_app: AppHandle<R>) -> Result<(), String> {
+pub fn run<R: Runtime>(_app: AppHandle<R>) -> Result<(), String> {
     tracing::info!("wake-word: mock mode (no native listener)");
-    std::future::pending::<()>().await;
-    Ok(())
+    loop {
+        std::thread::park();
+    }
 }
+
+#[cfg(feature = "mock-wake")]
+pub fn set_meeting_state(_state: std::sync::Arc<crate::meeting_detect::MeetingState>) {}
 
 #[cfg(not(feature = "mock-wake"))]
 mod engine {
