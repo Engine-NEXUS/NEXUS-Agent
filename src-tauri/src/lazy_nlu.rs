@@ -98,13 +98,16 @@ pub fn ensure_nlu_running() {
 
     tracing::info!("[lazy_nlu] starting NLU server: {:?}", script);
 
-    // Try python, then python3, then py
+    // Try python, then python3, then py — verify each actually exists
     let python_cmd = if std::process::Command::new("python").arg("--version").output().is_ok() {
         "python"
     } else if std::process::Command::new("python3").arg("--version").output().is_ok() {
         "python3"
-    } else {
+    } else if std::process::Command::new("py").arg("--version").output().is_ok() {
         "py"
+    } else {
+        tracing::error!("[lazy_nlu] no Python interpreter found (tried python, python3, py). Install Python 3.12+ and run: pip install numpy onnxruntime fastapi uvicorn pydantic transformers");
+        return;
     };
 
     // Spawn: python nlu_server.py

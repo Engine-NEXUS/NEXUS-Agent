@@ -657,6 +657,99 @@ Section WebView2
   ${EndIf}
 SectionEnd
 
+; ─── NEXUS: Python installation function ──────────────────────────────────
+; Downloads and installs Python 3.12 silently if not already present,
+; then installs faster-whisper + NLU pip packages.
+Var PythonExe
+Function InstallPythonAndDeps
+  StrCpy $PythonExe ""
+
+  ; Check if python.exe is already on PATH via 'where' command
+  nsExec::ExecToStack 'where python.exe'
+  Pop $0
+  Pop $1
+  ${If} $0 == 0
+    ${If} $1 != ""
+      DetailPrint "Python already installed: $1"
+      StrCpy $PythonExe "python"
+      Goto install_pip_deps
+    ${EndIf}
+  ${EndIf}
+
+  ; Check common install locations via registry
+  ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
+  ${If} $0 != ""
+    DetailPrint "Python 3.12 found at: $0"
+    StrCpy $PythonExe "$0python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+  ReadRegStr $0 HKLM "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
+  ${If} $0 != ""
+    DetailPrint "Python 3.12 found at: $0"
+    StrCpy $PythonExe "$0python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+  ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.11\InstallPath" ""
+  ${If} $0 != ""
+    DetailPrint "Python 3.11 found at: $0"
+    StrCpy $PythonExe "$0python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+
+  ; Download Python 3.12 installer
+  DetailPrint "Downloading Python 3.12 installer..."
+  Delete "$TEMP\python-3.12-installer.exe"
+  NSISdl::download "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" "$TEMP\python-3.12-installer.exe"
+  Pop $0
+  ${If} $0 == "success"
+    DetailPrint "Python installer downloaded, installing silently..."
+    ; Install Python silently: InstallAllUsers=0 (per-user), PrependPath=1, Quiet=1
+    ExecWait '"$TEMP\python-3.12-installer.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1' $1
+    ${If} $1 == 0
+      DetailPrint "Python 3.12 installed successfully"
+      Delete "$TEMP\python-3.12-installer.exe"
+      StrCpy $PythonExe "python"
+    ${Else}
+      DetailPrint "Python installation failed (exit code $1) — STT/NLU will not work"
+      MessageBox MB_ICONEXCLAMATION|MB_OK "Python installation failed.$\r$\n$\r$\nSTT and NLU features will not work.$\r$\nPlease install Python 3.12+ manually from python.org and run:$\r$\n  pip install faster-whisper fastapi uvicorn python-multipart$\r$\n  pip install numpy onnxruntime fastapi uvicorn pydantic transformers"
+      Return
+    ${EndIf}
+  ${Else}
+    DetailPrint "Failed to download Python installer — STT/NLU will not work"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Could not download Python.$\r$\n$\r$\nSTT and NLU features will not work.$\r$\nPlease install Python 3.12+ manually from python.org and run:$\r$\n  pip install faster-whisper fastapi uvicorn python-multipart$\r$\n  pip install numpy onnxruntime fastapi uvicorn pydantic transformers"
+    Return
+  ${EndIf}
+
+  install_pip_deps:
+  ${If} $PythonExe == ""
+    DetailPrint "Cannot find Python executable — skipping pip install"
+    Return
+  ${EndIf}
+
+  ; Install pip packages for STT and NLU servers
+  DetailPrint "Installing Python packages for STT/NLU..."
+
+  ; Install STT dependencies
+  DetailPrint "  Installing faster-whisper, fastapi, uvicorn, python-multipart..."
+  ExecWait '"$PythonExe" -m pip install --quiet faster-whisper fastapi uvicorn python-multipart' $1
+  ${If} $1 == 0
+    DetailPrint "  STT dependencies installed"
+  ${Else}
+    DetailPrint "  STT pip install failed (exit code $1)"
+  ${EndIf}
+
+  ; Install NLU dependencies
+  DetailPrint "  Installing numpy, onnxruntime, transformers, pydantic..."
+  ExecWait '"$PythonExe" -m pip install --quiet numpy onnxruntime fastapi uvicorn pydantic transformers' $1
+  ${If} $1 == 0
+    DetailPrint "  NLU dependencies installed"
+  ${Else}
+    DetailPrint "  NLU pip install failed (exit code $1)"
+  ${EndIf}
+
+  DetailPrint "Python setup complete"
+FunctionEnd
+
 Section Install
   SetOutPath $INSTDIR
 
@@ -681,6 +774,11 @@ Section Install
   {{#each binaries}}
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
+
+  ; ─── NEXUS: Install Python + pip packages for STT/NLU servers ───────────
+  ; Checks if Python is available; if not, downloads and installs Python 3.12
+  ; silently, then installs faster-whisper and NLU dependencies.
+  Call InstallPythonAndDeps
 
   ; Create file associations
   {{#each file_associations as |association| ~}}

@@ -51,8 +51,9 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "resources/oww/*",
+      "resources/oww/**/*",
       "resources/sherpa/speaker_model.onnx",
+      "resources/espeak-ng-data/**/*",
       "resources/server/stt_server.py",
       "resources/server/nlu_server.py",
       "resources/server/nlu/requirements.txt",

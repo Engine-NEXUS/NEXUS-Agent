@@ -142,10 +142,15 @@ mod engine {
 
     /// Resolve the oww resources directory.
     pub fn resolve_oww_dir(app_resource_dir: &Path) -> Option<PathBuf> {
-        // 1. Production: resource_dir/oww
-        let prod = app_resource_dir.join("oww");
+        // 1. Production: resource_dir/resources/oww (Tauri v2 on Windows: resource_dir() = exe_dir)
+        let prod = app_resource_dir.join("resources").join("oww");
         if prod.join("melspectrogram.onnx").exists() {
             return Some(prod);
+        }
+        // 1b. Production fallback: resource_dir/oww (some Tauri versions may return resources/ directly)
+        let prod_alt = app_resource_dir.join("oww");
+        if prod_alt.join("melspectrogram.onnx").exists() {
+            return Some(prod_alt);
         }
         // 2. Dev mode: CARGO_MANIFEST_DIR/resources/oww
         if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {

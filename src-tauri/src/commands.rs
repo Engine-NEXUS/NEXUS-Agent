@@ -184,9 +184,15 @@ mod voice_profile_commands {
 
     /// Resolve the sherpa resource directory (handles dev + production paths).
     pub fn resolve_sherpa_dir(resource_dir: &Path) -> Option<PathBuf> {
-        let sherpa = resource_dir.join("sherpa");
+        // Production: resource_dir/resources/sherpa (Tauri v2 on Windows: resource_dir() = exe_dir)
+        let sherpa = resource_dir.join("resources").join("sherpa");
         if sherpa.exists() {
             return Some(sherpa);
+        }
+        // Fallback: resource_dir/sherpa (some Tauri versions may return resources/ directly)
+        let sherpa_alt = resource_dir.join("sherpa");
+        if sherpa_alt.exists() {
+            return Some(sherpa_alt);
         }
         if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
             let dev = PathBuf::from(manifest).join("resources").join("sherpa");

@@ -375,6 +375,22 @@ pub fn run() {
             app.manage(tts_state);
             tauri::async_runtime::spawn(async move {
                 tracing::info!("tts: initializing Kokoro engine in background...");
+
+                // Set espeak-ng data path for kokoro-micro's espeak-rs dependency.
+                // espeak-rs bakes the build-time OUT_DIR path into the binary; on a
+                // different machine that path doesn't exist. We override it via env var
+                // to point at the bundled espeak-ng-data in the resources directory.
+                // Must be set BEFORE the first text_to_phonemes call (lazy init).
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe.parent() {
+                        let espeak_parent = exe_dir.join("resources");
+                        if espeak_parent.join("espeak-ng-data").exists() {
+                            std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
+                            tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
+                        }
+                    }
+                }
+
                 match kokoro_micro::TtsEngine::new().await {
                     Ok(engine) => {
                         *tts_engine_arc.lock().await = Some(engine);

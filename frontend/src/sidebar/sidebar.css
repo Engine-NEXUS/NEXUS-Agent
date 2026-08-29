@@ -431,14 +431,13 @@ html, body, #root {
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
 }
 
-/* ── Response Scroll Area ──────────────────────────────────────── */
+/* ── Response Scroll Area ── */
 .sidebar-response {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  scrollbar-width: none; /* Hide scrollbar in Firefox */
   user-select: text;
   -webkit-user-select: text;
   position: relative;
@@ -446,7 +445,7 @@ html, body, #root {
 }
 
 .sidebar-response::-webkit-scrollbar {
-  width: 5px;
+  display: none; /* Hide scrollbar in Chrome/Safari */
 }
 .sidebar-response::-webkit-scrollbar-track {
   background: transparent;

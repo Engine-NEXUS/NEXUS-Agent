@@ -69,9 +69,11 @@ export function LanguageChart({ languages }: { languages: LanguageData[] }) {
           data={chartData}
           startAngle={180}
           lengthAngle={180}
-          lineWidth={60}
+          lineWidth={45} // Slightly thinner for elegance
+          paddingAngle={2} // Small gap between slices
           rounded
           animate
+          center={[50, 50]}
           label={({ dataEntry }) =>
             dataEntry.percentage >= 10 ? `${dataEntry.percentage}%` : ""
           }
@@ -81,8 +83,8 @@ export function LanguageChart({ languages }: { languages: LanguageData[] }) {
             fontWeight: "bold",
             pointerEvents: "none",
           }}
-          labelPosition={60}
-          viewBoxSize={[100, 60]}
+          labelPosition={70}
+          viewBoxSize={[100, 50]}
           background="#ffffff08"
         />
       </div>
@@ -143,11 +145,13 @@ export function FrameworkChart({
       <div className="framework-chart-visual">
         <PieChart
           data={chartData}
-          lineWidth={50}
+          lineWidth={40} // Thinner for elegance
+          paddingAngle={2}
           rounded
           animate
-          viewBoxSize={[80, 80]}
+          viewBoxSize={[100, 100]} // Must be 100x100 to fit radius 50
           background="#ffffff08"
+
         />
       </div>
       <div className="framework-chart-legend">
