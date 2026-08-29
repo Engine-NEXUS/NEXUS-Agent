@@ -1004,6 +1004,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 );
                 if let Some(win) = app_for_commands.get_webview_window("main") {
                     let _ = win.show();
+                    let _ = crate::window_manager::position_orb(&win);
                     let _ = win.set_focus();
                     let _ = win.set_always_on_top(true);
                     let _ = win.set_ignore_cursor_events(false);
@@ -1019,6 +1020,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
+            let _ = crate::window_manager::position_orb(&win);
             let _ = win.set_focus();
             let _ = win.set_always_on_top(true);
             let _ = win.set_ignore_cursor_events(false);
@@ -1070,6 +1072,30 @@ fn start_audio_capture(
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let host = cpal::default_host();
+
+    // ─── Non-Windows (Linux / macOS): PipeWire, PulseAudio, CoreAudio ───
+    // On Linux and macOS, the OS audio server manages stream routing and the default
+    // input device is the user's active microphone. Start it directly without the
+    // multi-device 5-second silence cascade.
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(default_device) = host.default_input_device() {
+            let dev_name = default_device.name().unwrap_or_else(|_| "default".into());
+            tracing::info!("audio: starting capture on default device '{}'...", dev_name);
+            match try_device_silent(&default_device, engine.clone()) {
+                Ok(()) => {
+                    tracing::info!("audio: stream active on '{}'", dev_name);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "audio: default device '{}' failed to start: {e}. Falling back to device list.",
+                        dev_name
+                    );
+                }
+            }
+        }
+    }
 
     // ─── Enumerate ALL input devices and log them ───────────────────
     let devices: Vec<cpal::Device> = match host.input_devices() {

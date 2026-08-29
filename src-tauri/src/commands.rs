@@ -493,8 +493,10 @@ pub fn show_sidebar<R: Runtime>(
 
         #[cfg(target_os = "macos")]
         let taskbar = (70.0 * scale) as i32;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         let taskbar = (48.0 * scale) as i32;
+        #[cfg(target_os = "linux")]
+        let taskbar = (56.0 * scale) as i32;
         let gap = (12.0 * scale) as i32;
 
         let x = screen.width as i32 - phys_w - gap;
@@ -516,6 +518,24 @@ pub fn show_sidebar<R: Runtime>(
     // Linux:   No native API — CSS backdrop-filter is the fallback.
 
     win.show().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::PhysicalPosition;
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let screen = monitor.size();
+            let sidebar_w = 600i32;
+            let sidebar_h = 1000i32;
+            let phys_w = (sidebar_w as f64 * scale) as i32;
+            let phys_h = (sidebar_h as f64 * scale) as i32;
+            let taskbar = (56.0 * scale) as i32;
+            let gap = (12.0 * scale) as i32;
+            let x = screen.width as i32 - phys_w - gap;
+            let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -585,6 +605,16 @@ pub struct NexusSettings {
     pub device_id: String,
     pub tts_voice: String,
     pub speech_rate: f64,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+    #[serde(default)]
+    pub elevenlabs_api_key: String,
+    #[serde(default)]
+    pub fish_audio_api_key: String,
+}
+
+fn default_tts_provider() -> String {
+    "neural".to_string()
 }
 
 impl Default for NexusSettings {
@@ -605,8 +635,11 @@ impl Default for NexusSettings {
                 .to_string(),
             user_id: String::new(),
             device_id: String::new(),
-            tts_voice: "default".to_string(),
+            tts_voice: "jarvis".to_string(),
             speech_rate: 1.0,
+            tts_provider: "neural".to_string(),
+            elevenlabs_api_key: String::new(),
+            fish_audio_api_key: String::new(),
         }
     }
 }

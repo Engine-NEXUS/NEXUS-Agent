@@ -452,6 +452,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         // Show the overlay window and call the frontend wake handler.
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
+            let _ = crate::window_manager::position_orb(&win);
             let _ = win.set_focus();
             let _ = win.set_always_on_top(true);
             let _ = win.set_ignore_cursor_events(false);
