@@ -172,14 +172,32 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            // Focus the existing window if a second instance is attempted.
-            // Also handle deep-link redirects on Windows/Linux (passed as CLI arg).
+            tracing::info!("single-instance: secondary launch attempt with args: {:?}", args);
+            // Handle deep-link redirects on Windows/Linux (passed as CLI arg)
             if let Some(url) = args.iter().find(|a| a.starts_with("nexus://")) {
                 let _ = app.emit("deep-link://oauth-callback", url.clone());
             }
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.set_focus();
+
+            // Check if secondary launch requested setup wizard or settings window
+            let is_setup = args.iter().any(|a| a == "--setup" || a == "-s");
+            let is_settings = args.iter().any(|a| a == "--settings");
+
+            if is_setup {
+                if let Some(setup_win) = app.get_webview_window("setup") {
+                    let _ = setup_win.show();
+                    let _ = setup_win.unminimize();
+                    let _ = setup_win.set_focus();
+                }
+            } else if is_settings {
+                if let Some(settings_win) = app.get_webview_window("settings") {
+                    let _ = settings_win.show();
+                    let _ = settings_win.unminimize();
+                    let _ = settings_win.set_focus();
+                }
+            } else if let Some(main_win) = app.get_webview_window("main") {
+                let _ = main_win.show();
+                let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
+                let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
             }
         }))
         .plugin(tauri_plugin_shell::init())
