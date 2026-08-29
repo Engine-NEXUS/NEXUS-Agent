@@ -202,10 +202,22 @@ mod engine {
 
         /// Compute melspectrogram for a chunk of audio.
         fn get_melspectrogram(&mut self, data: &[f32]) -> anyhow::Result<Tensor> {
-            // Prepend lookback from previous chunk
+            // The openWakeWord melspectrogram model expects int16-scale float32
+            // values (range [-32768, 32767]), not normalized [-1.0, 1.0].
+            // cpal produces f32 in [-1.0, 1.0], so we must scale by 32768.
+            // (Reference: openwakeword/utils.py _get_melspectrogram converts
+            // int16 to float32 WITHOUT dividing by 32768.)
+            const INT16_SCALE: f32 = 32768.0;
+
+            // Prepend lookback from previous chunk (also scaled)
             let mut input = Vec::with_capacity(MEL_INPUT_SIZE);
-            input.extend_from_slice(&self.raw_lookback);
-            input.extend_from_slice(data);
+            for &s in &self.raw_lookback {
+                input.push(s * INT16_SCALE);
+            }
+            for &s in data {
+                input.push(s * INT16_SCALE);
+            }
+            // Store unscaled lookback for next chunk
             self.raw_lookback
                 .copy_from_slice(&data[data.len() - MEL_LOOKBACK..]);
 
