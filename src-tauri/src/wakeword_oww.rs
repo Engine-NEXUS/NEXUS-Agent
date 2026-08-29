@@ -76,7 +76,11 @@ mod engine {
     }
 
     /// A loaded command classifier model + its mapped intent.
-    struct CommandClassifier {
+    ///
+    /// `pub` to match the visibility of `WakeEngine::command_classifiers`,
+    /// which holds a `Vec` of these. The whole `engine` module is private to
+    /// the crate, so this does not widen the public API.
+    pub struct CommandClassifier {
         model_name: String,
         model: ModelType,
         intent: CommandIntent,
@@ -740,6 +744,12 @@ mod engine {
 
     /// Generic audio callback: downmix to mono (f32), resample to 16kHz,
     /// and feed 1280-sample chunks (80ms) to the KWS engine.
+    ///
+    /// The argument count is inherent to a cpal callback: it is invoked from
+    /// four monomorphised sample-format branches (i16/u16/f32/...), each of
+    /// which must thread the same shared state through. Bundling these into a
+    /// struct would add an allocation on the real-time audio path.
+    #[allow(clippy::too_many_arguments)]
     pub fn on_audio<T, F>(
         data: &[T],
         native_channels: usize,
@@ -1227,6 +1237,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Regression test for the silence energy gate.
+    ///
+    /// Background: `nexus.onnx` emits high probabilities (0.6-0.9) when fed
+    /// pure digital silence, because it was trained on TTS clips that always
+    /// carry a noise floor. That caused NEXUS to wake spontaneously while the
+    /// mic was quiet (observed repeatedly in logs at RMS=0.0000).
+    ///
+    /// `detect_chunk` now short-circuits below `SILENCE_RMS_THRESHOLD` (0.005)
+    /// before running the classifier. This test feeds the engine a long run of
+    /// digital silence and asserts it never reports a wake.
+    #[test]
+    fn test_silence_never_triggers_wake() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let resource_dir = PathBuf::from(manifest_dir).join("resources");
+        let app_data_dir = std::env::temp_dir().join("nexus_test_profile_silence");
+
+        if !resource_dir.join("oww").join("nexus.onnx").exists() {
+            eprintln!("SKIP: nexus.onnx not found — train the model first");
+            return;
+        }
+
+        let mut engine =
+            match crate::wakeword_oww::engine::WakeEngine::new(resource_dir, app_data_dir) {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("SKIP: WakeEngine unavailable: {e}");
+                    return;
+                }
+            };
+
+        // 10 seconds of pure digital silence at 16kHz.
+        let silence = vec![0.0f32; 16000 * 10];
+        assert!(
+            !engine.process(&silence),
+            "pure silence must never trigger a wake (energy gate regression)"
+        );
+
+        // Very low-level noise (RMS well under the 0.005 gate) must also be
+        // ignored — a real mic idles around 1e-4, not exactly zero.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let quiet: Vec<f32> = (0..16000 * 10)
+            .map(|_| {
+                // xorshift64* — deterministic, no rand dependency in tests.
+                seed ^= seed >> 12;
+                seed ^= seed << 25;
+                seed ^= seed >> 27;
+                let v = ((seed.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) as f32
+                    / u32::MAX as f32)
+                    - 0.5;
+                v * 0.0002 // amplitude ≈ 1e-4 → RMS far below the gate
+            })
+            .collect();
+        assert!(
+            !engine.process(&quiet),
+            "near-silent mic noise must never trigger a wake"
+        );
     }
 
     /// Critical test: verify tract-onnx produces the same output as onnxruntime

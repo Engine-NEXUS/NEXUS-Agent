@@ -596,7 +596,7 @@ fn refresh_window_cache() {
             GetWindowThreadProcessId(hwnd, &mut pid);
 
             windows.push(CachedWindow {
-                hwnd: hwnd.0 as isize,
+                hwnd: hwnd.0,
                 pid,
                 title,
                 process_name: String::new(), // filled in below
@@ -1121,7 +1121,7 @@ fn discover_uninstall_registry(entries: &mut Vec<AppEntry>) {
                     if let Some(exe) = exe_path {
                         let search_names = build_search_names(&display_name);
                         entries.push(AppEntry {
-                            display_name: display_name,
+                            display_name,
                             search_names,
                             launch: LaunchMethod::Exe { path: exe },
                             use_count: 0,
