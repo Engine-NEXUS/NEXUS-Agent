@@ -126,6 +126,7 @@ fn nlu_to_parsed_intent(intent: &str, slots: &serde_json::Value) -> Option<Parse
 }
 
 /// Check if the NLU server is running.
+#[allow(dead_code)]
 pub async fn is_nlu_available() -> bool {
     let url = format!("http://127.0.0.1:{}/health", NLU_PORT);
     let client = match reqwest::Client::builder()
