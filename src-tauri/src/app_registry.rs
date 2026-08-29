@@ -115,7 +115,7 @@ pub fn init() {
         );
     }
 
-    // Start background refresh (scans OS for installed apps)
+    // Start background app index refresh (scans OS for installed apps)
     std::thread::Builder::new()
         .name("app-registry-refresh".into())
         .spawn(move || {
@@ -127,6 +127,9 @@ pub fn init() {
             }
         })
         .ok();
+
+    // Start background window cache (for instant focus-existing-app)
+    init_window_cache();
 }
 
 /// Look up an app by name. Returns the best match or None.
@@ -251,7 +254,241 @@ pub fn launch(entry: &AppEntry) -> Result<(), String> {
     }
 }
 
-// ─── Windows: ShellExecuteW (direct, no subprocess) ────────────────────────
+// ─── Window cache: background enumeration for instant focus ────────────────
+
+/// A cached window entry, refreshed every 2 seconds in the background.
+#[derive(Debug, Clone)]
+struct CachedWindow {
+    hwnd: isize,
+    pid: u32,
+    title: String,
+    process_name: String,
+}
+
+static WINDOW_CACHE: Lazy<RwLock<Vec<CachedWindow>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+/// Start the background window cache refresh thread.
+/// Call this once at startup (non-blocking).
+pub fn init_window_cache() {
+    std::thread::Builder::new()
+        .name("window-cache".into())
+        .spawn(|| {
+            loop {
+                refresh_window_cache();
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        })
+        .ok();
+}
+
+/// Check if an app is already running and focus its window.
+/// Returns true if an existing window was found and focused.
+/// This is the FIRST priority in the launch flow.
+pub fn try_focus_existing(entry: &AppEntry) -> bool {
+    let cache = WINDOW_CACHE.read();
+    if cache.is_empty() {
+        return false;
+    }
+
+    // Build search terms from the entry
+    let search_terms: Vec<&str> = entry.search_names.iter().map(|s| s.as_str()).collect();
+    let display_lower = entry.display_name.to_lowercase();
+
+    // Priority 1: Match by window title (most reliable)
+    // e.g. "YouTube - Brave" matches "youtube"
+    for w in cache.iter() {
+        let title_lower = w.title.to_lowercase();
+        if search_terms.iter().any(|term| title_lower.contains(term)) {
+            tracing::info!(
+                "focus hit: '{}' matched window title '{}' (pid={})",
+                entry.display_name,
+                w.title,
+                w.pid
+            );
+            focus_window(w.hwnd);
+            return true;
+        }
+    }
+
+    // Priority 2: Match by process name
+    // e.g. "notepad.exe" matches "notepad"
+    for w in cache.iter() {
+        let proc_lower = &w.process_name;
+        if search_terms.iter().any(|term| proc_lower.contains(term)) {
+            tracing::info!(
+                "focus hit: '{}' matched process '{}' (pid={})",
+                entry.display_name,
+                w.process_name,
+                w.pid
+            );
+            focus_window(w.hwnd);
+            return true;
+        }
+    }
+
+    // Priority 3: Match by display name in title
+    for w in cache.iter() {
+        let title_lower = w.title.to_lowercase();
+        if title_lower.contains(&display_lower) {
+            tracing::info!(
+                "focus hit: '{}' matched display name in title '{}' (pid={})",
+                entry.display_name,
+                w.title,
+                w.pid
+            );
+            focus_window(w.hwnd);
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Focus a window: restore if minimized, bring to foreground.
+/// Uses AttachThreadInput trick to bypass Windows' focus-stealing prevention
+/// (NEXUS is a background process, so SetForegroundWindow would normally be rejected).
+fn focus_window(hwnd_val: isize) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId,
+            IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        };
+        use windows::Win32::System::Threading::{
+            AttachThreadInput, GetCurrentThreadId,
+        };
+
+        let hwnd = HWND(hwnd_val);
+        unsafe {
+            // Restore if minimized
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+
+            // AttachThreadInput trick: attach our input queue to the current
+            // foreground thread's, so the OS treats our SetForegroundWindow
+            // request as coming from the active app.
+            let fg = GetForegroundWindow();
+            let mut fg_pid: u32 = 0;
+            let fg_thread = GetWindowThreadProcessId(fg, &mut fg_pid as *mut u32);
+            let this_thread = GetCurrentThreadId();
+            let attached = fg_thread != 0
+                && fg_thread != this_thread
+                && AttachThreadInput(this_thread, fg_thread, true).as_bool();
+
+            let _ = SetForegroundWindow(hwnd);
+            let _ = BringWindowToTop(hwnd);
+
+            if attached {
+                let _ = AttachThreadInput(this_thread, fg_thread, false);
+            }
+
+            tracing::debug!("focused window hwnd={}", hwnd_val);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = hwnd_val;
+    }
+}
+
+/// Refresh the window cache by enumerating all visible windows.
+fn refresh_window_cache() {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        };
+
+        let mut windows: Vec<CachedWindow> = Vec::new();
+
+        unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let windows = &mut *(lparam.0 as *mut Vec<CachedWindow>);
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+
+            let mut title_buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut title_buf);
+            if len <= 0 {
+                return BOOL(1); // Skip windows with no title
+            }
+
+            let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+
+            windows.push(CachedWindow {
+                hwnd: hwnd.0 as isize,
+                pid,
+                title,
+                process_name: String::new(), // filled in below
+            });
+            BOOL(1)
+        }
+
+        unsafe {
+            let lparam = LPARAM(&mut windows as *mut Vec<CachedWindow> as isize);
+            let _ = EnumWindows(Some(collect), lparam);
+        }
+
+        // Fill in process names using sysinfo (in background, so speed is fine)
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            false,
+            ProcessRefreshKind::new(),
+        );
+
+        for w in &mut windows {
+            if let Some(proc) = sys.process(sysinfo::Pid::from_u32(w.pid)) {
+                w.process_name = proc.name().to_string_lossy().to_lowercase();
+            }
+        }
+
+        let count = windows.len();
+        *WINDOW_CACHE.write() = windows;
+        tracing::trace!("window cache refreshed: {} windows", count);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: `open -a` already focuses existing instances, so we don't
+        // need a window cache. But we could use NSWorkspace if needed.
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: `wmctrl -a` focuses by title. We could cache `wmctrl -l` output.
+        use std::process::Command;
+        let output = Command::new("wmctrl").args(["-l", "-p"]).output();
+        if let Ok(out) = output {
+            if out.status.success() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let mut windows: Vec<CachedWindow> = Vec::new();
+                for line in stdout.lines() {
+                    // wmctrl -l -p format: <hwnd> <desktop> <pid> <host> <title>
+                    let parts: Vec<&str> = line.splitn(5, char::is_whitespace).collect();
+                    if parts.len() < 5 { continue; }
+                    let hwnd = parts[0].parse::<isize>().unwrap_or(0);
+                    let pid = parts[2].parse::<u32>().unwrap_or(0);
+                    let title = parts[4..].join(" ");
+                    windows.push(CachedWindow {
+                        hwnd,
+                        pid,
+                        title,
+                        process_name: String::new(),
+                    });
+                }
+                *WINDOW_CACHE.write() = windows;
+            }
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn launch_shell_execute(target: &str) -> Result<(), String> {

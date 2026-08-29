@@ -1,12 +1,14 @@
-//! Wake-word engine using openWakeWord (KWS) + speaker verification.
+//! Wake-word engine using openWakeWord (KWS) + speaker verification,
+//! with Tier 3 direct command classification.
 //!
 //! Pipeline:
 //!   Microphone → cpal capture (native SR) → resample to 16kHz mono
 //!   → openWakeWord KWS (1280-sample / 80ms sliding window)
-//!   → 3-stage: melspectrogram → embedding → classifier
-//!   → probability score for "nexus"
-//!   → if score > threshold for multiple frames → speaker verification
-//!   → if speaker matches (or open mode) → trigger wake
+//!   → 3-stage: melspectrogram → embedding → classifier(s)
+//!   → probability score for "nexus" (wake word)
+//!   → probability scores for command phrases ("open youtube", etc.)
+//!   → if wake score > threshold → speaker verification → trigger wake
+//!   → if command score > threshold → emit command-detected event (skip STT)
 //!
 //! `mock-wake` feature: skip the engine entirely; only the global hotkey produces wakes.
 //!
@@ -15,6 +17,14 @@
 //!   - No ASR (doesn't need to transcribe — directly detects acoustic pattern)
 //!   - Runs continuously on every 80ms chunk
 //!   - Expected recall: >95% (vs ~30% with VAD+ASR)
+//!
+//! Tier 3 command classifiers:
+//!   - Loaded from resources/oww/commands/*.onnx
+//!   - Share the same melspectrogram + embedding models as the wake word
+//!   - Run in parallel with the wake-word classifier on every 80ms chunk
+//!   - When a command fires, emit a `command-detected` Tauri event
+//!   - Frontend skips STT and executes the mapped intent directly
+//!   - Falls back to STT if no command classifier matches
 
 use tauri::{AppHandle, Runtime};
 
@@ -32,9 +42,37 @@ mod engine {
     use std::sync::Arc;
 
     use circular_buffer::CircularBuffer;
+    use serde::{Deserialize, Serialize};
     use tract_onnx::prelude::*;
 
     type ModelType = Arc<TypedSimplePlan>;
+
+    // ─── Tier 3: Command classifier types ───────────────────────────────
+
+    /// A structured intent emitted when a command classifier fires.
+    /// This is serialized and sent to the frontend via a Tauri event.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct CommandIntent {
+        pub action: String,
+        pub target: String,
+    }
+
+    /// The intent mapping loaded from `command_intents.json`.
+    #[derive(Debug, Clone, Deserialize)]
+    struct CommandIntentEntry {
+        phrase: String,
+        model_file: String,
+        intent: CommandIntent,
+    }
+
+    /// A loaded command classifier model + its mapped intent.
+    struct CommandClassifier {
+        model_name: String,
+        model: ModelType,
+        intent: CommandIntent,
+        detections_buffer: CircularBuffer<DETECTION_BUFFER_SIZE, f32>,
+        last_detection_time: std::time::Instant,
+    }
 
     /// OWW processes 1280-sample chunks (80ms at 16kHz)
     pub const OWW_CHUNK_SIZE: usize = 1280;
@@ -218,7 +256,8 @@ mod engine {
         }
     }
 
-    /// openWakeWord KWS engine with optional speaker verification.
+    /// openWakeWord KWS engine with optional speaker verification
+    /// and Tier 3 command classifiers.
     pub struct WakeEngine {
         pub classifier: ModelType,
         pub audio_features: AudioFeatures,
@@ -228,6 +267,80 @@ mod engine {
         pub threshold: f32,
         pub detections_buffer: CircularBuffer<DETECTION_BUFFER_SIZE, f32>,
         pub last_detection_time: std::time::Instant,
+        /// Tier 3: command classifiers loaded from resources/oww/commands/
+        pub command_classifiers: Vec<CommandClassifier>,
+        /// Sender for command-detected events (None if no command models loaded)
+        pub command_tx: Option<tokio::sync::mpsc::UnboundedSender<CommandIntent>>,
+    }
+
+    /// Load Tier 3 command classifiers from `resources/oww/commands/`.
+    ///
+    /// Reads `command_intents.json` for the intent mapping, then loads each
+    /// `.onnx` model file referenced in it. Models that fail to load are
+    /// skipped with a warning — the wake word and STT fallback still work.
+    fn load_command_classifiers(oww_dir: &Path) -> Vec<CommandClassifier> {
+        let commands_dir = oww_dir.join("commands");
+        let intents_path = commands_dir.join("command_intents.json");
+
+        if !intents_path.exists() {
+            return Vec::new();
+        }
+
+        let json_str = match std::fs::read_to_string(&intents_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Tier 3: failed to read {}: {e}", intents_path.display());
+                return Vec::new();
+            }
+        };
+
+        let entries: std::collections::HashMap<String, CommandIntentEntry> =
+            match serde_json::from_str(&json_str) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("Tier 3: failed to parse {}: {e}", intents_path.display());
+                    return Vec::new();
+                }
+            };
+
+        let mut classifiers = Vec::new();
+        for (model_name, entry) in &entries {
+            let model_path = commands_dir.join(&entry.model_file);
+            if !model_path.exists() {
+                tracing::warn!(
+                    "Tier 3: model file {} not found at {} — skipping",
+                    entry.model_file,
+                    model_path.display()
+                );
+                continue;
+            }
+
+            match load_onnx_model(&model_path) {
+                Ok(model) => {
+                    tracing::info!(
+                        "Tier 3: loaded command classifier '{}' (phrase: \"{}\", intent: {:?})",
+                        model_name, entry.phrase, entry.intent
+                    );
+                    classifiers.push(CommandClassifier {
+                        model_name: model_name.clone(),
+                        model,
+                        intent: entry.intent.clone(),
+                        detections_buffer: CircularBuffer::<DETECTION_BUFFER_SIZE, f32>::new(),
+                        last_detection_time: std::time::Instant::now()
+                            .checked_sub(std::time::Duration::from_secs(10))
+                            .unwrap_or_else(std::time::Instant::now),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Tier 3: failed to load {}: {e}",
+                        model_path.display()
+                    );
+                }
+            }
+        }
+
+        classifiers
     }
 
     impl WakeEngine {
@@ -297,6 +410,22 @@ mod engine {
                  (wake word: NEXUS, 80ms sliding window, threshold: 0.5)"
             );
 
+            // --- Tier 3: Load command classifiers (optional) ---
+            let command_classifiers = load_command_classifiers(&oww_dir);
+            if !command_classifiers.is_empty() {
+                tracing::info!(
+                    "Tier 3: loaded {} command classifiers \
+                     (direct audio→intent, skips STT for known commands)",
+                    command_classifiers.len()
+                );
+            } else {
+                tracing::debug!(
+                    "Tier 3: no command classifiers found at {}/commands/ \
+                     (optional — STT fallback handles all commands)",
+                    oww_dir.display()
+                );
+            }
+
             Ok(WakeEngine {
                 classifier,
                 audio_features,
@@ -308,18 +437,23 @@ mod engine {
                 last_detection_time: std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(10))
                     .unwrap_or_else(std::time::Instant::now),
+                command_classifiers,
+                command_tx: None,
             })
         }
 
         /// Run KWS detection on a single 80ms chunk.
-        /// Returns (detected, probability).
-        fn detect_chunk(&mut self, chunk: Vec<f32>) -> (bool, f32) {
+        /// Returns (wake_detected, wake_probability, optional command_intent).
+        fn detect_chunk(
+            &mut self,
+            chunk: Vec<f32>,
+        ) -> (bool, f32, Option<CommandIntent>) {
             // Get audio features (melspectrogram → embedding)
             let features = match self.audio_features.get_audio_features(&chunk) {
                 Ok(f) => f,
                 Err(e) => {
                     tracing::warn!("Audio feature extraction error: {e}");
-                    return (false, 0.0);
+                    return (false, 0.0, None);
                 }
             };
 
@@ -328,16 +462,16 @@ mod engine {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::warn!("Feature reshape error: {e}");
-                    return (false, 0.0);
+                    return (false, 0.0, None);
                 }
             };
 
-            // Run classifier
-            let outputs: TVec<TValue> = match self.classifier.clone().run(tvec!(last.into())) {
+            // Run wake-word classifier
+            let outputs: TVec<TValue> = match self.classifier.clone().run(tvec!(last.clone().into())) {
                 Ok(o) => o,
                 Err(e) => {
                     tracing::warn!("Classifier inference error: {e}");
-                    return (false, 0.0);
+                    return (false, 0.0, None);
                 }
             };
 
@@ -349,7 +483,7 @@ mod engine {
                 Ok(c) => c.into_owned(),
                 Err(e) => {
                     tracing::warn!("Classifier output cast error: {e}");
-                    return (false, 0.0);
+                    return (false, 0.0, None);
                 }
             };
 
@@ -366,13 +500,104 @@ mod engine {
             let since_last = self.last_detection_time.elapsed().as_millis();
 
             // Trigger when smoothed average exceeds threshold (with refractory period)
-            if avg > self.threshold && since_last > NO_DETECTION_MS as u128 {
+            let wake_detected = if avg > self.threshold && since_last > NO_DETECTION_MS as u128 {
                 self.last_detection_time = std::time::Instant::now();
                 self.detections_buffer.clear();
-                return (true, avg);
+                true
+            } else {
+                false
+            };
+
+            // --- Tier 3: Run command classifiers in parallel ---
+            let command_intent = self.detect_commands(&last);
+
+            (wake_detected, avg, command_intent)
+        }
+
+        /// Run all command classifiers on the current feature frame.
+        /// Returns the intent of the first classifier that fires (if any).
+        fn detect_commands(&mut self, features: &Tensor) -> Option<CommandIntent> {
+            if self.command_classifiers.is_empty() {
+                return None;
             }
 
-            (false, avg)
+            let mut best_intent: Option<(CommandIntent, f32)> = None;
+
+            for cmd in &mut self.command_classifiers {
+                let outputs: TVec<TValue> = match cmd.model.clone().run(tvec!(features.clone().into())) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Tier 3: command classifier '{}' inference error: {e}",
+                            cmd.model_name
+                        );
+                        continue;
+                    }
+                };
+
+                let t = match outputs[0]
+                    .clone()
+                    .into_tensor()
+                    .cast_to::<f32>()
+                {
+                    Ok(c) => c.into_owned(),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Tier 3: command classifier '{}' output cast error: {e}",
+                            cmd.model_name
+                        );
+                        continue;
+                    }
+                };
+
+                let probability = match t.into_plain_array::<f32>() {
+                    Ok(arr) => arr.as_slice().unwrap_or(&[0.0])[0],
+                    Err(_) => 0.0,
+                };
+
+                cmd.detections_buffer.push_back(probability);
+
+                // Smoothed average of positive detections (same logic as wake word)
+                let all = cmd.detections_buffer.to_vec();
+                let mut cumulative = 0.0f32;
+                let mut positive_count = 0.0f32;
+                for d in all {
+                    if d > self.threshold {
+                        positive_count += 1.0;
+                        cumulative += d;
+                    }
+                }
+                if positive_count < MIN_POSITIVE_DETECTIONS {
+                    continue;
+                }
+                let avg = cumulative / positive_count;
+                if avg <= self.threshold {
+                    continue;
+                }
+
+                // Refractory period: don't re-trigger the same command within 2s
+                let since_last = cmd.last_detection_time.elapsed().as_millis();
+                if since_last <= NO_DETECTION_MS as u128 {
+                    continue;
+                }
+
+                // This command fired — track the best (highest probability) one
+                if best_intent.is_none() || avg > best_intent.as_ref().unwrap().1 {
+                    best_intent = Some((cmd.intent.clone(), avg));
+                    cmd.last_detection_time = std::time::Instant::now();
+                    cmd.detections_buffer.clear();
+                }
+            }
+
+            if let Some((intent, prob)) = best_intent {
+                tracing::info!(
+                    "Tier 3: command detected → {:?} (probability: {:.3})",
+                    intent, prob
+                );
+                Some(intent)
+            } else {
+                None
+            }
         }
 
         /// Calculate average of positive detections in the buffer.
@@ -395,16 +620,25 @@ mod engine {
 
         /// Process a chunk of 16kHz mono f32 audio.
         /// Returns true if the wake word "NEXUS" was detected and the speaker was accepted.
+        /// Also emits command-detected events via `command_tx` if any Tier 3
+        /// command classifier fires.
         pub fn process(&mut self, samples: &[f32]) -> bool {
             self.chunk_buffer.extend_from_slice(samples);
 
             while self.chunk_buffer.len() >= OWW_CHUNK_SIZE {
                 let chunk: Vec<f32> = self.chunk_buffer.drain(0..OWW_CHUNK_SIZE).collect();
 
-                let (detected, prob) = self.detect_chunk(chunk);
+                let (detected, prob, command_intent) = self.detect_chunk(chunk);
 
                 if prob > 0.1 {
                     tracing::debug!("OWW probability: {:.3}", prob);
+                }
+
+                // --- Tier 3: emit command-detected event if a command fired ---
+                if let Some(intent) = command_intent {
+                    if let Some(ref tx) = self.command_tx {
+                        let _ = tx.send(intent);
+                    }
                 }
 
                 if detected {
@@ -539,22 +773,50 @@ static WAKE_TX: OnceCell<tokio::sync::mpsc::UnboundedSender<()>> = OnceCell::new
 
 #[cfg(not(feature = "mock-wake"))]
 pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
 
     let res = app.path().resource_dir().map_err(|e| format!("resource dir: {e}"))?;
     let data_dir = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
 
-    let engine = std::sync::Arc::new(parking_lot::Mutex::new(
-        engine::WakeEngine::new(res, data_dir)
-            .map_err(|e| format!("wake engine init: {e}"))?,
-    ));
+    let mut wake_engine = engine::WakeEngine::new(res, data_dir)
+        .map_err(|e| format!("wake engine init: {e}"))?;
+
+    // Create command channel for Tier 3 command classifiers
+    let (cmd_tx, mut cmd_rx) =
+        tokio::sync::mpsc::unbounded_channel::<engine::CommandIntent>();
+    wake_engine.command_tx = Some(cmd_tx);
+
+    let engine = std::sync::Arc::new(parking_lot::Mutex::new(wake_engine));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _ = WAKE_TX.set(tx);
 
-    start_audio_capture(engine)?;
+    start_audio_capture(engine.clone())?;
 
+    // Spawn a task to handle Tier 3 command-detected events.
+    // These bypass STT entirely and go straight to the frontend.
+    let app_for_commands = app.clone();
+    tokio::spawn(async move {
+        while let Some(intent) = cmd_rx.recv().await {
+            tracing::info!(
+                "Tier 3: emitting command-detected event → action={}, target={}",
+                intent.action, intent.target
+            );
+
+            // Emit to frontend — the frontend will skip STT and execute
+            // the intent directly via invoke("execute_command", { intent }).
+            if let Some(win) = app_for_commands.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+                let _ = win.set_always_on_top(true);
+                let _ = win.set_ignore_cursor_events(false);
+                let _ = app_for_commands.emit("command-detected", &intent);
+            }
+        }
+    });
+
+    // Main loop: handle wake-word detections
     while rx.recv().await.is_some() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 

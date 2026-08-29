@@ -69,6 +69,20 @@ training, validation, and every component in detail.
 | 11 | [testing-strategy.md](./wake-word/11-testing-strategy.md) | Test plan: what to verify, how to test, expected results |
 | 12 | [performance-expectations.md](./wake-word/12-performance-expectations.md) | Performance: RAM, CPU, latency comparisons between old and new approaches |
 
+#### Tier 3: Direct Command Classification (Skip ASR)
+
+Tier 3 extends the OWW pipeline to detect spoken commands directly from
+audio — no Whisper, no transcript, no 27-second delay. When a command
+classifier fires, NEXUS executes the action in ~200ms.
+
+| # | Document | Description |
+|---|----------|-------------|
+| 15 | [tier3-command-classifiers.md](./wake-word/15-tier3-command-classifiers.md) | Tier 3 architecture: how command classifiers work, integration plan, safety |
+| 16 | [tier3-decision-comparison.md](./wake-word/16-tier3-decision-comparison.md) | All 6 options considered for latency reduction, comparison matrix, why OWW classifiers were chosen |
+| 17 | [tier3-resource-analysis.md](./wake-word/17-tier3-resource-analysis.md) | Measured RAM/CPU/latency breakdown, projected usage after Tier 3, GPU considerations |
+| 18 | [tier3-training-approach.md](./wake-word/18-tier3-training-approach.md) | 4 training approaches compared, why per-command OWW classifiers + Colab was chosen |
+| 19 | [tier3-testing-strategy.md](./wake-word/19-tier3-testing-strategy.md) | Test plan for Tier 3: functional, latency, false positive, cross-command, fallback, resource |
+
 ### Document Reading Order
 
 If you're new to the project, read in this order:
@@ -81,24 +95,31 @@ If you're new to the project, read in this order:
 6. **06-model-training.md** — understand how the model was created
 7. **13-colab-training-notebook.md** — understand the training notebook in detail
 8. **14-model-validation-results.md** — see the validation test results
-9. The rest can be read in any order
+9. **16-tier3-decision-comparison.md** — understand the latency problem and all options
+10. **15-tier3-command-classifiers.md** — understand the Tier 3 solution
+11. **17-tier3-resource-analysis.md** — see the resource measurements
+12. **18-tier3-training-approach.md** — understand the training approach
+13. **19-tier3-testing-strategy.md** — see the test plan
+14. The rest can be read in any order
 
 ---
 
 ## Quick Reference
 
-| Aspect | Old (VAD+ASR) | New (openWakeWord KWS) |
-|--------|---------------|------------------------|
-| Architecture | VAD gate → ASR → text match | KWS sliding window → probability |
-| Recall | ~30% | ~100% (7/7 in validation) |
-| Latency | 500-1000ms | ~80ms |
-| RAM | ~143 MB | ~30-50 MB |
-| Background noise | Poor | Robust |
-| Start of word | Clipped by VAD | Never missed |
-| Custom wake word | Text matching only | Trained acoustic model |
-| Rust runtime | sherpa-onnx (native) | tract-onnx (pure Rust) |
-| Model file | N/A | nexus.onnx (772 KB) |
-| False positives | Frequent | 0 observed |
+| Aspect | Old (VAD+ASR) | New (openWakeWord KWS) | Tier 3 (Command Classifiers) |
+|--------|---------------|------------------------|------------------------------|
+| Architecture | VAD gate → ASR → text match | KWS sliding window → probability | OWW classifiers for known commands |
+| Recall | ~30% | ~100% (7/7 in validation) | ~95%+ (trained per command) |
+| Latency | 500-1000ms | ~80ms (wake) | **~200ms (command → action)** |
+| Command latency | 27,000ms (Whisper base) | 27,000ms (still uses Whisper) | **~200ms (skips Whisper entirely)** |
+| RAM | ~143 MB | ~30-50 MB | **~5 MB per command** (shared features) |
+| Background noise | Poor | Robust | Robust (same pipeline) |
+| Start of word | Clipped by VAD | Never missed | Never missed |
+| Custom wake word | Text matching only | Trained acoustic model | Trained per command |
+| Rust runtime | sherpa-onnx (native) | tract-onnx (pure Rust) | tract-onnx (pure Rust, same pipeline) |
+| Model file | N/A | nexus.onnx (772 KB) | ~800 KB per command |
+| False positives | Frequent | 0 observed | Controlled by threshold + negatives |
+| STT fallback | N/A | Always used | **Only for unknown commands** |
 
 ---
 
@@ -109,7 +130,10 @@ If you're new to the project, read in this order:
 | `src-tauri/resources/oww/nexus.onnx` | 790 KB | Custom trained wake word classifier |
 | `src-tauri/resources/oww/melspectrogram.onnx` | 1.1 MB | Pre-trained mel spectrogram extractor |
 | `src-tauri/resources/oww/embedding_model.onnx` | 1.3 MB | Pre-trained embedding extractor |
-| `train_nexus_oww.ipynb` | — | Training notebook (run in Google Colab) |
+| `src-tauri/resources/oww/commands/*.onnx` | ~800 KB each | Tier 3 command classifiers (trained via Colab) |
+| `src-tauri/resources/oww/commands/command_intents.json` | — | Intent mapping for command classifiers |
+| `train_nexus_oww.ipynb` | — | Wake word training notebook (run in Google Colab) |
+| `train_nexus_commands.ipynb` | — | Command classifier training notebook (run in Google Colab) |
 
 ---
 
@@ -124,5 +148,10 @@ If you're new to the project, read in this order:
 | Hotkey wake (Ctrl+Shift+Space) | WORKING | Preserved from before |
 | Spoken wake ("nexus") | WORKING | 7 detections in ~3 min |
 | Speaker verification | PENDING | Ring buffer + verification not yet implemented |
+| Tier 3: Command classifiers (Rust) | IMPLEMENTED | Multi-classifier support in wakeword_oww.rs |
+| Tier 3: Command event listener (frontend) | IMPLEMENTED | main.tsx listens for command-detected events |
+| Tier 3: Training notebook | CREATED | train_nexus_commands.ipynb (run in Colab) |
+| Tier 3: Command models | PENDING | Need to run Colab notebook to train 10 models |
+| Tier 3: Testing | PENDING | Need trained models first, then run test plan |
 | Extended testing | PENDING | Multi-speaker, noise, long-running |
 | Installer | NOT STARTED | Deferred until all testing complete |

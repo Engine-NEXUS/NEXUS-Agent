@@ -123,6 +123,67 @@ function stopMicStream() {
   void startListening();
 };
 
+/**
+ * Tier 3: Direct command detection listener.
+ *
+ * When a command classifier fires in the OWW pipeline (e.g. "open youtube"),
+ * Rust emits a `command-detected` Tauri event with the structured intent.
+ * The frontend skips STT entirely and executes the intent directly —
+ * no Whisper, no transcript, no 27-second delay.
+ *
+ * This is the fast path: ~200ms from speech to action.
+ * The STT path remains as fallback for commands not covered by classifiers.
+ */
+async function setupCommandDetectionListener() {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen<{ action: string; target: string }>("command-detected", async (event) => {
+      const intent = event.payload;
+      console.log(`[NEXUS] Tier 3 command detected: ${intent.action} → ${intent.target}`);
+
+      const { useAssistant } = await import("./store/assistant");
+      const { speak } = await import("./audio/ttsPlayer");
+
+      // Show the overlay and set state to speaking
+      const s = useAssistant.getState();
+      s.setVisible(true);
+      s.setState("speaking");
+
+      // Add user-facing message showing what was detected
+      s.addUserMessage(`${intent.action.replace(/_/g, " ")} ${intent.target}`);
+
+      // Speak short acknowledgement
+      s.addAssistantMessage("Ok sir.");
+      void speak("Ok sir.");
+
+      // Execute the command directly — no STT needed
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const result = await invoke<{ success: boolean; message: string }>(
+          "execute_command",
+          { intent }
+        );
+        console.log(`[NEXUS] Tier 3 execute result:`, result);
+      } catch (err) {
+        console.error("[NEXUS] Tier 3 command execution failed:", err);
+      }
+
+      // Hide after a short delay
+      setTimeout(() => {
+        useAssistant.getState().setVisible(false);
+        setTimeout(() => useAssistant.getState().reset(), 550);
+      }, 800);
+    });
+    console.log("[NEXUS] Tier 3 command detection listener registered");
+  } catch (err) {
+    // Non-fatal — STT fallback handles all commands if this listener fails
+    console.warn("[NEXUS] Failed to register Tier 3 command listener:", err);
+  }
+}
+
+// Register the listener at startup (non-blocking, non-fatal)
+void setupCommandDetectionListener();
+
 /** Called from Rust to cancel the current session. */
 (window as any).__NEXUS_CANCEL__ = async () => {
   const { useAssistant } = await import("./store/assistant");
