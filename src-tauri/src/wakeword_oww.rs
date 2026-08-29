@@ -851,22 +851,41 @@ mod engine {
                 // 500ms = 8000 samples @ 16kHz
                 if self.confirmation_buffer.len() >= 8000 {
                     let buf = std::mem::take(&mut self.confirmation_buffer);
-                    let rms = {
+                    let raw_rms = {
                         let sum_sq: f32 = buf.iter().map(|s| s * s).sum();
                         (sum_sq / buf.len() as f32).sqrt()
                     };
+                    // Apply the same AGC as the classifier (see detect_chunk):
+                    // amplify to TARGET_RMS (0.03) with MAX_GAIN (50x). This ensures
+                    // the confirmation window sees the same audio level the
+                    // classifier did. Without this, the classifier fires at 0.99
+                    // on AGC-amplified audio but the confirmation rejects it
+                    // because the raw RMS is below 0.001 — a mismatch that
+                    // causes valid wakes to be discarded on Intel SST mics
+                    // that deliver very quiet audio.
+                    const CONF_TARGET_RMS: f32 = 0.03;
+                    const CONF_MAX_GAIN: f32 = 50.0;
+                    let agc_rms = if raw_rms > 0.0 && raw_rms < CONF_TARGET_RMS {
+                        let gain = (CONF_TARGET_RMS / raw_rms).min(CONF_MAX_GAIN);
+                        let amplified: f32 = buf.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).map(|s| s * s).sum();
+                        (amplified / buf.len() as f32).sqrt()
+                    } else {
+                        raw_rms
+                    };
                     self.confirmation_active = false;
 
-                    if rms >= 0.001 {
+                    // Use AGC-adjusted RMS for the threshold check, but log both
+                    // so we can see what the raw mic level was.
+                    if agc_rms >= 0.001 {
                         tracing::info!(
-                            "OWW wake confirmed! (probability: {:.3}, confirmation RMS: {:.4})",
-                            self.pending_probability, rms
+                            "OWW wake confirmed! (probability: {:.3}, raw RMS: {:.6}, AGC RMS: {:.4})",
+                            self.pending_probability, raw_rms, agc_rms
                         );
                         return true;
                     } else {
                         tracing::info!(
-                            "OWW wake rejected — confirmation RMS too low ({:.4} < 0.001), likely noise spike",
-                            rms
+                            "OWW wake rejected — confirmation RMS too low (raw={:.6}, AGC={:.4} < 0.001), likely noise spike",
+                            raw_rms, agc_rms
                         );
                         // Reset detection state
                         self.detections_buffer.clear();
@@ -1258,25 +1277,36 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 #[cfg(target_os = "windows")]
                 use std::os::windows::process::CommandExt;
                 tracing::info!("silence-recovery: thread started, monitoring for mic silence");
+                let mut consecutive_silent_restarts: u64 = 0;
                 loop {
-                    // Check every 5s (was 10s, originally 30s). The Intel SST
-                    // driver delivers audio in brief 5-15s bursts after each
-                    // stream restart, then goes silent. A faster poll gives
-                    // us more chances to catch a working window.
-                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    // Base poll interval is 5s, but apply exponential backoff
+                    // after consecutive silent restarts. The Intel SST driver
+                    // delivers audio in brief 5-15s bursts after each restart,
+                    // then goes silent. If restarts aren't helping (the driver
+                    // is stuck), back off to avoid a tight restart loop.
+                    // Backoff schedule: 5s, 5s, 10s, 20s, 40s, 60s (capped)
+                    let poll_secs = if consecutive_silent_restarts <= 1 {
+                        5
+                    } else {
+                        let backoff = 5u64 * (1u64 << (consecutive_silent_restarts - 1).min(4));
+                        backoff.min(60)
+                    };
+                    std::thread::sleep(std::time::Duration::from_secs(poll_secs));
                     let last_cb = LAST_CALLBACK_FOR_RECOVERY.load(Ordering::Relaxed);
                     let last_non_silent = LAST_NONSILENT_FOR_RECOVERY.load(Ordering::Relaxed);
                     let now_cb = CALLBACK_COUNT_GLOBAL.load(Ordering::Relaxed);
 
-                    // If no callbacks at all in 5s, the stream is dead.
-                    // If callbacks are flowing but all silent for >5s, restart.
+                    // If no callbacks at all in the poll window, the stream is dead.
+                    // If callbacks are flowing but all silent, restart only if
+                    // silence has persisted for the full poll window.
                     let callbacks_stalled = now_cb.saturating_sub(last_cb) == 0;
                     let silence_duration = now_cb.saturating_sub(last_non_silent);
-                    // ~33 callbacks/sec → 5s = 165 callbacks
-                    let long_silence = silence_duration > 165;
+                    // ~33 callbacks/sec → poll_secs * 33 callbacks
+                    let long_silence = silence_duration > (poll_secs * 33);
 
                     if callbacks_stalled || long_silence {
                         let restart_n = RECOVERY_RESTART_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        consecutive_silent_restarts = consecutive_silent_restarts.saturating_add(1);
                         tracing::warn!(
                             "silence-recovery #{}: restarting audio stream (stalled={}, silence_callbacks={}, total_callbacks={})",
                             restart_n, callbacks_stalled, silence_duration, now_cb
@@ -1368,6 +1398,15 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                                 }
                             }
                         }
+                    }
+
+                    // If audio is flowing and non-silent, reset the backoff
+                    if !callbacks_stalled && !long_silence && consecutive_silent_restarts > 0 {
+                        tracing::info!(
+                            "silence-recovery: audio recovered after {} restart(s) — resetting backoff",
+                            consecutive_silent_restarts
+                        );
+                        consecutive_silent_restarts = 0;
                     }
 
                     // Update our last-seen callback count
