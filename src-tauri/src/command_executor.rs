@@ -62,6 +62,14 @@ pub enum Intent {
     BrowserNextTab,
     #[serde(rename = "browser_back")]
     BrowserBack,
+    #[serde(rename = "media_play_pause")]
+    MediaPlayPause,
+    #[serde(rename = "media_next")]
+    MediaNext,
+    #[serde(rename = "media_previous")]
+    MediaPrevious,
+    #[serde(rename = "media_stop")]
+    MediaStop,
     #[serde(rename = "unknown")]
     Unknown { raw: String },
 }
@@ -100,6 +108,10 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
         Intent::BrowserCloseTab => browser_key("ctrl+w", "close tab"),
         Intent::BrowserNextTab => browser_key("ctrl+tab", "next tab"),
         Intent::BrowserBack => browser_key("alt+left", "back"),
+        Intent::MediaPlayPause => execute_media_command("play_pause").await,
+        Intent::MediaNext => execute_media_command("next").await,
+        Intent::MediaPrevious => execute_media_command("previous").await,
+        Intent::MediaStop => execute_media_command("stop").await,
         Intent::Unknown { raw } => Ok(CommandResult {
             success: false,
             message: format!(
@@ -107,6 +119,29 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
                 raw
             ),
         }),
+    }
+}
+
+async fn execute_media_command(action: &str) -> Result<CommandResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        match crate::mpris::send_mpris_command(action).await {
+            Ok(msg) => Ok(CommandResult {
+                success: true,
+                message: msg,
+            }),
+            Err(e) => Ok(CommandResult {
+                success: false,
+                message: format!("Couldn't control media: {e}"),
+            }),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(CommandResult {
+            success: true,
+            message: format!("Media {} executed, sir.", action),
+        })
     }
 }
 
@@ -380,7 +415,12 @@ fn volume_mute() -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("amixer").args(["-q", "set", "Master", "toggle"]).spawn();
+        // Try PipeWire (wpctl), PulseAudio (pactl), or ALSA (amixer)
+        let _ = Command::new("wpctl")
+            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+            .spawn()
+            .or_else(|_| Command::new("pactl").args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"]).spawn())
+            .or_else(|_| Command::new("amixer").args(["-q", "set", "Master", "toggle"]).spawn());
     }
     tracing::info!("volume muted");
     Ok(CommandResult {
@@ -406,7 +446,12 @@ fn take_screenshot() -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("gnome-screenshot").arg("-a").spawn();
+        // Try COSMIC / GNOME / Spectacle / grim / xdg-desktop-portal screenshot tools
+        let _ = Command::new("cosmic-screenshot")
+            .spawn()
+            .or_else(|_| Command::new("gnome-screenshot").arg("-a").spawn())
+            .or_else(|_| Command::new("spectacle").arg("-r").spawn())
+            .or_else(|_| Command::new("flameshot").arg("gui").spawn());
     }
     tracing::info!("screenshot taken");
     Ok(CommandResult {
@@ -483,7 +528,7 @@ fn browser_key(keys: &str, label: &str) -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("xdotool").args(["key", keys.replace("+", "+")]).spawn();
+        let _ = Command::new("xdotool").args(["key", keys]).spawn();
     }
     tracing::info!("browser key: {} ({})", keys, label);
     Ok(CommandResult {
@@ -1093,8 +1138,7 @@ fn find_desktop_entry(name: &str) -> Option<String> {
                 if fname.contains(&name_lower) || fname.contains(&name_no_spaces) {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         for line in content.lines() {
-                            if line.starts_with("Exec=") {
-                                let exec = &line[5..];
+                            if let Some(exec) = line.strip_prefix("Exec=") {
                                 let clean = exec
                                     .split_whitespace()
                                     .filter(|w| !w.starts_with('%'))

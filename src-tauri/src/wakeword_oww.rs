@@ -109,7 +109,21 @@ mod engine {
     /// Minimum positive detections before triggering
     /// (2 frames = 160ms of consistent detection — filters transient spikes
     /// but is lenient enough for the 78.6% accuracy model)
-    const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
+    const MIN_POSITIVE_DETECTIONS: f32 = 1.0;
+
+    /// Single-frame high-confidence threshold.
+    /// If any single frame exceeds this, trigger immediately without
+    /// requiring MIN_POSITIVE_DETECTIONS frames. This fixes the case where
+    /// the model produces one high probability (e.g. 0.67 or 0.89) but the
+    /// adjacent frames are below threshold — the 2-frame smoothing was
+    /// killing valid detections with 58.2%-recall models.
+    /// 0.5 is above the 0.45 trigger threshold and far above noise
+    /// (silence gate already blocks RMS < 0.0005, and the model produces
+    /// <0.01 on non-wake speech), so a single 0.5+ frame is a real wake.
+    /// The model produces lower probabilities for voices it wasn't trained
+    /// on (e.g. 0.67 for a non-enrolled speaker vs 0.89 for the owner),
+    /// so 0.5 covers both cases while still rejecting noise.
+    const SINGLE_FRAME_HIGH_CONFIDENCE: f32 = 0.5;
 
     /// Refractory period after a detection (ms)
     const NO_DETECTION_MS: u64 = 2000;
@@ -290,7 +304,10 @@ mod engine {
     pub struct WakeEngine {
         pub classifier: ModelType,
         pub audio_features: AudioFeatures,
+        #[cfg(feature = "wakeword-sherpa")]
         pub speaker: Option<crate::voice_profile::SpeakerVerifier>,
+        #[cfg(not(feature = "wakeword-sherpa"))]
+        pub speaker: (),  // placeholder — speaker verification not compiled in default builds
         pub sample_rate: i32,
         pub chunk_buffer: Vec<f32>,
         pub threshold: f32,
@@ -400,39 +417,36 @@ mod engine {
             tracing::info!("Loading audio feature extractors from: {}", oww_dir.display());
             let audio_features = AudioFeatures::new(&oww_dir)?;
 
-            // --- Speaker verifier (optional) ---
-            let speaker_model = oww_dir.join("speaker_model.onnx");
-            let speaker_model = if speaker_model.exists() {
-                speaker_model
-            } else {
-                let sherpa_dir = resource_dir.join("sherpa");
-                let alt = sherpa_dir.join("speaker_model.onnx");
-                if alt.exists() { alt } else { speaker_model }
-            };
-
-            let speaker = if speaker_model.exists() {
-                let profile_path = crate::voice_profile::resolve_profile_path(&app_data_dir);
-                match crate::voice_profile::SpeakerVerifier::new(speaker_model, profile_path) {
-                    Ok(v) => {
-                        if v.has_profile() {
-                            tracing::info!("Speaker verification enabled (voice profile loaded)");
-                        } else {
-                            tracing::info!(
-                                "Speaker verification in open mode \
-                                 (no profile enrolled — any speaker can wake)"
-                            );
+            // --- Speaker verifier (optional, wakeword-sherpa only) ---
+            #[cfg(feature = "wakeword-sherpa")]
+            let speaker = {
+                let speaker_model_path = oww_dir.join("speaker_model.onnx");
+                let speaker_model_path = if speaker_model_path.exists() {
+                    speaker_model_path
+                } else {
+                    let alt = resource_dir.join("sherpa").join("speaker_model.onnx");
+                    if alt.exists() { alt } else { speaker_model_path }
+                };
+                if speaker_model_path.exists() {
+                    let profile_path = crate::voice_profile::resolve_profile_path(&app_data_dir);
+                    match crate::voice_profile::SpeakerVerifier::new(speaker_model_path, profile_path) {
+                        Ok(v) => {
+                            if v.has_profile() {
+                                tracing::info!("Speaker verification enabled (voice profile loaded)");
+                            } else {
+                                tracing::info!("Speaker verification open (no profile enrolled)");
+                            }
+                            Some(v)
                         }
-                        Some(v)
+                        Err(e) => { tracing::warn!("Failed to init speaker verifier: {e}"); None }
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to init speaker verifier: {e}");
-                        None
-                    }
+                } else {
+                    tracing::warn!("Speaker model not found — speaker verification disabled");
+                    None
                 }
-            } else {
-                tracing::warn!("Speaker model not found — speaker verification disabled");
-                None
             };
+            #[cfg(not(feature = "wakeword-sherpa"))]
+            let speaker = ();
 
             let threshold = 0.45f32;
             tracing::info!(
@@ -608,6 +622,14 @@ mod engine {
 
             let since_last = self.last_detection_time.elapsed().as_millis();
 
+            // Log which trigger path is being taken (for debugging)
+            if avg >= SINGLE_FRAME_HIGH_CONFIDENCE {
+                tracing::info!(
+                    "wake: high-confidence single-frame trigger (avg={:.3}, prob={:.3})",
+                    avg, probability
+                );
+            }
+
             // Trigger when smoothed average exceeds threshold (with refractory period)
             let wake_detected = if avg > self.threshold && since_last > NO_DETECTION_MS as u128 {
                 self.last_detection_time = std::time::Instant::now();
@@ -710,8 +732,31 @@ mod engine {
         }
 
         /// Calculate average of positive detections in the buffer.
+        ///
+        /// Two trigger paths:
+        /// 1. **High-confidence single frame:** If any frame in the buffer
+        ///    exceeds `SINGLE_FRAME_HIGH_CONFIDENCE` (0.7), return it
+        ///    immediately. This fixes the root cause where a single 0.89
+        ///    probability detection was silently discarded because
+        ///    `positive_count (1.0) < MIN_POSITIVE_DETECTIONS (2.0)`.
+        ///    A single 0.7+ frame is a real wake — the silence gate already
+        ///    blocks digital silence, and the model produces <0.01 on
+        ///    non-wake speech.
+        /// 2. **Smoothed multi-frame:** Otherwise, require at least
+        ///    `MIN_POSITIVE_DETECTIONS` (2) frames above threshold and
+        ///    return their average. This filters transient noise spikes
+        ///    that don't reach high confidence.
         fn calculate_average(&self) -> f32 {
             let all = self.detections_buffer.to_vec();
+
+            // Path 1: single high-confidence frame triggers immediately
+            for &d in &all {
+                if d >= SINGLE_FRAME_HIGH_CONFIDENCE {
+                    return d;
+                }
+            }
+
+            // Path 2: smoothed multi-frame detection
             let mut cumulative = 0.0f32;
             let mut positive_count = 0.0f32;
             for d in all {
@@ -750,6 +795,7 @@ mod engine {
                     // --- Speaker verification ---
                     // TODO: implement audio ring buffer for proper speaker verification.
                     // For now, accept — the KWS model is accurate enough.
+                    #[cfg(feature = "wakeword-sherpa")]
                     let accepted = if let Some(ref verifier) = self.speaker {
                         if verifier.has_profile() {
                             tracing::debug!(
@@ -762,6 +808,8 @@ mod engine {
                     } else {
                         true
                     };
+                    #[cfg(not(feature = "wakeword-sherpa"))]
+                    let accepted = true;
 
                     if accepted {
                         tracing::info!("OWW wake detected! (probability: {:.3})", prob);
@@ -903,8 +951,10 @@ mod engine {
 
         // 3. Feed 1280-sample chunks to KWS engine
         //    Check meeting/privacy state — if suppressed, drain audio but
-        //    don't run detection (prevents wake during meetings and TTS self-trigger)
+        //    don't run detection (prevents wake during meetings and TTS self-trigger).
+        //    Also enforces Dual-Phase 300ms Post-TTS Mute Gate.
         {
+            let mut last_tts_active = std::time::Instant::now() - std::time::Duration::from_secs(10);
             let mut buf = out_buf.lock();
             buf.extend(produced);
             while buf.len() >= chunk_size {
@@ -919,7 +969,13 @@ mod engine {
                     .unwrap_or(false);
 
                 if suppressed {
-                    // Still consume the audio (keep buffer drained) but skip detection
+                    last_tts_active = std::time::Instant::now();
+                    continue;
+                }
+
+                // Dual-Phase Mute Gate: drop audio chunks for 300ms after TTS finishes
+                // to allow room acoustics and DAC output buffers to settle completely
+                if last_tts_active.elapsed() < std::time::Duration::from_millis(300) {
                     continue;
                 }
 
@@ -1004,8 +1060,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 );
                 if let Some(win) = app_for_commands.get_webview_window("main") {
                     let _ = win.show();
-                    let _ = win.set_focus();
-                    let _ = win.set_always_on_top(true);
+                    let _ = crate::window_manager::configure_non_activating_overlay(&win);
                     let _ = win.set_ignore_cursor_events(false);
                     let _ = app_for_commands.emit("command-detected", &intent);
                 }
@@ -1017,10 +1072,12 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
+        let _ = app.emit("assistant:wake", ());
+        let _ = app.emit("nexus://wake", ());
+
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
-            let _ = win.set_focus();
-            let _ = win.set_always_on_top(true);
+            let _ = crate::window_manager::configure_non_activating_overlay(&win);
             let _ = win.set_ignore_cursor_events(false);
             let _ = win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
         }
@@ -1065,11 +1122,38 @@ fn start_audio_capture_with_retry(
 fn start_audio_capture(
     engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
 ) -> Result<(), String> {
+    #[allow(unused_imports)]
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    #[allow(unused_imports)]
     use cpal::Sample;
+    #[allow(unused_imports)]
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let host = cpal::default_host();
+
+    // ─── Non-Windows (Linux / macOS): PipeWire, PulseAudio, CoreAudio ───
+    // On Linux and macOS, the OS audio server manages stream routing and the default
+    // input device is the user's active microphone. Start it directly without the
+    // multi-device 5-second silence cascade.
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(default_device) = host.default_input_device() {
+            let dev_name = default_device.name().unwrap_or_else(|_| "default".into());
+            tracing::info!("audio: starting capture on default device '{}'...", dev_name);
+            match try_device_silent(&default_device, engine.clone()) {
+                Ok(()) => {
+                    tracing::info!("audio: stream active on '{}'", dev_name);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "audio: default device '{}' failed to start: {e}. Falling back to device list.",
+                        dev_name
+                    );
+                }
+            }
+        }
+    }
 
     // ─── Enumerate ALL input devices and log them ───────────────────
     let devices: Vec<cpal::Device> = match host.input_devices() {

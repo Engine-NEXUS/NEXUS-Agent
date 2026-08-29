@@ -70,7 +70,7 @@ static SESSION: once_cell::sync::Lazy<Arc<Mutex<Option<Session>>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
 /// Generate a RFC 4122 v4 UUID string without pulling a uuid crate.
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -168,16 +168,23 @@ pub async fn send_transcript<R: Runtime>(
 
     // 4. HTTP POST to the Worker
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(120))
+        .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+
+    eprintln!("[NEXUS] sending transcript to worker: url={} text={}", worker_url, text.chars().take(80).collect::<String>());
 
     let resp = client
         .post(&worker_url)
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("worker request: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("worker request: {e}");
+            eprintln!("[NEXUS] worker request failed: {} — is_connect={}", msg, e.is_connect());
+            msg
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -191,7 +198,13 @@ pub async fn send_transcript<R: Runtime>(
     let data: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| format!("worker json: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("worker json: {e}");
+            eprintln!("[NEXUS] {}", msg);
+            msg
+        })?;
+
+    eprintln!("[NEXUS] worker response received: reply_text len={}", data["reply_text"].as_str().map(|s| s.len()).unwrap_or(0));
 
     // 5. Check if cancelled while we were waiting
     {
@@ -213,8 +226,10 @@ pub async fn send_transcript<R: Runtime>(
 
     let _ = app.emit("assistant:server", ServerEvent::result(reply_text));
 
-    // 7. Emit done
-    let _ = app.emit("assistant:server", ServerEvent::done());
+    // 7. Do NOT emit "done" immediately — the frontend will emit "done"
+    // after TTS finishes speaking the result. Emitting "done" here would
+    // cause the frontend's done handler to call stopTts(), cancelling the
+    // response before the user hears it.
 
     Ok(())
 }

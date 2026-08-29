@@ -151,6 +151,13 @@ function keywordFallback(transcript: string): string {
     return "github_analyse";
   }
 
+  // STT often mishears "analyse" as "unless", "analyze" (without the 's'), etc.
+  // If the transcript contains "PR <number>" + "in <something>", treat it as
+  // github_analyse — the user clearly wants a PR analysis.
+  if (/\bpr\s*#?\s*\d+\b/.test(t) && /\b(in|of|from)\b/.test(t)) {
+    return "github_analyse";
+  }
+
   if (/\b(pr|pull request|repo|repository|commit|issue|branch|merge|github)\b/.test(t)) return "github";
   if (/\b(email|inbox|mail|message|gmail|send to)\b/.test(t)) return "gmail";
   if (/\b(calendar|schedule|meeting|event|appointment|today|tomorrow)\b/.test(t)) return "calendar";
@@ -400,16 +407,89 @@ async function resolveRepo(token: string, repoName: string | null): Promise<stri
     );
     if (!resp.ok) return null;
     const repos = await resp.json() as Array<Record<string, unknown>>;
-    // Try exact match first, then case-insensitive
-    const exact = repos.find(r => (r["name"] as string)?.toLowerCase() === repoName.toLowerCase());
+    const target = repoName.toLowerCase();
+
+    // 1. Try exact match first
+    const exact = repos.find(r => (r["name"] as string)?.toLowerCase() === target);
     if (exact) return exact["full_name"] as string;
-    // Try partial match
-    const partial = repos.find(r => (r["name"] as string)?.toLowerCase().includes(repoName.toLowerCase()));
+
+    // 2. Try partial match (target is a substring of repo name, or vice versa)
+    const partial = repos.find(r => {
+      const name = (r["name"] as string)?.toLowerCase();
+      return name && (name.includes(target) || target.includes(name));
+    });
     if (partial) return partial["full_name"] as string;
+
+    // 3. FUZZY MATCH: STT often mishears repo names (e.g. "servx" → "service",
+    //    "weeks", "serve x"). Use Levenshtein distance + prefix matching to
+    //    find the closest repo name. This handles phonetic mishearings.
+    const repoNames = repos
+      .map(r => (r["name"] as string) || "")
+      .filter(n => n.length > 0);
+
+    let bestMatch: string | null = null;
+    let bestScore = Infinity;
+
+    for (const repoName_ of repoNames) {
+      const candidate = repoName_.toLowerCase();
+      // Skip repos that are too different in length (avoid matching "a" to "servx")
+      if (Math.abs(candidate.length - target.length) > Math.max(3, target.length)) continue;
+
+      // Levenshtein distance
+      const dist = levenshtein(target, candidate);
+      // Normalised score: distance / max_length (0 = perfect match, 1 = totally different)
+      const score = dist / Math.max(target.length, candidate.length);
+
+      // Also check prefix match (first 3 chars) — "ser" matches "servx" and "service"
+      const prefixLen = Math.min(3, Math.min(target.length, candidate.length));
+      const prefixMatch = target.substring(0, prefixLen) === candidate.substring(0, prefixLen);
+
+      // If prefix matches, reduce the effective score (bonus for phonetic similarity)
+      const adjustedScore = prefixMatch ? score * 0.5 : score;
+
+      // Accept if normalised distance < 0.6 (i.e. >40% of chars match)
+      if (adjustedScore < 0.6 && adjustedScore < bestScore) {
+        bestScore = adjustedScore;
+        bestMatch = repoName_;
+      }
+    }
+
+    if (bestMatch) {
+      const matched = repos.find(r => (r["name"] as string) === bestMatch);
+      if (matched) return matched["full_name"] as string;
+    }
+
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Levenshtein edit distance between two strings.
+ * Used for fuzzy repo name matching when STT mishears the name.
+ */
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost,
+      );
+    }
+  }
+  return dp[m][n];
 }
 
 /**

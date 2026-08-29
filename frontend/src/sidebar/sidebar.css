@@ -57,7 +57,7 @@ html, body, #root {
   align-items: flex-end;
   justify-content: flex-start; /* Align glass card to the top of the window */
   background: transparent !important;
-  padding: 12px 0 12px 0; /* Gaps at top and bottom of screen */
+  padding: 0; /* Card fills entire window — no gaps */
   transform: translateX(100vw);
   opacity: 0;
   overflow: visible;
@@ -82,8 +82,8 @@ html, body, #root {
 
 /* ── Card: glass panel — white frosted glass, full height ──────── */
 .sidebar-card {
-  width: 580px;
-  height: calc(100vh - 24px); /* Stretch card to full height minus gaps */
+  width: 100%;
+  height: 100%; /* Fill entire window — no second box */
 
   /* White frosted glass tint. Works with the white DWM blur to create
      the React Native-like BlurView frosted look. */
@@ -107,7 +107,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: var(--nx-space-3);
-  margin-right: 12px;
+  margin-right: 0;
   isolation: isolate;
 }
 
@@ -178,5 +178,27 @@ html, body, #root {
 
   /* mix-blend-mode: difference REMOVED — it inverted white text to black
      on any light/white desktop background behind the window. */
+}
+
+/* ── Word-by-word fade-in (ChatGPT / Gemini streaming style) ────── */
+/* Each word is wrapped in a <span class="word"> by the JS eval in    */
+/* show_sidebar_with_content. Words fade in + slide up with a         */
+/* staggered delay, creating the streaming text effect.               */
+
+.sidebar-response-text .word {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: word-fade-in 0.4s ease forwards;
+}
+
+@keyframes word-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 

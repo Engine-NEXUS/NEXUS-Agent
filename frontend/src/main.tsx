@@ -123,11 +123,16 @@ async function startListening() {
   // If NEXUS is speaking or thinking, cancel the current turn before
   // starting a new one. This prevents the TTS 'interrupted' error and
   // ensures clean state transitions.
-  if (s.state === "speaking" || s.state === "thinking") {
-    console.log("[NEXUS] barge-in: cancelling current turn");
+  const wasSpeaking = s.state === "speaking";
+  if (wasSpeaking || s.state === "thinking") {
+    console.log("[NEXUS] barge-in/turn-transition: cancelling current turn");
     stopTts();
     stopVad();
     await abortCapture().catch(() => {});
+    if (wasSpeaking) {
+      // Dual-Phase Post-TTS Mute Gate: 300ms delay to allow DAC audio buffers and room acoustics to clear
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
 
   s.setVisible(true);
@@ -184,10 +189,23 @@ async function startListening() {
   }
 }
 
-/** Called from Rust on wake (hotkey or spoken "NEXUS"). */
+/** Called from Rust on wake (hotkey, spoken "NEXUS", or tray click). */
 (window as any).__NEXUS_WAKE__ = () => {
+  console.log("[NEXUS] __NEXUS_WAKE__ invoked");
   void wakeWithGreeting();
 };
+
+// Also listen for native Tauri IPC wake events
+import("@tauri-apps/api/event").then(({ listen }) => {
+  void listen("assistant:wake", () => {
+    console.log("[NEXUS] assistant:wake event received");
+    void wakeWithGreeting();
+  });
+  void listen("nexus://wake", () => {
+    console.log("[NEXUS] nexus://wake event received");
+    void wakeWithGreeting();
+  });
+}).catch((e) => console.warn("[NEXUS] Failed to attach Tauri wake listeners:", e));
 
 /**
  * Wake handler with first-of-day greeting.

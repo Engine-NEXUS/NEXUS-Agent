@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Runtime};
+#[cfg(feature = "wakeword-sherpa")]
 use crate::voice_profile;
 use crate::app_registry;
 
@@ -17,14 +18,20 @@ pub fn open_setup_window<R: Runtime>(
     Ok(())
 }
 
-/// IPC: close/hide the setup window.
+/// IPC: close/hide the setup window and activate the main assistant orb.
 #[tauri::command]
 pub fn close_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("setup")
-        .ok_or_else(|| "setup window not found".to_string())?;
-    win.hide().map_err(|e| e.to_string())?;
+    if let Some(win) = app.get_webview_window("setup") {
+        let _ = win.hide();
+    }
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+        let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
+        let _ = main_win.set_ignore_cursor_events(false);
+        let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+    }
     Ok(())
 }
 
@@ -93,215 +100,226 @@ pub fn get_server_config<R: Runtime>(
     })
 }
 
-/// IPC: Get the current voice profile status (enrolled or not, number of clips, threshold).
-#[tauri::command]
-pub fn get_voice_profile_status<R: Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<voice_profile::VoiceProfileStatus, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let profile_path = voice_profile::resolve_profile_path(&dir);
+// ─── Voice profile commands — only available when wakeword-sherpa is enabled ─
+// Speaker enrollment uses sherpa-onnx for embedding extraction. When using the
+// default wakeword-oww engine, verification is not yet wired (see AGENTS.md),
+// so these commands are compiled out to avoid pulling in sherpa-onnx C++ deps.
+#[cfg(feature = "wakeword-sherpa")]
+pub use voice_profile_commands::*;
+#[cfg(feature = "wakeword-sherpa")]
+mod voice_profile_commands {
+    use super::*;
 
-    let sound_alikes: Vec<String> = voice_profile::SOUND_ALIKES
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    /// IPC: Get the current voice profile status (enrolled or not, number of clips, threshold).
+    #[tauri::command]
+    pub fn get_voice_profile_status<R: Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<voice_profile::VoiceProfileStatus, String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let profile_path = voice_profile::resolve_profile_path(&dir);
 
-    if !profile_path.exists() {
-        return Ok(voice_profile::VoiceProfileStatus {
-            enrolled: false,
-            num_clips: 0,
-            threshold: voice_profile::DEFAULT_THRESHOLD,
-            created_at: 0,
-            updated_at: 0,
-            wake_variants: vec!["nexus".to_string()],
-            sound_alikes,
-        });
-    }
+        let sound_alikes: Vec<String> = voice_profile::SOUND_ALIKES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
-    let profile = voice_profile::VoiceProfile::load(&profile_path)
-        .map_err(|e| e.to_string())?;
-    Ok(voice_profile::VoiceProfileStatus {
-        enrolled: true,
-        num_clips: profile.num_clips,
-        threshold: profile.threshold,
-        created_at: profile.created_at,
-        updated_at: profile.updated_at,
-        wake_variants: profile.wake_variants,
-        sound_alikes,
-    })
-}
-
-/// Resolve the sherpa resource directory (handles dev + production paths).
-fn resolve_sherpa_dir(resource_dir: &Path) -> Option<PathBuf> {
-    let sherpa = resource_dir.join("sherpa");
-    if sherpa.exists() {
-        return Some(sherpa);
-    }
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let dev = PathBuf::from(manifest).join("resources").join("sherpa");
-        if dev.exists() {
-            return Some(dev);
+        if !profile_path.exists() {
+            return Ok(voice_profile::VoiceProfileStatus {
+                enrolled: false,
+                num_clips: 0,
+                threshold: voice_profile::DEFAULT_THRESHOLD,
+                created_at: 0,
+                updated_at: 0,
+                wake_variants: vec!["nexus".to_string()],
+                sound_alikes,
+            });
         }
+
+        let profile = voice_profile::VoiceProfile::load(&profile_path)
+            .map_err(|e| e.to_string())?;
+        Ok(voice_profile::VoiceProfileStatus {
+            enrolled: true,
+            num_clips: profile.num_clips,
+            threshold: profile.threshold,
+            created_at: profile.created_at,
+            updated_at: profile.updated_at,
+            wake_variants: profile.wake_variants,
+            sound_alikes,
+        })
     }
-    // Fallback: exe_dir/../resources/sherpa
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let p = parent.join("../resources/sherpa");
-            if p.exists() {
-                return Some(p);
+
+    /// Resolve the sherpa resource directory (handles dev + production paths).
+    pub fn resolve_sherpa_dir(resource_dir: &Path) -> Option<PathBuf> {
+        let sherpa = resource_dir.join("sherpa");
+        if sherpa.exists() {
+            return Some(sherpa);
+        }
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let dev = PathBuf::from(manifest).join("resources").join("sherpa");
+            if dev.exists() {
+                return Some(dev);
             }
         }
-    }
-    None
-}
-
-/// Run ASR on enrollment clips to capture wake-word variants.
-/// Returns the list of ASR transcripts (one per clip, may be empty/garbage).
-fn transcribe_enrollment_clips(
-    sherpa_dir: &Path,
-    clips: &[Vec<f32>],
-) -> Result<Vec<String>, String> {
-    use sherpa_onnx::{
-        OnlineModelConfig, OnlineRecognizer, OnlineRecognizerConfig, OnlineTransducerModelConfig,
-    };
-
-    let kws_dir = sherpa_dir.join("kws");
-
-    // Prefer int8 (quantized) models, fall back to fp32
-    let encoder = kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
-    let encoder = if encoder.exists() { encoder } else { kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
-    let decoder = kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
-    let decoder = if decoder.exists() { decoder } else { kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
-    let joiner = kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
-    let joiner = if joiner.exists() { joiner } else { kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.onnx") };
-    let tokens = kws_dir.join("tokens.txt");
-
-    for (name, path) in [
-        ("encoder", &encoder),
-        ("decoder", &decoder),
-        ("joiner", &joiner),
-        ("tokens", &tokens),
-    ] {
-        if !path.exists() {
-            return Err(format!("ASR model file '{}' not found at: {}", name, path.display()));
+        // Fallback: exe_dir/../resources/sherpa
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let p = parent.join("../resources/sherpa");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
         }
+        None
     }
 
-    let config = OnlineRecognizerConfig {
-        model_config: OnlineModelConfig {
-            transducer: OnlineTransducerModelConfig {
-                encoder: Some(encoder.to_string_lossy().to_string()),
-                decoder: Some(decoder.to_string_lossy().to_string()),
-                joiner: Some(joiner.to_string_lossy().to_string()),
-            },
-            tokens: Some(tokens.to_string_lossy().to_string()),
-            num_threads: 1,
-            provider: Some("cpu".to_string()),
-            ..Default::default()
-        },
-        decoding_method: Some("greedy_search".to_string()),
-        enable_endpoint: false,
-        ..Default::default()
-    };
-
-    let recognizer = OnlineRecognizer::create(&config)
-        .ok_or_else(|| "Failed to create OnlineRecognizer for enrollment".to_string())?;
-
-    let mut variants = Vec::with_capacity(clips.len());
-
-    for (i, clip) in clips.iter().enumerate() {
-        if clip.is_empty() {
-            variants.push(String::new());
-            continue;
-        }
-
-        let stream = recognizer.create_stream();
-
-        // Feed the clip + 0.5s tail padding
-        stream.accept_waveform(16000, clip);
-        let tail = vec![0.0f32; 8000];
-        stream.accept_waveform(16000, &tail);
-        stream.input_finished();
-
-        while recognizer.is_ready(&stream) {
-            recognizer.decode(&stream);
-        }
-
-        let text = if let Some(result) = recognizer.get_result(&stream) {
-            result.text.trim().to_lowercase()
-        } else {
-            String::new()
+    /// Run ASR on enrollment clips to capture wake-word variants.
+    /// Returns the list of ASR transcripts (one per clip, may be empty/garbage).
+    pub fn transcribe_enrollment_clips(
+        sherpa_dir: &Path,
+        clips: &[Vec<f32>],
+    ) -> Result<Vec<String>, String> {
+        use sherpa_onnx::{
+            OnlineModelConfig, OnlineRecognizer, OnlineRecognizerConfig, OnlineTransducerModelConfig,
         };
 
-        tracing::info!("Enrollment clip {} ASR transcript: \"{}\"", i + 1, text);
-        variants.push(text);
+        let kws_dir = sherpa_dir.join("kws");
 
-        recognizer.reset(&stream);
+        // Prefer int8 (quantized) models, fall back to fp32
+        let encoder = kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let encoder = if encoder.exists() { encoder } else { kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let decoder = kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let decoder = if decoder.exists() { decoder } else { kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let joiner = kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let joiner = if joiner.exists() { joiner } else { kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let tokens = kws_dir.join("tokens.txt");
+
+        for (name, path) in [
+            ("encoder", &encoder),
+            ("decoder", &decoder),
+            ("joiner", &joiner),
+            ("tokens", &tokens),
+        ] {
+            if !path.exists() {
+                return Err(format!("ASR model file '{}' not found at: {}", name, path.display()));
+            }
+        }
+
+        let config = OnlineRecognizerConfig {
+            model_config: OnlineModelConfig {
+                transducer: OnlineTransducerModelConfig {
+                    encoder: Some(encoder.to_string_lossy().to_string()),
+                    decoder: Some(decoder.to_string_lossy().to_string()),
+                    joiner: Some(joiner.to_string_lossy().to_string()),
+                },
+                tokens: Some(tokens.to_string_lossy().to_string()),
+                num_threads: 1,
+                provider: Some("cpu".to_string()),
+                ..Default::default()
+            },
+            decoding_method: Some("greedy_search".to_string()),
+            enable_endpoint: false,
+            ..Default::default()
+        };
+
+        let recognizer = OnlineRecognizer::create(&config)
+            .ok_or_else(|| "Failed to create OnlineRecognizer for enrollment".to_string())?;
+
+        let mut variants = Vec::with_capacity(clips.len());
+
+        for (i, clip) in clips.iter().enumerate() {
+            if clip.is_empty() {
+                variants.push(String::new());
+                continue;
+            }
+
+            let stream = recognizer.create_stream();
+
+            // Feed the clip + 0.5s tail padding
+            stream.accept_waveform(16000, clip);
+            let tail = vec![0.0f32; 8000];
+            stream.accept_waveform(16000, &tail);
+            stream.input_finished();
+
+            while recognizer.is_ready(&stream) {
+                recognizer.decode(&stream);
+            }
+
+            let text = if let Some(result) = recognizer.get_result(&stream) {
+                result.text.trim().to_lowercase()
+            } else {
+                String::new()
+            };
+
+            tracing::info!("Enrollment clip {} ASR transcript: \"{}\"", i + 1, text);
+            variants.push(text);
+
+            recognizer.reset(&stream);
+        }
+
+        Ok(variants)
     }
 
-    Ok(variants)
-}
+    /// IPC: Enroll a voice profile from multiple audio clips.
+    /// Each clip is a Vec<f32> of 16kHz mono audio samples.
+    /// Also runs ASR on each clip to capture wake-word variants.
+    /// Re-enrollment APPENDS new variants to existing ones (does not wipe).
+    #[tauri::command]
+    pub fn enroll_voice<R: Runtime>(
+        app: tauri::AppHandle<R>,
+        clips: Vec<Vec<f32>>,
+        threshold: Option<f32>,
+    ) -> Result<Vec<String>, String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-/// IPC: Enroll a voice profile from multiple audio clips.
-/// Each clip is a Vec<f32> of 16kHz mono audio samples.
-/// Also runs ASR on each clip to capture wake-word variants.
-/// Re-enrollment APPENDS new variants to existing ones (does not wipe).
-#[tauri::command]
-pub fn enroll_voice<R: Runtime>(
-    app: tauri::AppHandle<R>,
-    clips: Vec<Vec<f32>>,
-    threshold: Option<f32>,
-) -> Result<Vec<String>, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let profile_path = voice_profile::resolve_profile_path(&dir);
 
-    let profile_path = voice_profile::resolve_profile_path(&dir);
+        let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let sherpa_dir = resolve_sherpa_dir(&resource_dir)
+            .ok_or_else(|| "Sherpa resource directory not found".to_string())?;
 
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let sherpa_dir = resolve_sherpa_dir(&resource_dir)
-        .ok_or_else(|| "Sherpa resource directory not found".to_string())?;
+        let speaker_model = sherpa_dir.join("speaker_model.onnx");
 
-    let speaker_model = sherpa_dir.join("speaker_model.onnx");
+        let mut verifier = voice_profile::SpeakerVerifier::new(speaker_model, profile_path)
+            .map_err(|e| e.to_string())?;
 
-    let mut verifier = voice_profile::SpeakerVerifier::new(speaker_model, profile_path)
-        .map_err(|e| e.to_string())?;
+        // Run ASR on each clip to capture wake-word variants
+        let asr_variants = transcribe_enrollment_clips(&sherpa_dir, &clips)
+            .map_err(|e| {
+                tracing::warn!("Enrollment ASR failed (continuing without variants): {e}");
+                // Don't fail enrollment if ASR fails — just use empty variants
+                vec![String::new(); clips.len()]
+            })
+            .unwrap_or_else(|_| vec![String::new(); clips.len()]);
 
-    // Run ASR on each clip to capture wake-word variants
-    let asr_variants = transcribe_enrollment_clips(&sherpa_dir, &clips)
-        .map_err(|e| {
-            tracing::warn!("Enrollment ASR failed (continuing without variants): {e}");
-            // Don't fail enrollment if ASR fails — just use empty variants
-            vec![String::new(); clips.len()]
-        })
-        .unwrap_or_else(|_| vec![String::new(); clips.len()]);
+        let threshold = threshold.unwrap_or(voice_profile::DEFAULT_THRESHOLD);
+        verifier
+            .enroll(&clips, threshold, asr_variants.clone())
+            .map_err(|e| e.to_string())?;
 
-    let threshold = threshold.unwrap_or(voice_profile::DEFAULT_THRESHOLD);
-    verifier
-        .enroll(&clips, threshold, asr_variants.clone())
-        .map_err(|e| e.to_string())?;
+        // Return the captured variants so the UI can show them
+        let captured: Vec<String> = verifier
+            .profile()
+            .map(|p| p.wake_variants.clone())
+            .unwrap_or_default();
 
-    // Return the captured variants so the UI can show them
-    let captured: Vec<String> = verifier
-        .profile()
-        .map(|p| p.wake_variants.clone())
-        .unwrap_or_default();
-
-    Ok(captured)
-}
-
-/// IPC: Delete the voice profile (disables speaker verification).
-#[tauri::command]
-pub fn delete_voice_profile<R: Runtime>(
-    app: tauri::AppHandle<R>,
-) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let profile_path = voice_profile::resolve_profile_path(&dir);
-
-    if profile_path.exists() {
-        std::fs::remove_file(&profile_path).map_err(|e| e.to_string())?;
-        tracing::info!("Voice profile deleted");
+        Ok(captured)
     }
-    Ok(())
+
+    /// IPC: Delete the voice profile (disables speaker verification).
+    #[tauri::command]
+    pub fn delete_voice_profile<R: Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let profile_path = voice_profile::resolve_profile_path(&dir);
+
+        if profile_path.exists() {
+            std::fs::remove_file(&profile_path).map_err(|e| e.to_string())?;
+            tracing::info!("Voice profile deleted");
+        }
+        Ok(())
+    }
 }
 
 // ─── First-of-day greeting ─────────────────────────────────────────────────
@@ -480,6 +498,116 @@ pub fn show_sidebar<R: Runtime>(
 ) -> Result<(), String> {
     let win = app.get_webview_window("sidebar")
         .ok_or_else(|| "sidebar window not found".to_string())?;
+    show_sidebar_inner(&app, &win)?;
+    Ok(())
+}
+
+/// IPC: Show the sidebar AND set its content directly via JS evaluation.
+/// Bypasses the Tauri event system entirely — directly manipulates the
+/// sidebar window's DOM. This is the most reliable approach since it
+/// doesn't depend on listen() working in the sidebar window's JS context.
+#[tauri::command]
+pub fn show_sidebar_with_content<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    query: String,
+    text: String,
+) -> Result<(), String> {
+    let win = app.get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window not found".to_string())?;
+    show_sidebar_inner(&app, &win)?;
+
+    // Directly set the sidebar content via JS evaluation.
+    // This bypasses the event system and React state — we set the DOM
+    // directly and toggle the CSS class for visibility.
+    //
+    // TEXT ANIMATION: Words are split into <span class="word"> elements
+    // with staggered animation-delay, creating a ChatGPT/Gemini-style
+    // fade-in-from-top streaming effect. Newlines are preserved as <br>.
+    let escaped_query = query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+    let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+
+    let js = format!(
+        r#"
+        (function() {{
+            var app = document.getElementById('sidebar-app');
+            if (!app) return;
+            app.className = 'sidebar--visible';
+
+            // Set query text
+            var q = app.querySelector('.sidebar-query');
+            if (q) {{ q.textContent = '{q}'; }}
+            else {{
+                var card = app.querySelector('.sidebar-card');
+                if (card) {{
+                    var qd = document.createElement('div');
+                    qd.className = 'sidebar-query';
+                    qd.textContent = '{q}';
+                    card.insertBefore(qd, card.firstChild);
+                }}
+            }}
+
+            // Build word-by-word streaming text
+            var r = app.querySelector('.sidebar-response-text');
+            if (!r) return;
+            r.innerHTML = '';
+
+            var fullText = '{t}';
+            // Split by newlines first, then words within each line
+            var lines = fullText.split('\\n');
+            var wordIndex = 0;
+            // ~28ms per word — fast enough for long responses, slow enough
+            // to see the streaming effect. Capped at 2000ms total.
+            var delayPerWord = 28;
+            var maxDelay = 2000;
+
+            lines.forEach(function(line, lineIdx) {{
+                if (lineIdx > 0) {{
+                    r.appendChild(document.createElement('br'));
+                }}
+                // Filter out empty strings from double spaces
+                var words = line.split(' ').filter(function(w) {{ return w.length > 0; }});
+                words.forEach(function(word, wIdx) {{
+                    var span = document.createElement('span');
+                    span.className = 'word';
+                    // Include the trailing space INSIDE the span so it
+                    // animates with the word and doesn't get collapsed.
+                    // Last word in the last line gets no trailing space.
+                    var isLast = (lineIdx === lines.length - 1) && (wIdx === words.length - 1);
+                    span.textContent = isLast ? word : word + ' ';
+                    var delay = Math.min(wordIndex * delayPerWord, maxDelay);
+                    span.style.animationDelay = delay + 'ms';
+                    r.appendChild(span);
+                    wordIndex++;
+                }});
+            }});
+
+            // Auto-scroll: keep the view following the streaming text
+            var scrollContainer = app.querySelector('.sidebar-response');
+            if (scrollContainer) {{
+                var scrollTimer = setInterval(function() {{
+                    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+                }}, 50);
+                // Stop auto-scrolling after all words have appeared
+                setTimeout(function() {{
+                    clearInterval(scrollTimer);
+                }}, maxDelay + 500);
+            }}
+        }})();
+        "#,
+        q = escaped_query,
+        t = escaped_text,
+    );
+
+    win.eval(&js).map_err(|e| e.to_string())?;
+    tracing::info!("sidebar: shown with content via JS eval (query={} chars, text={} chars)", query.len(), text.len());
+    Ok(())
+}
+
+/// Shared inner logic for showing the sidebar window.
+fn show_sidebar_inner<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
 
     // Position at bottom-right of the screen, above the taskbar.
     use tauri::PhysicalPosition;
@@ -493,8 +621,10 @@ pub fn show_sidebar<R: Runtime>(
 
         #[cfg(target_os = "macos")]
         let taskbar = (70.0 * scale) as i32;
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
         let taskbar = (48.0 * scale) as i32;
+        #[cfg(target_os = "linux")]
+        let taskbar = (36.0 * scale) as i32;
         let gap = (12.0 * scale) as i32;
 
         let x = screen.width as i32 - phys_w - gap;
@@ -516,6 +646,24 @@ pub fn show_sidebar<R: Runtime>(
     // Linux:   No native API — CSS backdrop-filter is the fallback.
 
     win.show().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::PhysicalPosition;
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let screen = monitor.size();
+            let sidebar_w = 600i32;
+            let sidebar_h = 1000i32;
+            let phys_w = (sidebar_w as f64 * scale) as i32;
+            let phys_h = (sidebar_h as f64 * scale) as i32;
+            let taskbar = (36.0 * scale) as i32;
+            let gap = (12.0 * scale) as i32;
+            let x = screen.width as i32 - phys_w - gap;
+            let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -585,6 +733,18 @@ pub struct NexusSettings {
     pub device_id: String,
     pub tts_voice: String,
     pub speech_rate: f64,
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: String,
+    #[serde(default)]
+    pub elevenlabs_api_key: String,
+    #[serde(default)]
+    pub fish_audio_api_key: String,
+    #[serde(default)]
+    pub gemini_api_key: String,
+}
+
+fn default_tts_provider() -> String {
+    "neural".to_string()
 }
 
 impl Default for NexusSettings {
@@ -605,8 +765,12 @@ impl Default for NexusSettings {
                 .to_string(),
             user_id: String::new(),
             device_id: String::new(),
-            tts_voice: "default".to_string(),
+            tts_voice: "jarvis".to_string(),
             speech_rate: 1.0,
+            tts_provider: "neural".to_string(),
+            elevenlabs_api_key: String::new(),
+            fish_audio_api_key: String::new(),
+            gemini_api_key: String::new(),
         }
     }
 }
@@ -639,6 +803,16 @@ pub fn get_settings<R: Runtime>(
                     settings.device_id = did.to_string();
                 }
             }
+        }
+    }
+    if settings.fish_audio_api_key.is_empty() {
+        if let Ok(key) = std::env::var("FISH_AUDIO_API_KEY").or_else(|_| std::env::var("NEXUS_FISH_AUDIO_API_KEY")) {
+            settings.fish_audio_api_key = key;
+        }
+    }
+    if settings.gemini_api_key.is_empty() {
+        if let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("NEXUS_GEMINI_API_KEY")) {
+            settings.gemini_api_key = key;
         }
     }
     Ok(settings)
