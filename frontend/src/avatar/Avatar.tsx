@@ -44,20 +44,18 @@ export function Avatar() {
   function applyState(anim: AnimationItem, st: AssistantState) {
     const speed: Record<AssistantState, number> = {
       idle: 1.0,
-      connecting: 1.5,
       listening: 1.5,
       thinking: 1.5,
       speaking: 1.2,
-      error: 0.8,
     };
     anim.setSpeed(speed[st]);
 
-    if (st === "listening" || st === "connecting") {
+    if (st === "listening") {
       // Wake sequence: loading (~1s at 1.5x) → smile arrives → hold
       modeRef.current = "wake-loading";
       anim.loop = false;
       anim.playSegments(SEG_LOADING, true);
-    } else if (st === "thinking" || st === "speaking" || st === "error") {
+    } else if (st === "thinking" || st === "speaking") {
       // Loading circles loop continuously
       modeRef.current = "loading-loop";
       anim.loop = true;
@@ -147,8 +145,8 @@ export function Avatar() {
       data-interactive
       className={`avatar-wrap avatar-wrap--${state}`}
       style={{
-        width: 120,
-        height: 120,
+        width: 180,
+        height: 180,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -156,7 +154,7 @@ export function Avatar() {
       }}
     >
       {animationData ? (
-        <div ref={containerRef} style={{ width: 120, height: 120 }} />
+        <div ref={containerRef} style={{ width: 180, height: 180 }} />
       ) : (
         <div className={`orb orb--${state}`} />
       )}

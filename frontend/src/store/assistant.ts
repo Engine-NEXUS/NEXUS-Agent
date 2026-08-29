@@ -1,32 +1,6 @@
 import { create } from "zustand";
 
-export type AssistantState =
-  | "idle"
-  | "connecting"
-  | "listening"
-  | "thinking"
-  | "speaking"
-  | "error";
-
-/** Human-readable status text shown below the orb. */
-export const STATUS_TEXT: Record<AssistantState, string> = {
-  idle: "",
-  connecting: "CONNECTING",
-  listening: "LISTENING",
-  thinking: "THINKING",
-  speaking: "SPEAKING",
-  error: "CONNECTION ERROR",
-};
-
-/** Accent color per state (matches CSS tokens). */
-export const STATE_COLOR: Record<AssistantState, string> = {
-  idle: "#6aa8ff",
-  connecting: "#6aa8ff",
-  listening: "#6aa8ff",
-  thinking: "#a855f7",
-  speaking: "#22c55e",
-  error: "#DC2626",
-};
+export type AssistantState = "idle" | "listening" | "thinking" | "speaking";
 
 interface TranscriptEntry {
   role: "user" | "assistant";
@@ -74,21 +48,17 @@ export const useAssistant = create<AssistantStore>((set) => ({
 
 /**
  * Canonical state-machine transitions. Enforced everywhere we call setState.
- *   idle       -> connecting, listening   (wake / hotkey)
- *   connecting -> listening, error        (ws connected / failed)
- *   listening  -> thinking, idle          (VAD silence + STT + transcript sent)
- *   thinking   -> speaking, idle, error   (result / cancel / ws down)
- *   speaking   -> idle                    (done event)
- *   error      -> idle, connecting        (retry / dismiss)
+ *   idle  -> listening   (wake / hotkey)
+ *   listening -> thinking (VAD silence + local STT + transcript sent)
+ *   thinking -> speaking (ack or result event — local TTS speaks)
+ *   speaking -> idle      (done event)
  */
 export function transition(from: AssistantState, to: AssistantState): boolean {
   const allowed: Record<AssistantState, AssistantState[]> = {
-    idle: ["connecting", "listening"],
-    connecting: ["listening", "error"],
+    idle: ["listening"],
     listening: ["thinking", "idle"],
-    thinking: ["speaking", "idle", "error"],
+    thinking: ["speaking", "idle"],
     speaking: ["idle"],
-    error: ["idle", "connecting"],
   };
   return allowed[from]?.includes(to) ?? false;
 }
