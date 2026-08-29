@@ -411,7 +411,14 @@ export async function playGeminiTts(
             },
           ],
           generationConfig: {
-            responseMimeType: "audio/mp3",
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: "Kore" // Good default voice
+                }
+              }
+            }
           },
         }),
       },
@@ -421,7 +428,49 @@ export async function playGeminiTts(
       throw new Error(`Gemini Flash TTS API error: ${response.status}`);
     }
 
-    const blob = await response.blob();
+    const data = await response.json();
+    const base64Pcm = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Pcm) {
+      throw new Error("No audio data returned");
+    }
+
+    // Decode base64 PCM to binary string
+    const binary = atob(base64Pcm);
+    const pcmData = new Int16Array(binary.length / 2);
+    for (let i = 0; i < binary.length; i += 2) {
+      // Little-endian
+      pcmData[i / 2] = binary.charCodeAt(i) | (binary.charCodeAt(i + 1) << 8);
+    }
+
+    // Create WAV header for 24kHz Mono 16-bit
+    const sampleRate = 24000;
+    const wavBuffer = new ArrayBuffer(44 + pcmData.length * 2);
+    const view = new DataView(wavBuffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + pcmData.length * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // Byte rate
+    view.setUint16(32, 2, true); // Block align
+    view.setUint16(34, 16, true); // Bits per sample
+    writeStr(36, "data");
+    view.setUint32(40, pcmData.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < pcmData.length; i++, offset += 2) {
+      view.setInt16(offset, pcmData[i], true);
+    }
+
+    const blob = new Blob([wavBuffer], { type: "audio/wav" });
     const blobUrl = URL.createObjectURL(blob);
     return playAudioUrl(blobUrl, () => {
       URL.revokeObjectURL(blobUrl);
@@ -445,8 +494,10 @@ export async function previewVoice(
 
   const settings = await getSavedSettings();
 
+  const DEFAULT_GEMINI_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
+
   if (voice.provider === "gemini_tts") {
-    const apiKey = customApiKey || settings?.geminiApiKey;
+    const apiKey = customApiKey || settings?.geminiApiKey || DEFAULT_GEMINI_KEY;
     if (apiKey) {
       return playGeminiTts(voice.sampleText, apiKey, onEnd);
     }
@@ -482,7 +533,9 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
   const voiceId = settings?.ttsVoice || "gemini_flash";
   const elevenKey = settings?.elevenlabsApiKey;
   const fishKey = settings?.fishAudioApiKey;
-  const geminiKey = settings?.geminiApiKey;
+  
+  const DEFAULT_GEMINI_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
+  const geminiKey = settings?.geminiApiKey || DEFAULT_GEMINI_KEY;
 
   const curated = CURATED_VOICES.find((v) => v.id === voiceId) || CURATED_VOICES[0];
 
