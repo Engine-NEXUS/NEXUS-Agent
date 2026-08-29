@@ -5,6 +5,17 @@
 
 ---
 
+## Voice Pipeline Performance + Native App Resolution (2026-08-23)
+
+| Commit | Date | Summary | Details |
+|--------|------|---------|---------|
+| `92040f8` | 2026-08-23 | feat: hot mic + pre-init VAD + parallel init (A+B+C) — eliminates 2s wake-to-listen delay | [28-hot-mic-preinit-vad.md](./28-hot-mic-preinit-vad.md) |
+| `02d162c` | 2026-08-23 | feat: native app priority + resolution cache + daily scan — opens PWAs/Store apps instead of browser tabs | [27-native-app-priority-resolution-cache.md](./27-native-app-priority-resolution-cache.md) |
+| `80aabed` | 2026-08-23 | perf: switch STT to tiny.en + greedy decoding — 54x faster, 22% less RAM | [26-stt-performance-optimization.md](./26-stt-performance-optimization.md) |
+| `58af31e` | 2026-08-23 | fix: auto-start STT server — root cause of all command failures | [25-stt-server-auto-start.md](./25-stt-server-auto-start.md) |
+| `e0d0c80` | 2026-08-23 | fix: local commands hijacked by sidecar — local-first intent routing | [24-local-first-intent-routing.md](./24-local-first-intent-routing.md) |
+| `d1e9d20` | 2026-08-23 | fix: meeting detection self-trigger — NEXUS detects own WebView2 as meeting | [23-meeting-detection-self-trigger-fix.md](./23-meeting-detection-self-trigger-fix.md) |
+
 ## UI Overhaul + Installer + Response Sidebar (PR #16)
 
 | Commit | Date | Summary | Details |
@@ -81,6 +92,18 @@
 ---
 
 ## Feature Area Summary
+
+### Voice Pipeline Performance (3 commits)
+Eliminated the 2-second wake-to-listen delay with hot mic + pre-init VAD + parallel init. STT latency reduced from 15s to 276ms with tiny.en + greedy decoding. STT server now auto-starts with NEXUS.
+
+### Native App Resolution (1 commit)
+NEXUS now opens installed native apps, Store apps, and browser PWAs instead of browser tabs. Added resolution cache for instant repeat commands, daily scan for app changes, and cross-platform PWA discovery.
+
+### Local-First Intent Routing (1 commit)
+Local commands (open, search, play) now execute locally before contacting the remote backend. Eliminates dependency on n8n for basic commands.
+
+### Meeting Detection Fix (1 commit)
+Fixed NEXUS detecting its own WebView2 process as a meeting, causing wake/TTS suppression deadlock.
 
 ### Boot Reliability (6 commits)
 Fixed the entire cold-boot experience: no browser reopening, no terminal window, no mic prompt, fast startup, greeting on boot.

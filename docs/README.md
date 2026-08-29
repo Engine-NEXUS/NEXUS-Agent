@@ -2,7 +2,7 @@
 
 > Complete technical documentation for the NEXUS floating desktop assistant.
 > A cross-platform, Siri-like, thin-client assistant that talks to a fat server (n8n + Ollama).
-> All documentation reflects the current state of the codebase as of 2026-08-22.
+> All documentation reflects the current state of the codebase as of 2026-08-23.
 
 ---
 
@@ -91,6 +91,12 @@ If you're new to the project, read in this order:
 | 20 | [setup-wizard-redesign.md](./changes/20-setup-wizard-redesign.md) | 4-step setup wizard with multi-option Google + GitHub account cards |
 | 21 | [response-sidebar.md](./changes/21-response-sidebar.md) | Right-side response sidebar (280x500) that shows only for server responses |
 | 22 | [installer-desktop-shortcut-removal.md](./changes/22-installer-desktop-shortcut-removal.md) | Removed desktop shortcut option from NSIS installer (Start Menu only) |
+| 23 | [meeting-detection-self-trigger-fix.md](./changes/23-meeting-detection-self-trigger-fix.md) | Fixed NEXUS detecting its own WebView2 as a meeting (wake/TTS deadlock) |
+| 24 | [local-first-intent-routing.md](./changes/24-local-first-intent-routing.md) | Local commands now execute before contacting sidecar (no more n8n dependency for basic commands) |
+| 25 | [stt-server-auto-start.md](./changes/25-stt-server-auto-start.md) | STT server now auto-starts with NEXUS (was the root cause of all command failures) |
+| 26 | [stt-performance-optimization.md](./changes/26-stt-performance-optimization.md) | STT: base→tiny.en, beam_size 5→1, eager loading — 54x faster, 22% less RAM |
+| 27 | [native-app-priority-resolution-cache.md](./changes/27-native-app-priority-resolution-cache.md) | Opens native apps/PWAs/Store apps instead of browser tabs. Resolution cache + daily scan + cross-platform PWA discovery |
+| 28 | [hot-mic-preinit-vad.md](./changes/28-hot-mic-preinit-vad.md) | Eliminates 2s wake-to-listen delay: hot mic + pre-init VAD + parallel init |
 
 ### Wake Word Detection (Detailed Deep Dive)
 
