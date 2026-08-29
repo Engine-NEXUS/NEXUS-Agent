@@ -8,13 +8,15 @@
 
 mod window_manager;
 mod hotkey;
+// wakeword-oww (default): openWakeWord via tract-onnx (pure Rust, no C++ deps)
 #[cfg(feature = "wakeword-oww")]
 mod wakeword_oww;
 #[cfg(feature = "wakeword-oww")]
 mod wakeword {
     pub use crate::wakeword_oww::*;
 }
-#[cfg(not(feature = "wakeword-oww"))]
+// wakeword-sherpa (opt-in): old VAD+ASR pipeline using sherpa-onnx C++ runtime
+#[cfg(all(not(feature = "wakeword-oww"), feature = "wakeword-sherpa"))]
 mod wakeword;
 mod network;
 mod tray;
@@ -22,7 +24,9 @@ mod commands;
 mod command_executor;
 mod app_registry;
 mod stt;
-mod stt_server_manager;
+// voice_profile: speaker embedding via sherpa-onnx — only needed with wakeword-sherpa.
+// Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
+#[cfg(feature = "wakeword-sherpa")]
 mod voice_profile;
 mod meeting_detect;
 mod mic_permissions;
@@ -459,12 +463,6 @@ pub fn run() {
             // No sidecar, no server, no WebSocket — fully serverless.
             // The Worker URL is baked into the installer via NEXUS_SERVER_URL.
 
-            // STT server (faster-whisper on port 39217) transcribes audio locally.
-            // Without it, no commands can be executed — every transcript is empty.
-            // Auto-spawn it in a BACKGROUND THREAD — model loading takes 10-20s on CPU
-            // and must not block app startup. The first transcription will wait for it.
-            std::thread::spawn(stt_server_manager::init);
-
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = network::run(handle).await {
@@ -496,8 +494,8 @@ pub fn run() {
             if let Some(dir) = store_path {
                 let config_path = dir.join("nexus-config.json");
                 if !config_path.exists() {
-                    let user_id = format!("user_{}", uuid::Uuid::new_v4().simple());
-                    let device_id = format!("device_{}", uuid::Uuid::new_v4().simple());
+                    let user_id = format!("user_{}", network::uuid_v4());
+                    let device_id = format!("device_{}", network::uuid_v4());
                     let server_url = option_env!("NEXUS_SERVER_URL")
                         .unwrap_or("https://nexus-worker.example.workers.dev");
                     let default_config = serde_json::json!({
@@ -528,9 +526,6 @@ pub fn run() {
             commands::close_setup_window,
             commands::save_server_config,
             commands::get_server_config,
-            commands::get_voice_profile_status,
-            commands::enroll_voice,
-            commands::delete_voice_profile,
             commands::meeting_active,
             commands::is_nexus_paused,
             commands::meeting_status,
@@ -544,6 +539,7 @@ pub fn run() {
             commands::clear_transcript,
             commands::refresh_app_registry,
             commands::show_sidebar,
+            commands::show_sidebar_with_content,
             commands::hide_sidebar,
             stt::transcribe_audio,
             stt::stt_status,

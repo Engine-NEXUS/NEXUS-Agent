@@ -70,28 +70,16 @@ experiment/
 
 # Stray Lottie / animation assets dropped in the repo root while iterating on
 # the orb. Anything actually used by the UI belongs in frontend/public/.
-/Development.json
 /*.lottie
 
-# Duplicate model file at root (real one is in src-tauri/resources/oww/)
-/nexus.onnx
+# Training artifacts (scratch outputs, logs, temporary scripts)
+# The trained model lives in src-tauri/resources/oww/nexus.onnx
+training/archive/
+training/scripts/
 
-# Kaggle CLI metadata
-kernel-metadata.json
-kaggle_output*
-kaggle_log/
-kaggle_minimal/
-kaggle_pt_*
-kaggle_pytorch_test/
-kaggle_test*/
-kaggle_train_log/
-kaggle_v*_log/
-kaggle_v*_quick/
-get_log*.py
-check_*.py
-check_nb*.py
-test-metadata.json
-kernel-metadata-test.json
-test_kaggle.ipynb
-test_pytorch_fix.ipynb
-psg_check/
+# Training notebooks and research PDFs (machine-specific)
+training/
+docs/research/
+
+# Temporary CDP debug scripts
+scripts/cdp_*.js

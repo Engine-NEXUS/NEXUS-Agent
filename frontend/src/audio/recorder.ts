@@ -5,6 +5,87 @@ import { speak } from "./ttsPlayer";
 import { parseIntent } from "../intent/parser";
 
 /**
+ * Detect if a query is a long-running analysis (PR review, repo analysis, etc).
+ * These queries take 10-20 seconds on the Worker (GLM model inference).
+ * For these, we give an immediate "On it sir" ack and hide the orb —
+ * the result arrives later and triggers the sidebar + "Here is the analysis".
+ */
+function isLongRunningQuery(transcript: string): boolean {
+  const t = transcript.toLowerCase();
+  // PR analysis: "analyse PR 5 in servx", "review PR 3", "analyse the pull request"
+  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|review|deep\s*dive|critique|evaluate|assess|inspect|examine)\b/.test(t);
+  const hasPR = /\b(pr|pull\s*request)\b/.test(t);
+  const hasRepo = /\b(repo|repository)\b/.test(t);
+  // Also catch "PR <number>" patterns even without "analyse" (STT may mishear)
+  const hasPRNumber = /\bpr\s*#?\s*\d+\b/.test(t);
+  return (hasAnalyse && (hasPR || hasRepo)) || hasPRNumber;
+}
+
+/**
+ * Post-process STT transcript to fix common mishearings.
+ * tiny.en (39M params) struggles with brand names and technical terms.
+ * This corrects known mishearings for NEXUS commands.
+ *
+ * Examples:
+ *   "unless pf5 in cervix" → "analyse PR 5 in servx"
+ *   "analyze PR 5 in service" → "analyse PR 5 in servx"
+ *   "unless pr5 in cervix" → "analyse PR 5 in servx"
+ */
+function correctSttTranscript(transcript: string): string {
+  let t = transcript;
+  const logFixes: string[] = [];
+
+  // Fix "analyse" mishearings: "unless", "analyze" (without s), "and let's"
+  // These are common when the user says "analyse" but STT mishears it
+  if (/^unless\b/i.test(t)) {
+    t = t.replace(/^unless\b/i, "analyse");
+    logFixes.push("unless→analyse");
+  }
+  if (/^analyze\b/i.test(t)) {
+    t = t.replace(/^analyze\b/i, "analyse");
+    logFixes.push("analyze→analyse");
+  }
+  if (/^and let's\b/i.test(t)) {
+    t = t.replace(/^and let's\b/i, "analyse");
+    logFixes.push("and let's→analyse");
+  }
+
+  // Fix "PR" mishearings: "pf", "p r", "pe" when followed by a number
+  // "pf5" → "PR 5", "p r 5" → "PR 5", "pe5" → "PR 5"
+  t = t.replace(/\bpf\s*(\d+)\b/gi, "PR $1");
+  t = t.replace(/\bp\s*r\s*(\d+)\b/gi, "PR $1");
+  t = t.replace(/\bpe\s*(\d+)\b/gi, "PR $1");
+  // "pr5" → "PR 5" (no space)
+  t = t.replace(/\bpr(\d+)\b/gi, "PR $1");
+
+  // Fix "servx" mishearings: "cervix", "service", "weeks", "serve x", "ser fixes"
+  // These are common phonetic mishearings of "servx"
+  // Only fix when preceded by "in" (context: "in servx")
+  t = t.replace(/\bin\s+(?:cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks)\b/gi, " in servx");
+  // Also fix "of servx" and "from servx"
+  t = t.replace(/\b(?:of|from)\s+(?:cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks)\b/gi, (m, _g) => m.replace(/cervix|service|weeks|serve\s*x|ser\s*fixes|surf\s*x|ser\s*vicks/i, "servx"));
+
+  if (logFixes.length > 0 || t !== transcript) {
+    console.log(`[NEXUS] STT correction: "${transcript}" → "${t}"`);
+  }
+  return t;
+}
+
+/**
+ * Give an immediate "On it sir" acknowledgment for long-running queries,
+ * then hide the orb. The result handler in wsBridge will show the sidebar
+ * and speak "Here is the analysis sir" when the response arrives.
+ */
+async function ackLongRunningQuery(): Promise<void> {
+  useAssistant.getState().setState("speaking");
+  useAssistant.getState().addAssistantMessage("On it sir.");
+  await speak("On it sir");
+  // Hide the orb — it will reappear briefly when the result arrives
+  useAssistant.getState().setVisible(false);
+  useAssistant.getState().setState("thinking");
+}
+
+/**
  * Audio recorder using ScriptProcessorNode (proven reliable in WebView2/Electron).
  *
  * AUDIO STAYS LOCAL: Float32 samples are buffered in memory on the device.
@@ -244,7 +325,7 @@ export async function finishCapture(): Promise<void> {
 
   // 1. Local STT — audio goes to 127.0.0.1:39217, never to the remote server.
   useAssistant.getState().setState("thinking");
-  const transcript = await transcribeAudio(allPcm);
+  let transcript = await transcribeAudio(allPcm);
 
   // Mic stream is no longer needed — release it now to free the hardware.
   releaseMicStream();
@@ -259,6 +340,9 @@ export async function finishCapture(): Promise<void> {
     captureInProgress = false;
     return;
   }
+
+  // 1b. Post-process the transcript to fix common STT mishearings.
+  transcript = correctSttTranscript(transcript);
 
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
@@ -299,8 +383,21 @@ export async function finishCapture(): Promise<void> {
   //    If the backend is available, send the transcript and let the server
   //    handle it. The server sends back ack/result/done events.
   try {
-    await sendTranscript(transcript);
+    // For long-running queries (PR analysis, repo review), give an immediate
+    // "On it sir" ack and hide the orb. The result handler will show the
+    // sidebar + speak "Here is the analysis sir" when the response arrives.
+    const isLong = isLongRunningQuery(transcript);
+    console.log("[NEXUS] finishCapture: intent=unknown, isLongRunning=", isLong, "transcript=", transcript);
+    if (isLong) {
+      console.log("[NEXUS] calling ackLongRunningQuery...");
+      await ackLongRunningQuery();
+      console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
+    }
+    // Release captureInProgress BEFORE sendTranscript so subsequent voice
+    // commands can be processed while the Worker is generating the response.
     captureInProgress = false;
+    await sendTranscript(transcript);
+    console.log("[NEXUS] sendTranscript done");
     // Backend is handling it — wsBridge will speak ack + result + reset.
     return;
   } catch (err) {
@@ -347,7 +444,11 @@ export async function finishCaptureFromVad(
   audio: Float32Array,
   speculative?: Promise<string> | null,
 ): Promise<void> {
-  if (captureInProgress) return;
+  console.log("[NEXUS] finishCaptureFromVad: called, captureInProgress=", captureInProgress);
+  if (captureInProgress) {
+    console.log("[NEXUS] finishCaptureFromVad: SKIPPING — captureInProgress is true");
+    return;
+  }
   captureInProgress = true;
 
   // Stop the recorder if it's running (it may be if we fell back to RMS).
@@ -411,6 +512,9 @@ export async function finishCaptureFromVad(
     return;
   }
 
+  // 1b. Post-process the transcript to fix common STT mishearings.
+  transcript = correctSttTranscript(transcript);
+
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
 
@@ -448,8 +552,23 @@ export async function finishCaptureFromVad(
 
   // 4. Unknown intent — try the remote backend (n8n/Ollama/Hermes).
   try {
-    await sendTranscript(transcript);
+    // For long-running queries (PR analysis, repo review), give an immediate
+    // "On it sir" ack and hide the orb. The result handler will show the
+    // sidebar + speak "Here is the analysis sir" when the response arrives.
+    const isLong = isLongRunningQuery(transcript);
+    console.log("[NEXUS] finishCaptureFromVad: intent=unknown, isLongRunning=", isLong, "transcript=", transcript);
+    if (isLong) {
+      console.log("[NEXUS] calling ackLongRunningQuery...");
+      await ackLongRunningQuery();
+      console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
+    }
+    // Release captureInProgress BEFORE sendTranscript so subsequent voice
+    // commands can be processed while the Worker is generating the response.
+    // The result handler in wsBridge handles the sidebar + TTS when the
+    // response arrives, so we don't need to block here.
     captureInProgress = false;
+    await sendTranscript(transcript);
+    console.log("[NEXUS] sendTranscript done");
     return;
   } catch (err) {
     console.warn("[NEXUS] backend unavailable for unknown query:", err);

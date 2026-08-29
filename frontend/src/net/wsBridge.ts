@@ -10,10 +10,12 @@ import { speak, stopTts } from "../audio/ttsPlayer";
 async function emitSidebarShow(query: string, text: string): Promise<void> {
   if (!isTauri()) return;
   try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit("sidebar:show", { query, text });
+    // Call the Rust command that shows the sidebar window AND emits the
+    // content event from Rust (more reliable than JS-to-JS event delivery).
+    await tauriInvoke("show_sidebar_with_content", { query, text });
+    console.log("[NEXUS] sidebar: show_sidebar_with_content IPC ok");
   } catch (e) {
-    console.warn("[NEXUS] sidebar:show emit failed:", e);
+    console.warn("[NEXUS] sidebar:show failed:", e);
   }
 }
 
@@ -240,26 +242,50 @@ function handle(ev: ServerEvent): void {
       }
       break;
     case "result":
-      // Final result text from n8n — speak it locally and add to transcript.
-      // Show the sidebar ONLY here (with the response already rendered),
-      // and only if shouldShowSidebar() agrees this is an info/research query.
+      // Final result text from the Worker.
+      //
+      // Behavior:
+      //   - Info/research queries (long responses): Show sidebar with the
+      //     full text. Speak only "Here is the analysis, sir" — do NOT read
+      //     the entire long response aloud. Auto-close orb after TTS.
+      //   - Short responses / commands: Speak the response aloud and
+      //     auto-close the orb. No sidebar.
       if (ev.data) {
         store.addAssistantMessage(ev.data);
-        store.setState("speaking");
-        if (shouldShowSidebar(pendingQuery, ev.data)) {
+        const showSidebar = shouldShowSidebar(pendingQuery, ev.data);
+        console.log("[NEXUS] result: len=", ev.data.length, "query=", pendingQuery.slice(0, 60), "showSidebar=", showSidebar);
+
+        if (showSidebar) {
+          // Show the sidebar with the full response text
           void emitSidebarShow(pendingQuery, ev.data);
+          // The orb may have been hidden after "On it sir" — show it briefly
+          // so the user sees NEXUS is speaking the confirmation.
+          store.setVisible(true);
+          store.setState("speaking");
+          void speak("Here is the analysis, sir", () => {
+            sessionOpen = false;
+            store.reset();
+            // Auto-close the orb after the short confirmation
+            store.setVisible(false);
+          });
+        } else {
+          // Short response — speak it aloud and auto-close
+          // The orb may have been hidden — show it for the response.
+          store.setVisible(true);
+          store.setState("speaking");
+          void speak(ev.data, () => {
+            sessionOpen = false;
+            store.reset();
+            store.setVisible(false);
+          });
         }
-        void speak(ev.data, () => {
-          // After result finishes, the done event will reset to idle.
-        });
       }
       break;
     case "done":
+      // "done" from Rust is now only emitted on error/cancel paths.
+      // Normal flow: the "result" handler above emits done after TTS.
       sessionOpen = false;
-      stopTts();
       store.reset();
-      // Do NOT auto-hide the sidebar — it stays until the user presses
-      // Ctrl+Shift+Space (the global hotkey) or starts a new interaction.
       break;
     case "error":
       sessionOpen = false;
