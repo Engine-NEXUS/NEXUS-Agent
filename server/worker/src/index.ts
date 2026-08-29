@@ -59,21 +59,43 @@ const GITHUB_SCOPES = "repo read:org workflow";
 // ---- Intent classification ----
 // Models confirmed available on Cloudflare Workers AI (Aug 2026).
 // Small model for fast intent classification, larger for summarization.
-// GLM-5.2 requires Workers Paid plan — used for deep code analysis.
+// Two-tier PR analysis:
+//   Primary: GLM-4.7-Flash (cheap, 131K context, covers 95% of PRs)
+//   Deep:    GLM-5.3-Flash (1M context, for re-evaluation or large PRs)
 
 const INTENT_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const SUMMARY_MODEL = "@cf/mistral/mistral-small-3.1-24b-instruct";
 const SMALL_SUMMARY_MODEL = "@cf/meta/llama-3.2-3b-instruct";
-const ANALYSIS_MODEL = "@cf/zai-org/glm-5.2";  // 262K context, reasoning, function calling
+
+// Primary analysis model — 10x cheaper than GLM-5.2
+// $0.06/M input, $0.40/M output, 131K context, reasoning + function calling
+const ANALYSIS_MODEL = "@cf/zai-org/glm-4.7-flash";
+
+// Deep analysis model — for re-evaluation or PRs exceeding 131K context
+// $0.15/M input, $0.50/M output, 1M context, multimodal
+const DEEP_ANALYSIS_MODEL = "@cf/zai-org/glm-5.3-flash";
+
+// Context threshold: if PR context exceeds this, use deep model (131K tokens ≈ 520K chars)
+const FLASH_CONTEXT_LIMIT_CHARS = 520000;
+
+// Track recent analyses to detect re-evaluation requests
+// Maps "user_id:repo:prNumber" → timestamp of last analysis
+const recentAnalyses = new Map<string, number>();
+const RE_EVALUATION_WINDOW_MS = 5 * 60 * 1000;  // 5 minutes
 
 /**
  * Extract text from any Workers AI model response format.
  * - Older models (llama, mistral): { response: "text" }
- * - OpenAI-compatible (GLM-5.2): { choices: [{ message: { content: "text" } }] }
+ * - OpenAI-compatible (GLM-5.2, GLM-5.3-Flash): { choices: [{ message: { content: "text" } }] }
+ * - Reasoning models (GLM-4.7-Flash): content may be null, reasoning_content has the thinking
+ *   → if content is null, fall back to reasoning_content
  */
 function extractText(response: any): string {
   if (response?.response) return response.response.trim();
-  if (response?.choices?.[0]?.message?.content) return response.choices[0].message.content.trim();
+  const msg = response?.choices?.[0]?.message;
+  if (msg?.content) return msg.content.trim();
+  // Reasoning model fallback: if content is null, use reasoning_content
+  if (msg?.reasoning_content) return msg.reasoning_content.trim();
   if (response?.choices?.[0]?.text) return response.choices[0].text.trim();
   if (response?.result?.response) return response.result.response.trim();
   return "";
@@ -118,13 +140,13 @@ function keywordFallback(transcript: string): string {
 
   // Deep analysis intent — keywords like "analyse", "analyze", "review", "deep dive"
   // Must match BEFORE the generic github check
-  if (/\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine)\b/.test(t)
+  if (/\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine|take\s+another\s+look|look\s+at)\b/.test(t)
       && /\b(pr|pull\s*request|repo|repository|code|commit|branch|merge|github|diff|patch|change)\b/.test(t)) {
     return "github_analyse";
   }
 
   // Also catch "analyse the PR" / "review the PR" even without explicit github keyword
-  if (/\b(analy[sz]e|review|deep\s*dive|critique|evaluate)\b/.test(t)
+  if (/\b(analy[sz]e|review|deep\s*dive|critique|evaluate|take\s+another\s+look)\b/.test(t)
       && /\b(pr|pull\s*request)\b/.test(t)) {
     return "github_analyse";
   }
@@ -342,7 +364,9 @@ function parsePRRequest(transcript: string): { prNumber: number | null; repoName
   const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
 
   // "in zync", "of zync", "in owner/repo", "from owner/repo"
-  const repoMatch = tLower.match(/(?:in|of|from)\s+([\w\-./]+)/);
+  // Exclude "of PR" and "of pull" — those are not repo names
+  // Also exclude common English words that follow "of/in/from"
+  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+)/);
   if (!repoMatch || !repoMatch[1]) {
     return { prNumber, repoName: null };
   }
@@ -508,8 +532,29 @@ ${reviewList || "(none)"}`;
  * Deep PR analysis using GLM-5.2.
  * Fetches PR data via GitHub API, sends to GLM-5.2 for analysis.
  */
+/**
+ * Detect if this is a re-evaluation request.
+ * Triggers on phrases like "re-analyse", "deeper review", "re-evaluate", "again".
+ * Also checks if the same PR was analysed recently (within 5 minutes).
+ */
+function isReEvaluationRequest(transcript: string, userId: string, repo: string, prNumber: number): boolean {
+  const t = transcript.toLowerCase();
+  // Explicit re-evaluation keywords
+  if (/\b(re-?analy[sz]e|re-?evaluat|deeper\s+review|again|re-?review|more\s+thorough|take\s+another\s+look)\b/.test(t)) {
+    return true;
+  }
+  // Same PR analysed recently → assume re-evaluation
+  const key = `${userId}:${repo}:${prNumber}`;
+  const lastTime = recentAnalyses.get(key);
+  if (lastTime && (Date.now() - lastTime) < RE_EVALUATION_WINDOW_MS) {
+    return true;
+  }
+  return false;
+}
+
 async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): Promise<string> {
   const { prNumber, repoName } = parsePRRequest(req.task.request);
+  const userId = req.requester.id;
 
   try {
     // Resolve the repo name to a full owner/repo
@@ -526,7 +571,7 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
         "Authorization": `Bearer ${token}`,
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "NEXUS-Worker",
+        "User-Agent": "NEXUS-Worker",
       };
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=all&per_page=1&sort=created&direction=desc`, { headers });
       if (!resp.ok) {
@@ -546,7 +591,32 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
       return context.replace("__ERROR__:", "");
     }
 
-    // Send to GLM-5.2 for deep analysis
+    // Determine which model to use:
+    // 1. Re-evaluation request → deep model (GLM-5.3-Flash, 1M context)
+    // 2. Context exceeds 131K tokens → deep model (GLM-5.3-Flash, 1M context)
+    // 3. Default → primary model (GLM-4.7-Flash, 131K context, 10x cheaper)
+    const isReEval = isReEvaluationRequest(req.task.request, userId, repo, actualPrNumber);
+    const contextTooLarge = context.length > FLASH_CONTEXT_LIMIT_CHARS;
+    const useDeepModel = isReEval || contextTooLarge;
+    const model = useDeepModel ? DEEP_ANALYSIS_MODEL : ANALYSIS_MODEL;
+
+    // Record this analysis for re-evaluation detection
+    const analysisKey = `${userId}:${repo}:${actualPrNumber}`;
+    recentAnalyses.set(analysisKey, Date.now());
+
+    // Clean up old entries (keep map small)
+    if (recentAnalyses.size > 100) {
+      const now = Date.now();
+      for (const [k, t] of recentAnalyses) {
+        if (now - t > RE_EVALUATION_WINDOW_MS) recentAnalyses.delete(k);
+      }
+    }
+
+    const modelLabel = useDeepModel
+      ? (isReEval ? "DEEP REVIEW (re-evaluation)" : "DEEP REVIEW (large PR)")
+      : "CODE REVIEW";
+
+    // Build analysis prompt
     const analysisPrompt = `You are a senior software engineer performing a thorough code review. Analyse this pull request and provide a detailed review.
 
 Cover these areas:
@@ -559,17 +629,23 @@ Cover these areas:
 Be specific — reference file names and line numbers when pointing out issues.
 If the PR is small or straightforward, keep the review concise.
 
+${useDeepModel ? "Note: This is a DEEP review — be extra thorough. Check edge cases, error handling, test coverage gaps, and security implications that might be missed in a quick review." : ""}
+
 === PULL REQUEST CONTEXT ===
 ${context}
 
 === YOUR ANALYSIS ===`;
 
-    const response = await env.AI.run(ANALYSIS_MODEL as any, {
+    // GLM-4.7-Flash is a reasoning model — needs more tokens for reasoning + answer
+    // GLM-5.3-Flash is more efficient but still needs adequate output space
+    const maxTokens = useDeepModel ? 2500 : 3000;
+
+    const response = await env.AI.run(model as any, {
       messages: [
         { role: "system", content: "You are a senior software engineer with expertise in code review, security, and software architecture. You provide thorough, actionable code reviews." },
         { role: "user", content: analysisPrompt },
       ],
-      max_tokens: 2000,
+      max_tokens: maxTokens,
     });
 
     const analysis = extractText(response);
@@ -577,6 +653,10 @@ ${context}
       return `I fetched PR #${actualPrNumber} in ${repo} but couldn't generate an analysis. The PR has ${(context.match(/---/g) || []).length} changed files. Try asking a more specific question about it.`;
     }
 
+    // Prefix deep reviews so the user knows which model was used
+    if (useDeepModel) {
+      return `[${modelLabel}] ${analysis}`;
+    }
     return analysis;
   } catch (err) {
     return `I had trouble analysing the PR. Error: ${(err as Error).message}`;
