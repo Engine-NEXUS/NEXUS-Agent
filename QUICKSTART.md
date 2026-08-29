@@ -37,9 +37,10 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 ## 🧪 3. Key Test Scenarios for Hackathon Judges
 
 ### Scenario A: Autonomous Codebase Architecture Mapper *(Core Hackathon Feature)*
-1. Trigger NEXUS (`Ctrl+Shift+Space`) and say:
-   > *"Analyze the architecture of this repository"*
-2. **Result:** The Architecture Window opens, parses the repository graph in parallel (via Rayon + Petgraph), categorizes files into architectural layers (Frontend, Backend, DB, Infrastructure), and renders an interactive dependency diagram.
+1. Trigger NEXUS (`Ctrl+Space`) and say:
+   > *"Open architecture mapper"*
+2. **Result:** It will automatically detect the repository URL (e.g. your currently active project) and render an interactive dependency diagram. 
+   *(Note: Due to strict OS/laptop security policies, automatic URL detection might be incompatible on some machines. If it doesn't work, you can manually paste the repository URL into the mapper window).*
 
 ### Scenario B: Change Impact Analysis & Blast Radius
 1. In the Architecture Map or via voice, ask:
@@ -48,18 +49,18 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 
 ### Scenario C: Voice-Driven GitHub PR Code Review
 1. Trigger NEXUS and say:
-   > *"NEXUS, analyze PR 1 in Engine-NEXUS/NEXUS-Agent"*
+   > *"NEXUS, analyze PR 254 in Engine-NEXUS/NEXUS-Agent"* (or any other PR in a repo)
 2. **Result:** NEXUS fetches the PR diff from GitHub, generates a senior-engineer-grade summary of changes, potential bugs, and architectural risks, and renders it in the liquid glass sidebar.
 
-### Scenario D: Ultra-Fast Voice & Natural Response
-1. Trigger NEXUS and ask any general technical question:
+### Scenario D: General AI Assistant
+1. Trigger NEXUS and ask literally any question:
    > *"Explain the difference between WebSockets and HTTP/2 in two sentences."*
-2. **Result:** Transcribed in-process via Moonshine ONNX, processed by the Cloudflare edge worker, and spoken aloud with high-fidelity Kokoro 82M neural voice (<150ms TTFB).
+2. **Result:** Processed by the Cloudflare edge worker and spoken aloud with high-fidelity Kokoro 82M neural voice (<150ms TTFB).
 
 ### Scenario E: App & System Automation
 1. Trigger NEXUS and say:
-   > *"Open Chrome and search for Rust Tauri v2"*
-2. **Result:** Instantly executes native OS commands through the `command_executor` module.
+   > *"Open [App Name]"* (e.g. *"Open Chrome"*)
+2. **Result:** Instantly executes native OS commands to open the requested software.
 
 ---
 

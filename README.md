@@ -40,10 +40,11 @@ NEXUS transforms codebase exploration from a static directory view into an activ
 * **In-Process Neural STT (Moonshine):** High-speed local speech recognition running directly in the Rust process space.
 * **In-Process Neural TTS (Kokoro 82M):** Natural speech synthesis (<150ms TTFB) running in Rust and played through hardware via `rodio`.
 
-### 🛠️ 3. Developer-First Integrations
-* **Voice-Triggered PR Reviews:** *"NEXUS, analyze PR 1 in NEXUS-Agent."* Fetches diffs, commits, and comments, returning a Senior-Engineer grade review right to your sidebar.
-* **Fuzzy Repo Matching:** Intelligent Levenshtein matching on the edge catches STT mishearings.
-* **Non-Activating Overlay:** Floats above your IDE without stealing keyboard focus (`WS_EX_NOACTIVATE`).
+### 🚀 3. Developer-First Integrations & General AI
+* **Voice-Triggered PR Reviews:** *"Analyze PR 254 in Engine-NEXUS/NEXUS-Agent."* (or any other PR in a repo) Fetches diffs and returns a Senior-Engineer grade review.
+* **App Automation:** *"Open [App Name]"* instantly executes native OS commands to open software.
+* **General AI Assistant:** You can ask NEXUS literally any question, and it will respond intelligently via voice.
+* **Intelligent Edge Matching:** Fuzzy Levenshtein matching on the edge catches STT mishearings.
 
 ---
 
