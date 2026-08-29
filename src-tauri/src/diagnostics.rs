@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
+use tauri::Manager;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -369,11 +370,32 @@ pub fn log_diagnostics(worker_url: &str, user_id: &str) {
 /// Tauri command: get diagnostics as JSON for the frontend.
 #[tauri::command]
 pub fn nexus_diagnostics(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
+    // Try the active session first
     let (worker_url, user_id) = match crate::network::get_session_info() {
         Some((url, uid, _)) => (url, uid),
-        None => (String::new(), String::new()),
+        None => {
+            // Fallback: read from config file so diagnostics works
+            // even before the user has spoken their first command
+            let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let config_path = dir.join("nexus-config.json");
+            match std::fs::read_to_string(&config_path) {
+                Ok(content) => {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let default_url = option_env!("NEXUS_SERVER_URL")
+                            .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
+                        let url = json["serverUrl"].as_str().unwrap_or(default_url);
+                        let url = if url.is_empty() { default_url.to_string() } else { url.to_string() };
+                        let uid = json["userId"].as_str().unwrap_or("").to_string();
+                        (url, uid)
+                    } else {
+                        (String::new(), String::new())
+                    }
+                }
+                Err(_) => (String::new(), String::new()),
+            }
+        }
     };
 
     let report = run_diagnostics(&worker_url, &user_id);

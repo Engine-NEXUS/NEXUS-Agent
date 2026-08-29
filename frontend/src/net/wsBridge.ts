@@ -238,12 +238,12 @@ export async function getServerConfig(): Promise<{ url: string; token: string; u
 
   if (isTauri()) {
     try {
-      const config = await tauriInvoke<{ server_url: string; user_id: string; device_id: string }>("get_server_config");
+      const config = await tauriInvoke<{ serverUrl: string; userId: string; deviceId: string }>("get_server_config");
       cachedConfig = {
-        url: config.server_url,
+        url: config.serverUrl,
         token: DEVICE_TOKEN,
-        userId: config.user_id,
-        deviceId: config.device_id,
+        userId: config.userId,
+        deviceId: config.deviceId,
       };
       return cachedConfig;
     } catch (err) {

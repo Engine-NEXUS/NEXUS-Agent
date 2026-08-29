@@ -132,6 +132,26 @@ pub async fn open_session<R: Runtime>(
     Ok(session_id)
 }
 
+/// Open a session from saved config (non-IPC, for startup auto-init).
+/// Called at startup so diagnostics and architect can use the session
+/// before the frontend calls open_session.
+pub fn open_session_from_config(worker_url: &str, user_id: &str, device_id: &str) {
+    if worker_url.is_empty() || user_id.is_empty() {
+        return;
+    }
+    let normalized = worker_url
+        .replace("ws://", "http://")
+        .replace("wss://", "https://")
+        .replace("/ws", "");
+    *SESSION.lock() = Some(Session {
+        worker_url: normalized,
+        user_id: user_id.to_string(),
+        device_id: device_id.to_string(),
+        cancelled: false,
+    });
+    tracing::info!("network: session auto-opened from config (user={})", user_id);
+}
+
 /// Public accessor for the current Worker session config.
 /// Used by architect.rs to POST enrichment requests directly to the Worker
 /// without going through the full transcript flow.

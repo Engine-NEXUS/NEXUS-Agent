@@ -599,6 +599,28 @@ pub fn run() {
                 }
             }
 
+            // Auto-open the network session from saved config so that
+            // diagnostics, architect, and transcript commands have the
+            // user_id available before the frontend calls open_session.
+            // This fixes "Not configured" diagnostics and GitHub token
+            // lookup failures when the user hasn't spoken yet.
+            if let Some(dir) = app.path().app_data_dir().ok() {
+                let config_path = dir.join("nexus-config.json");
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let default_url = option_env!("NEXUS_SERVER_URL")
+                            .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
+                        let url = json["serverUrl"].as_str().unwrap_or(default_url);
+                        let url = if url.is_empty() { default_url } else { url };
+                        let uid = json["userId"].as_str().unwrap_or("");
+                        let did = json["deviceId"].as_str().unwrap_or("");
+                        if !uid.is_empty() {
+                            network::open_session_from_config(url, uid, did);
+                        }
+                    }
+                }
+            }
+
             if should_open_setup {
                 // Hide the orb during setup — it should not steal focus or
                 // appear behind the setup wizard on first launch.
