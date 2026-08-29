@@ -87,6 +87,25 @@
         "tabbingIdentifier": null,
         "dragDropEnabled": false,
         "url": "sidebar.html"
+      },
+      {
+        "label": "architect",
+        "title": "NEXUS Architecture Mapper",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "focus": true,
+        "visible": false,
+        "fullscreen": false,
+        "center": true,
+        "url": "architect.html"
       }
     ],
     "trayIcon": {
