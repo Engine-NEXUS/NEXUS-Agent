@@ -87,9 +87,18 @@ fn resolve_sidecar_dir() -> Option<PathBuf> {
 }
 
 /// Find a usable Python executable.
-/// Uses CREATE_NO_WINDOW on Windows so no console pops up during detection.
+/// On Windows, prefers pythonw.exe — the windowless GUI-subsystem Python that
+/// can NEVER show a console window (unlike python.exe, where CREATE_NO_WINDOW
+/// is not bulletproof on Win11 + Windows Terminal). pythonw.exe lives in the
+/// same install dir as python.exe, so it's on PATH whenever python is.
+/// Uses CREATE_NO_WINDOW on Windows so detection probes don't flash a console.
 fn find_python() -> Option<String> {
-    for name in &["python", "python3", "py"] {
+    #[cfg(target_os = "windows")]
+    const CANDIDATES: &[&str] = &["pythonw", "python", "python3", "py"];
+    #[cfg(not(target_os = "windows"))]
+    const CANDIDATES: &[&str] = &["python3", "python"];
+
+    for name in CANDIDATES {
         let mut cmd = Command::new(name);
         cmd.arg("--version");
         cmd.stdout(Stdio::piped());
