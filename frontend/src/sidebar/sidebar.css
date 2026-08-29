@@ -1,35 +1,48 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS Response Sidebar — True Frosted Glass Panel
-   ═══════════════════════════════════════════════════════════════
-
-   HOW THE BLUR WORKS (layers bottom→top):
-   ┌──────────────────────────────────────────────┐
-   │  Layer 0: Desktop / other windows            │  (behind window)
-   │  Layer 1: DWM acrylic — blurs Layer 0        │  (OS-level, whole window)
-   │  Layer 2: WebView2 transparent html/body     │  (shows Layer 1 through)
-   │  Layer 3: .sidebar-card rgba(15,20,40,0.12)  │  (12% dark tint = glass colour)
-   │  Layer 4: text with text-shadow              │  (always white, always readable)
-   └──────────────────────────────────────────────┘
-
-   WHY CARD IS 12% NOT 35%:
-   The OS blur IS the visual effect. A heavy CSS overlay covers it up.
-   12% dark-blue tint on top of the pure blur = frosted glass look.
-   35% (previous value) made it look like a solid dark panel.
-
-   CROSS-PLATFORM:
-   - Windows: apply_acrylic(Some((0,0,0,0))) in lib.rs setup hook.
-              Pure blur, no DWM tint. Tint comes from CSS card only.
-   - macOS:   apply_vibrancy(HudWindow) in lib.rs setup hook.
-   - Linux:   No OS blur. CSS backdrop-filter(blur 30px) + rgba(15,20,40,0.55)
-              gives a synthetic frosted glass. Darker here because there's
-              no real blur — the tint provides the visual separation.
-
-   TEXT:
-   - Always #ffffff. No mix-blend-mode (removed: caused white→black on light bgs).
-   - Dual text-shadow: tight dark shadow + soft glow = readable on ANY backdrop.
+   NEXUS Response Sidebar — Apple Music Web Frosted Glass Theme
+   Aesthetic: High-contrast pitch-black surfaces (#000000, #121212),
+   frosted acrylic blur, signature Rose/Crimson accent (#fa586a),
+   rich gradient highlights, and crisp WCAG 2.2 AA typography.
    ═══════════════════════════════════════════════════════════════ */
 
 @import "../theme/tokens.css";
+
+:root {
+  /* ── Apple Music Web Design Tokens ──────────────────────────── */
+  --apple-text-primary:    #ffffff;
+  --apple-text-secondary:  #8e8e93;
+  --apple-text-tertiary:   #636366;
+  --apple-text-accent:     #fa586a;
+  --apple-text-accent-dark:#d60017;
+
+  --apple-surface-base:    #000000;
+  --apple-surface-sidebar: rgba(18, 18, 18, 0.82);
+  --apple-surface-muted:   rgba(28, 28, 30, 0.72);
+  --apple-surface-raised:  rgba(44, 44, 46, 0.75);
+  --apple-surface-strong:  rgba(58, 58, 60, 0.90);
+  --apple-surface-bar:     rgba(22, 22, 24, 0.88);
+
+  --apple-diff-easy:       #30d158;
+  --apple-diff-medium:     #ff9f0a;
+  --apple-diff-hard:       #ff453a;
+  --apple-accent-blue:     #0a84ff;
+  --apple-accent-purple:   #bf5af2;
+  --apple-accent-cyan:     #64d2ff;
+
+  --apple-border-default:  rgba(255, 255, 255, 0.08);
+  --apple-border-strong:   rgba(255, 255, 255, 0.16);
+  --apple-focus-ring:      #fa586a;
+
+  /* Rich Category Gradients */
+  --gradient-crimson: linear-gradient(135deg, #e52d27 0%, #b31217 100%);
+  --gradient-sunset:  linear-gradient(135deg, #ff9966 0%, #ff5e62 100%);
+  --gradient-royal:   linear-gradient(135deg, #2b5876 0%, #4e4376 100%);
+  --gradient-purple:  linear-gradient(135deg, #8e2de2 0%, #4a00e0 100%);
+  --gradient-emerald: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+  --gradient-amber:   linear-gradient(135deg, #f7971e 0%, #ffd200 100%);
+  --gradient-violet:  linear-gradient(135deg, #654ea3 0%, #eaafc8 100%);
+  --gradient-rose:    linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+}
 
 * {
   margin: 0;
@@ -37,15 +50,19 @@
   box-sizing: border-box;
 }
 
+::selection {
+  background: rgba(250, 88, 106, 0.38);
+  color: #ffffff;
+}
+
 html, body, #root {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   background: transparent !important;
-  font-family: var(--nx-font);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
-  -webkit-user-select: none;
-  user-select: none;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ── App container ─────────────────────────────────────────────── */
@@ -55,19 +72,20 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: flex-start; /* Align glass card to the top of the window */
+  justify-content: flex-start;
   background: transparent !important;
-  padding: 0; /* Card fills entire window — no gaps */
+  padding: 0;
   transform: translateX(100vw);
   opacity: 0;
-  overflow: visible;
+  overflow: hidden;
+  position: relative;
 }
 
 #sidebar-app.sidebar--visible {
   transform: translateX(0);
   opacity: 1;
   transition:
-    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
     opacity 0.25s ease;
 }
 
@@ -76,129 +94,839 @@ html, body, #root {
   opacity: 0;
   pointer-events: none;
   transition:
-    transform 0.4s cubic-bezier(0.4, 0, 0.7, 1),
-    opacity 0.15s ease 0.25s;
+    transform 0.35s cubic-bezier(0.4, 0, 1, 1),
+    opacity 0.2s ease 0.15s;
 }
 
-/* ── Card: glass panel — white frosted glass, full height ──────── */
+/* ── Frosted Glass Card Panel (Apple Music Dark Spec) ──────────── */
 .sidebar-card {
   width: 100%;
-  height: 100%; /* Fill entire window — no second box */
-
-  /* White frosted glass tint. Works with the white DWM blur to create
-     the React Native-like BlurView frosted look. */
-  background: rgba(255, 255, 255, 0.15);
-
-  /* CSS backdrop-filter for extra depth/Linux fallback */
-  backdrop-filter: blur(30px) saturate(180%) brightness(0.95);
-  -webkit-backdrop-filter: blur(30px) saturate(180%) brightness(0.95);
-
-  /* Glass edge */
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-top: 1px solid rgba(255, 255, 255, 0.35); /* Top border highlight */
-  border-radius: 24px; /* Blunt/rounded corners */
-
-  /* Outer shadow for depth and separation from desktop */
-  box-shadow:
-    0 12px 48px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.35);
-
-  padding: var(--nx-space-4);
+  height: 100%;
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--nx-space-3);
-  margin-right: 0;
+  background: var(--apple-surface-sidebar);
+  backdrop-filter: blur(40px) saturate(210%) brightness(0.95);
+  -webkit-backdrop-filter: blur(40px) saturate(210%) brightness(0.95);
+  border: 1px solid var(--apple-border-default);
+  border-top: 1px solid var(--apple-border-strong);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  padding: 16px 18px 12px 18px;
+  gap: 12px;
+  overflow: hidden;
   isolation: isolate;
 }
 
-/*
- * Linux fallback: without OS-level blur, the 12% tint is invisible.
- * If backdrop-filter is supported (compositor on), slightly darken
- * the card so it's still distinguishable. This only fires on Linux
- * because Win/Mac always have DWM/NSVisualEffectView.
- */
+/* Linux fallback */
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .sidebar-card {
-    background: rgba(15, 20, 40, 0.70);
+    background: #121212;
   }
 }
 
-/* ── Query (what the user asked) ───────────────────────────────── */
-.sidebar-query {
-  font-size: var(--nx-text-sm);
-  font-weight: var(--nx-weight-semibold);
+/* ── Sizing Scales ─────────────────────────────────────────────── */
+.sidebar-card.font-size--sm {
+  --sidebar-base-font: 12px;
+  --sidebar-code-font: 11px;
+  --sidebar-h1-font: 17px;
+  --sidebar-h2-font: 15px;
+  --sidebar-h3-font: 13.5px;
+}
+.sidebar-card.font-size--md {
+  --sidebar-base-font: 13px;
+  --sidebar-code-font: 12px;
+  --sidebar-h1-font: 19px;
+  --sidebar-h2-font: 16.5px;
+  --sidebar-h3-font: 14.5px;
+}
+.sidebar-card.font-size--lg {
+  --sidebar-base-font: 14.5px;
+  --sidebar-code-font: 13px;
+  --sidebar-h1-font: 21px;
+  --sidebar-h2-font: 18px;
+  --sidebar-h3-font: 16px;
+}
+.sidebar-card.font-size--xl {
+  --sidebar-base-font: 16px;
+  --sidebar-code-font: 14px;
+  --sidebar-h1-font: 23px;
+  --sidebar-h2-font: 20px;
+  --sidebar-h3-font: 17.5px;
+}
+
+/* ── Top Header Toolbar ────────────────────────────────────────── */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--apple-border-default);
+  flex-shrink: 0;
+}
+
+.sidebar-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-brand-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: var(--apple-surface-muted);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-brand-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--apple-text-accent);
+  box-shadow: 0 0 10px var(--apple-text-accent);
+  animation: apple-pulse-dot 2.2s infinite ease-in-out;
+}
+
+@keyframes apple-pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.35); opacity: 1; box-shadow: 0 0 14px var(--apple-text-accent); }
+}
+
+.sidebar-brand-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--apple-text-primary);
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+.sidebar-tag {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--apple-text-accent);
+  background: rgba(250, 88, 106, 0.14);
+  border: 1px solid rgba(250, 88, 106, 0.28);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-action-btn,
+.sidebar-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--apple-surface-muted);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 7px;
+  color: var(--apple-text-secondary);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 4px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.sidebar-action-btn:hover,
+.sidebar-close-btn:hover {
+  background: var(--apple-surface-raised);
+  border-color: var(--apple-border-strong);
+  color: var(--apple-text-primary);
+  transform: translateY(-1px);
+}
+
+.sidebar-action-btn:active,
+.sidebar-close-btn:active {
+  transform: translateY(0);
+}
+
+.sidebar-action-btn--active {
+  background: rgba(250, 88, 106, 0.2) !important;
+  border-color: var(--apple-text-accent) !important;
+  color: var(--apple-text-accent) !important;
+  box-shadow: 0 0 14px rgba(250, 88, 106, 0.35);
+}
+
+.sidebar-action-btn--success {
+  background: rgba(48, 209, 88, 0.2) !important;
+  border-color: var(--apple-diff-easy) !important;
+  color: var(--apple-diff-easy) !important;
+}
+
+.sidebar-close-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  margin-left: 2px;
+}
+
+.sidebar-close-btn:hover {
+  background: rgba(255, 69, 58, 0.25);
+  border-color: var(--apple-diff-hard);
+  color: var(--apple-diff-hard);
+}
+
+.sidebar-font-size-icon {
+  font-weight: 700;
+  font-size: 11px;
+}
+.sidebar-font-size-label {
+  font-size: 9.5px;
+  opacity: 0.85;
+}
+
+/* ── User Query Banner ─────────────────────────────────────────── */
+.sidebar-query-card {
+  background: var(--apple-surface-muted);
+  border: 1px solid var(--apple-border-default);
+  border-left: 3px solid var(--apple-text-accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.sidebar-query-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sidebar-query-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--apple-text-accent);
+}
+
+.sidebar-query-toggle {
+  background: transparent;
+  border: none;
+  color: var(--apple-text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-query-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--apple-text-primary);
+  margin-top: 5px;
   white-space: pre-wrap;
-  word-wrap: break-word;
-  letter-spacing: 0.01em;
-
-  /* Always white — no mix-blend-mode.
-     Layer 1: 1px tight dark shadow = hard edge contrast on any bg.
-     Layer 2: 0 0 20px soft glow = readable even on blurred white bg. */
-  color: #ffffff;
-  text-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.95),
-    0 2px 10px rgba(0, 0, 0, 0.75),
-    0 0 24px rgba(0, 0, 0, 0.50);
+  word-break: break-word;
+  user-select: text;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
 }
 
-/* ── Separator ─────────────────────────────────────────────────── */
-.sidebar-query + .sidebar-response {
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-  padding-top: var(--nx-space-3);
-  margin-top: calc(-1 * var(--nx-space-1));
-}
-
-/* ── Response area ─────────────────────────────────────────────── */
+/* ── Response Scroll Area ──────────────────────────────────────── */
 .sidebar-response {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
-.sidebar-response::-webkit-scrollbar { width: 4px; }
-.sidebar-response::-webkit-scrollbar-track { background: transparent; }
+.sidebar-response::-webkit-scrollbar {
+  width: 5px;
+}
+.sidebar-response::-webkit-scrollbar-track {
+  background: transparent;
+}
 .sidebar-response::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+}
+.sidebar-response::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+/* ── Rich Markdown Body ────────────────────────────────────────── */
+.nexus-markdown-body {
+  font-size: var(--sidebar-base-font);
+  line-height: 1.68;
+  color: var(--apple-text-primary);
+  user-select: text;
+  -webkit-user-select: text;
+  word-wrap: break-word;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+/* Headings */
+.nexus-h1, .nexus-h2, .nexus-h3, .nexus-h4, .nexus-h5, .nexus-h6 {
+  color: var(--apple-text-primary);
+  font-weight: 700;
+  margin-top: 18px;
+  margin-bottom: 10px;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+}
+.nexus-h1:first-child, .nexus-h2:first-child, .nexus-h3:first-child {
+  margin-top: 0;
+}
+
+.nexus-h1 {
+  font-size: var(--sidebar-h1-font);
+  border-bottom: 1px solid var(--apple-border-default);
+  padding-bottom: 6px;
+  color: #ffffff;
+}
+.nexus-h2 {
+  font-size: var(--sidebar-h2-font);
+  border-bottom: 1px solid var(--apple-border-default);
+  padding-bottom: 4px;
+}
+.nexus-h3 {
+  font-size: var(--sidebar-h3-font);
+  color: #f2f2f7;
+}
+.nexus-h4, .nexus-h5, .nexus-h6 {
+  font-size: var(--sidebar-base-font);
+}
+
+/* Paragraphs & Spacing */
+.nexus-markdown-body p {
+  margin-bottom: 12px;
+}
+.nexus-markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* Strong / Bold & Em */
+.nexus-markdown-body strong {
+  font-weight: 700;
+  color: #ffffff;
+}
+.nexus-markdown-body em {
+  font-style: italic;
+  color: var(--apple-text-secondary);
+}
+
+/* Lists */
+.nexus-markdown-body ul,
+.nexus-markdown-body ol {
+  margin-bottom: 12px;
+  padding-left: 20px;
+}
+.nexus-markdown-body li {
+  margin-bottom: 4px;
+  line-height: 1.6;
+}
+.nexus-markdown-body li::marker {
+  color: var(--apple-text-accent);
+}
+
+/* Task list checkbox */
+.nexus-task-checkbox {
+  margin-right: 8px;
+  transform: translateY(2px);
+  accent-color: var(--apple-text-accent);
+  cursor: default;
+}
+
+/* Inline Code */
+.nexus-inline-code {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--apple-surface-raised);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 4px;
+  padding: 1.5px 5.5px;
+  color: #ffffff;
+  word-break: break-word;
+}
+
+/* Horizontal Rule */
+.nexus-hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--apple-border-strong), transparent);
+  margin: 18px 0;
+}
+
+/* Links */
+.nexus-link {
+  color: var(--apple-text-accent);
+  text-decoration: none;
+  font-weight: 500;
+  border-bottom: 1px dotted rgba(250, 88, 106, 0.6);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.nexus-link:hover {
+  color: #ff8595;
+  border-bottom-style: solid;
+}
+.nexus-external-icon {
+  opacity: 0.75;
+}
+
+/* ── Code Blocks & Syntax Highlighting ─────────────────────────── */
+.nexus-code-block {
+  background: #08080a;
+  border: 1px solid var(--apple-border-default);
+  border-radius: 8px;
+  margin: 14px 0;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.nexus-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--apple-surface-muted);
+  border-bottom: 1px solid var(--apple-border-default);
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.nexus-code-lang {
+  color: var(--apple-text-accent);
+  letter-spacing: 0.08em;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+.nexus-copy-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--apple-surface-raised);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 5px;
+  color: var(--apple-text-secondary);
+  cursor: pointer;
+  padding: 3px 7px;
+  font-size: 10.5px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+.nexus-copy-code-btn:hover {
+  background: var(--apple-surface-strong);
+  color: var(--apple-text-primary);
+}
+.nexus-copy-code-btn.nexus-copied {
+  background: rgba(48, 209, 88, 0.25);
+  border-color: var(--apple-diff-easy);
+  color: var(--apple-diff-easy);
+}
+
+.nexus-code-block pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: var(--sidebar-code-font);
+  line-height: 1.55;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.nexus-code-block pre::-webkit-scrollbar {
+  height: 4px;
+}
+.nexus-code-block pre::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
   border-radius: 2px;
 }
 
-.sidebar-response-text {
-  font-size: var(--nx-text-sm);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-wrap: break-word;
+/* Syntax Highlighting Colors (Apple Developer / SF theme) */
+.hljs {
+  color: #f2f2f7;
+  background: transparent;
+}
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-name, .hljs-tag {
+  color: var(--apple-text-accent);
+  font-weight: 600;
+}
+.hljs-string, .hljs-title, .hljs-section, .hljs-attribute, .hljs-literal, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-addition {
+  color: var(--apple-diff-easy);
+}
+.hljs-comment, .hljs-quote, .hljs-deletion, .hljs-meta {
+  color: var(--apple-text-tertiary);
+  font-style: italic;
+}
+.hljs-number, .hljs-regexp, .hljs-link {
+  color: var(--apple-diff-medium);
+}
+.hljs-variable, .hljs-params {
+  color: var(--apple-accent-cyan);
+}
+.hljs-function, .hljs-title.function_ {
+  color: var(--apple-accent-blue);
+}
+.hljs-operator, .hljs-punctuation {
+  color: #e2e8f0;
+}
 
-  /* Same always-white + shadow strategy as .sidebar-query */
+/* ── Tables & Grid Formatting ──────────────────────────────────── */
+.nexus-table-wrapper {
+  margin: 14px 0;
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--apple-border-default);
+  background: #0d0d0e;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.nexus-table-wrapper::-webkit-scrollbar {
+  height: 5px;
+}
+.nexus-table-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 3px;
+}
+
+.nexus-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--sidebar-base-font);
+  text-align: left;
+}
+
+.nexus-table th {
+  background: var(--apple-surface-muted);
+  color: var(--apple-text-primary);
+  font-weight: 700;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--apple-border-strong);
+  white-space: nowrap;
+}
+
+.nexus-table td {
+  padding: 8px 13px;
+  border-bottom: 1px solid var(--apple-border-default);
+  color: #f2f2f7;
+  line-height: 1.5;
+}
+
+.nexus-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.nexus-table tbody tr:hover {
+  background: rgba(250, 88, 106, 0.08);
+}
+
+.nexus-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Images & Media ────────────────────────────────────────────── */
+.nexus-image-container {
+  margin: 14px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.nexus-image-box {
+  position: relative;
+  max-width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--apple-border-strong);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+  background: #000000;
+}
+
+.nexus-image {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+  cursor: pointer;
+  transition: transform 0.25s ease;
+}
+.nexus-image:hover {
+  transform: scale(1.015);
+}
+
+.nexus-image-zoom-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--apple-border-strong);
+  border-radius: 6px;
   color: #ffffff;
-  text-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.90),
-    0 2px 10px rgba(0, 0, 0, 0.65),
-    0 0 20px rgba(0, 0, 0, 0.40);
-
-  /* mix-blend-mode: difference REMOVED — it inverted white text to black
-     on any light/white desktop background behind the window. */
-}
-
-/* ── Word-by-word fade-in (ChatGPT / Gemini streaming style) ────── */
-/* Each word is wrapped in a <span class="word"> by the JS eval in    */
-/* show_sidebar_with_content. Words fade in + slide up with a         */
-/* staggered delay, creating the streaming text effect.               */
-
-.sidebar-response-text .word {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
   opacity: 0;
-  transform: translateY(6px);
-  animation: word-fade-in 0.4s ease forwards;
+  transform: translateY(-4px);
+  transition: all 0.2s ease;
 }
 
-@keyframes word-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+.nexus-image-box:hover .nexus-image-zoom-btn {
+  opacity: 1;
+  transform: translateY(0);
 }
 
+.nexus-image-caption {
+  font-size: 11px;
+  color: var(--apple-text-secondary);
+  margin-top: 6px;
+  text-align: center;
+  font-style: italic;
+}
+
+/* ── Blockquotes & GitHub Alert Callouts ────────────────────────── */
+.nexus-blockquote {
+  border-left: 3px solid var(--apple-text-accent);
+  padding: 8px 14px;
+  margin: 12px 0;
+  background: var(--apple-surface-muted);
+  border-radius: 0 7px 7px 0;
+  color: #f2f2f7;
+}
+
+.nexus-callout {
+  border-radius: 8px;
+  margin: 14px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--apple-border-default);
+  border-left-width: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+.nexus-callout-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.nexus-callout-body {
+  font-size: var(--sidebar-base-font);
+  line-height: 1.6;
+}
+
+.nexus-callout--note {
+  background: rgba(10, 132, 255, 0.12);
+  border-color: rgba(10, 132, 255, 0.25);
+  border-left-color: var(--apple-accent-blue);
+}
+.nexus-callout--note .nexus-callout-header { color: var(--apple-accent-blue); }
+
+.nexus-callout--tip {
+  background: rgba(191, 90, 242, 0.12);
+  border-color: rgba(191, 90, 242, 0.25);
+  border-left-color: var(--apple-accent-purple);
+}
+.nexus-callout--tip .nexus-callout-header { color: var(--apple-accent-purple); }
+
+.nexus-callout--important {
+  background: rgba(100, 210, 255, 0.12);
+  border-color: rgba(100, 210, 255, 0.25);
+  border-left-color: var(--apple-accent-cyan);
+}
+.nexus-callout--important .nexus-callout-header { color: var(--apple-accent-cyan); }
+
+.nexus-callout--warning {
+  background: rgba(255, 159, 10, 0.12);
+  border-color: rgba(255, 159, 10, 0.25);
+  border-left-color: var(--apple-diff-medium);
+}
+.nexus-callout--warning .nexus-callout-header { color: var(--apple-diff-medium); }
+
+.nexus-callout--caution {
+  background: rgba(255, 69, 58, 0.12);
+  border-color: rgba(255, 69, 58, 0.25);
+  border-left-color: var(--apple-diff-hard);
+}
+.nexus-callout--caution .nexus-callout-header { color: var(--apple-diff-hard); }
+
+/* ── Floating Scroll to Top Button ─────────────────────────────── */
+.sidebar-scroll-top-btn {
+  position: absolute;
+  bottom: 38px;
+  right: 22px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--apple-surface-strong);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--apple-border-strong);
+  color: var(--apple-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+  transition: all 0.2s ease;
+  z-index: 20;
+}
+.sidebar-scroll-top-btn:hover {
+  background: var(--apple-text-accent);
+  border-color: var(--apple-text-accent);
+  color: #ffffff;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(250, 88, 106, 0.4);
+}
+
+/* ── Footer ────────────────────────────────────────────────────── */
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--apple-border-default);
+  flex-shrink: 0;
+}
+
+.sidebar-footer-hint {
+  font-size: 10.5px;
+  color: var(--apple-text-secondary);
+  user-select: none;
+}
+
+.sidebar-kbd {
+  background: var(--apple-surface-raised);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 9.5px;
+  color: var(--apple-text-primary);
+}
+
+/* ── Lightbox Modal ────────────────────────────────────────────── */
+.nexus-lightbox-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.88);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 24px;
+  animation: lightbox-fade-in 0.2s ease;
+}
+
+@keyframes lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.nexus-lightbox-content {
+  background: #141416;
+  border: 1px solid var(--apple-border-strong);
+  border-radius: 14px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.85);
+}
+
+.nexus-lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--apple-surface-muted);
+  border-bottom: 1px solid var(--apple-border-default);
+}
+
+.nexus-lightbox-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--apple-text-primary);
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nexus-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nexus-lightbox-btn {
+  background: var(--apple-surface-raised);
+  border: 1px solid var(--apple-border-default);
+  border-radius: 6px;
+  color: var(--apple-text-primary);
+  padding: 5px 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.nexus-lightbox-btn:hover {
+  background: var(--apple-surface-strong);
+}
+
+.nexus-lightbox-close:hover {
+  background: rgba(255, 69, 58, 0.35);
+  border-color: var(--apple-diff-hard);
+  color: var(--apple-diff-hard);
+}
+
+.nexus-lightbox-body {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.nexus-lightbox-img {
+  max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+}

@@ -41,6 +41,7 @@ export default defineConfig({
         setup: resolve(__dirname, "setup.html"),
         settings: resolve(__dirname, "settings.html"),
         sidebar: resolve(__dirname, "sidebar.html"),
+        architect: resolve(__dirname, "architect.html"),
       },
     },
   },

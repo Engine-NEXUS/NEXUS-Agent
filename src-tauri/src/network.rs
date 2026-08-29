@@ -51,6 +51,7 @@ impl ServerEvent {
     fn result(text: &str) -> Self {
         Self { kind: "result".into(), state: None, data: Some(text.into()), message: None }
     }
+    #[allow(dead_code)]
     fn done() -> Self {
         Self { kind: "done".into(), state: None, data: None, message: None }
     }
