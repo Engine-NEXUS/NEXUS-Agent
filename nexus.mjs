@@ -53,10 +53,13 @@ function run(cmd, args, opts = {}) {
   const cwd = opts.cwd || ROOT;
   const label = opts.label || `${cmd} ${args.join(" ")}`;
   if (opts.silent !== true) info(label);
+  // On Windows, npm/cargo/python are .cmd/.exe shims — spawnSync needs
+  // shell:true to resolve them (npm is npm.cmd, not npm).
+  const useShell = opts.shell !== undefined ? opts.shell : IS_WIN;
   const result = spawnSync(cmd, args, {
     cwd,
     stdio: opts.stdio || "inherit",
-    shell: opts.shell || false,
+    shell: useShell,
     env: { ...process.env, ...opts.env },
     encoding: "utf-8",
   });

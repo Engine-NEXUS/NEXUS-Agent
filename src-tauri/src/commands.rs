@@ -116,7 +116,7 @@ pub fn get_server_config<R: Runtime>(
     let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     Ok(ServerConfig {
         server_url: json["serverUrl"].as_str()
-            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("ws://127.0.0.1:41098/ws"))
+            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("https://nexus-worker.chitkullakshya.workers.dev"))
             .to_string(),
         user_id: json["userId"].as_str().unwrap_or("").to_string(),
         device_id: json["deviceId"].as_str().unwrap_or("").to_string(),

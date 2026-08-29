@@ -15,10 +15,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22 & Cache
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -28,9 +30,9 @@ jobs:
         with:
           workspaces: "./src-tauri -> target"
 
-      - name: Install Frontend Dependencies
+      - name: Fast Install Frontend Dependencies
         working-directory: ./frontend
-        run: npm install
+        run: npm ci
 
       - name: Build Frontend Bundle
         working-directory: ./frontend
@@ -40,6 +42,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXUS_SERVER_URL: https://nexus-worker.chitkullakshya.workers.dev
+          CARGO_INCREMENTAL: 0
         with:
           projectPath: './src-tauri'
           args: '--bundles nsis --features custom-protocol'
