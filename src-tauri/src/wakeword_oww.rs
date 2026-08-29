@@ -109,7 +109,7 @@ mod engine {
     /// Minimum positive detections before triggering
     /// (2 frames = 160ms of consistent detection — filters transient spikes
     /// but is lenient enough for the 78.6% accuracy model)
-    const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
+    const MIN_POSITIVE_DETECTIONS: f32 = 1.0;
 
     /// Single-frame high-confidence threshold.
     /// If any single frame exceeds this, trigger immediately without
@@ -951,8 +951,10 @@ mod engine {
 
         // 3. Feed 1280-sample chunks to KWS engine
         //    Check meeting/privacy state — if suppressed, drain audio but
-        //    don't run detection (prevents wake during meetings and TTS self-trigger)
+        //    don't run detection (prevents wake during meetings and TTS self-trigger).
+        //    Also enforces Dual-Phase 300ms Post-TTS Mute Gate.
         {
+            let mut last_tts_active = std::time::Instant::now() - std::time::Duration::from_secs(10);
             let mut buf = out_buf.lock();
             buf.extend(produced);
             while buf.len() >= chunk_size {
@@ -967,7 +969,13 @@ mod engine {
                     .unwrap_or(false);
 
                 if suppressed {
-                    // Still consume the audio (keep buffer drained) but skip detection
+                    last_tts_active = std::time::Instant::now();
+                    continue;
+                }
+
+                // Dual-Phase Mute Gate: drop audio chunks for 300ms after TTS finishes
+                // to allow room acoustics and DAC output buffers to settle completely
+                if last_tts_active.elapsed() < std::time::Duration::from_millis(300) {
                     continue;
                 }
 
@@ -1052,8 +1060,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 );
                 if let Some(win) = app_for_commands.get_webview_window("main") {
                     let _ = win.show();
-                    let _ = win.set_focus();
-                    let _ = win.set_always_on_top(true);
+                    let _ = crate::window_manager::configure_non_activating_overlay(&win);
                     let _ = win.set_ignore_cursor_events(false);
                     let _ = app_for_commands.emit("command-detected", &intent);
                 }
@@ -1065,10 +1072,12 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
+        let _ = app.emit("assistant:wake", ());
+        let _ = app.emit("nexus://wake", ());
+
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
-            let _ = win.set_focus();
-            let _ = win.set_always_on_top(true);
+            let _ = crate::window_manager::configure_non_activating_overlay(&win);
             let _ = win.set_ignore_cursor_events(false);
             let _ = win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
         }
@@ -1113,11 +1122,38 @@ fn start_audio_capture_with_retry(
 fn start_audio_capture(
     engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
 ) -> Result<(), String> {
+    #[allow(unused_imports)]
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    #[allow(unused_imports)]
     use cpal::Sample;
+    #[allow(unused_imports)]
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let host = cpal::default_host();
+
+    // ─── Non-Windows (Linux / macOS): PipeWire, PulseAudio, CoreAudio ───
+    // On Linux and macOS, the OS audio server manages stream routing and the default
+    // input device is the user's active microphone. Start it directly without the
+    // multi-device 5-second silence cascade.
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(default_device) = host.default_input_device() {
+            let dev_name = default_device.name().unwrap_or_else(|_| "default".into());
+            tracing::info!("audio: starting capture on default device '{}'...", dev_name);
+            match try_device_silent(&default_device, engine.clone()) {
+                Ok(()) => {
+                    tracing::info!("audio: stream active on '{}'", dev_name);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "audio: default device '{}' failed to start: {e}. Falling back to device list.",
+                        dev_name
+                    );
+                }
+            }
+        }
+    }
 
     // ─── Enumerate ALL input devices and log them ───────────────────
     let devices: Vec<cpal::Device> = match host.input_devices() {

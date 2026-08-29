@@ -20,11 +20,12 @@
 //! Because the grant is programmatic, it happens instantly at every request —
 //! no dialog, ever, regardless of user-profile state.
 
-use tauri::{Manager, Runtime};
+#[cfg(target_os = "windows")]
+use tauri::Manager;
+use tauri::Runtime;
 
 /// Origins that are allowed to use the mic/camera without prompting.
-/// Our webviews only ever load the bundled frontend, but we check anyway so
-/// this handler can never be abused by external content.
+#[allow(unused)]
 const ALLOWED_ORIGIN_PREFIXES: &[&str] = &[
     "http://tauri.localhost",
     "https://tauri.localhost",
@@ -34,13 +35,11 @@ const ALLOWED_ORIGIN_PREFIXES: &[&str] = &[
 ];
 
 /// Call once from the Tauri setup hook, after the windows exist.
-/// Registers the handler on both webviews ("main" and "setup" — the setup
-/// window's voice-enrollment page also calls getUserMedia).
-pub fn init<R: Runtime>(app: &tauri::App<R>) {
+pub fn init<R: Runtime>(_app: &tauri::App<R>) {
     #[cfg(target_os = "windows")]
     {
         for label in ["main", "setup"] {
-            let Some(win) = app.get_webview_window(label) else {
+            let Some(win) = _app.get_webview_window(label) else {
                 continue;
             };
             let label_owned = label.to_string();

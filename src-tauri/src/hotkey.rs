@@ -15,16 +15,24 @@
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-const HOTKEY: &str = "CommandOrControl+Shift+Space";
+const HOTKEYS: &[&str] = &[
+    "CommandOrControl+Shift+Space",
+    "CommandOrControl+Alt+Space",
+    "Alt+Space",
+];
 
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let sc: Shortcut = HOTKEY
-        .parse()
-        .map_err(|e| format!("invalid hotkey: {e}"))?;
+    for &hk in HOTKEYS {
+        let sc: Shortcut = match hk.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to parse hotkey '{hk}': {e}");
+                continue;
+            }
+        };
 
-    let handle = app.clone();
-    app.global_shortcut()
-        .on_shortcut(sc, move |_app, _shortcut, event| {
+        let handle = app.clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(sc, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
                 // Check if the sidebar is currently visible.
                 let sidebar_visible = handle
@@ -34,7 +42,7 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
                 if sidebar_visible {
                     // Sidebar is visible → close it only, do NOT wake NEXUS.
-                    tracing::info!("hotkey → sidebar visible, closing sidebar only");
+                    tracing::info!("hotkey ({}) → sidebar visible, closing sidebar only", hk);
                     // Directly hide the native window + reset the CSS class
                     // via JS eval (bypasses the event system which may not
                     // be received by the sidebar window's listen() calls).
@@ -46,12 +54,11 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                     }
                 } else {
                     // Sidebar is hidden → wake NEXUS, do NOT touch sidebar.
-                    tracing::info!("hotkey → sidebar hidden, waking NEXUS");
+                    tracing::info!("hotkey ({}) → sidebar hidden, waking NEXUS", hk);
 
                     if let Some(win) = handle.get_webview_window("main") {
                         let _ = win.show();
-                        let _ = win.set_focus();
-                        let _ = win.set_always_on_top(true);
+                        let _ = crate::window_manager::configure_non_activating_overlay(&win);
                         let _ = win.set_ignore_cursor_events(false);
 
                         // Call the frontend wake handler directly.
@@ -59,7 +66,12 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                     }
                 }
             }
-        })
-        .map_err(|e| format!("on_shortcut: {e}"))?;
+        }) {
+            tracing::warn!("Failed to register handler for hotkey '{hk}': {e}");
+        } else {
+            tracing::info!("Registered global hotkey handler: {hk}");
+        }
+    }
+
     Ok(())
 }
