@@ -262,6 +262,7 @@ mod engine {
             let reshaped = stacked
                 .into_shape(&[self.feature_buffer.len(), 96])
                 .map_err(|e| anyhow::anyhow!("reshape features: {e}"))?;
+
             Ok(reshaped)
         }
     }
@@ -640,10 +641,6 @@ mod engine {
 
                 let (detected, prob, command_intent) = self.detect_chunk(chunk);
 
-                if prob > 0.1 {
-                    tracing::debug!("OWW probability: {:.3}", prob);
-                }
-
                 // --- Tier 3: emit command-detected event if a command fired ---
                 if let Some(intent) = command_intent {
                     if let Some(ref tx) = self.command_tx {
@@ -720,11 +717,24 @@ mod engine {
         let samples_in = data.len() / native_channels.max(1);
         SAMPLE_COUNT.fetch_add(samples_in as u64, Ordering::Relaxed);
 
-        if n % 200 == 0 && n > 0 {
+        if n % 1000 == 0 && n > 0 {
             let total = SAMPLE_COUNT.load(Ordering::Relaxed);
+            // Compute RMS of this callback's audio to verify mic is picking up sound
+            let ch = native_channels.max(1);
+            let frames = data.len() / ch;
+            let mut sum_sq = 0.0f32;
+            for i in 0..frames {
+                let mut sum = 0.0f32;
+                for c in 0..ch {
+                    sum += to_f32(data[i * ch + c]);
+                }
+                let mono = sum / ch as f32;
+                sum_sq += mono * mono;
+            }
+            let rms = if frames > 0 { (sum_sq / frames as f32).sqrt() } else { 0.0 };
             tracing::debug!(
-                "audio: {} callbacks, ~{:.1}s of audio processed",
-                n, total as f64 / 16000.0
+                "audio: {} callbacks, ~{:.1}s processed, RMS={:.4}",
+                n, total as f64 / 16000.0, rms
             );
         }
 
@@ -1172,5 +1182,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Critical test: verify tract-onnx produces the same output as onnxruntime
+    /// for the nexus.onnx classifier with known input.
+    ///
+    /// onnxruntime produces:
+    ///   - All-5 features → 0.996699
+    ///   - All-12 features → 0.996691
+    ///   - Random (std=12) → 0.902931
+    ///
+    /// If tract-onnx produces 0.0 for these, there's a tract-onnx compatibility bug.
+    #[test]
+    fn test_nexus_classifier_tract_vs_onnxruntime() {
+        use std::io::Cursor;
+        use tract_onnx::prelude::*;
+
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let nexus_path = PathBuf::from(manifest_dir)
+            .join("resources")
+            .join("oww")
+            .join("nexus.onnx");
+
+        if !nexus_path.exists() {
+            eprintln!("SKIP: nexus.onnx not found");
+            return;
+        }
+
+        let data = std::fs::read(&nexus_path).expect("Failed to read nexus.onnx");
+        let mut rdr = Cursor::new(data);
+        let model = tract_onnx::onnx()
+            .model_for_read(&mut rdr)
+            .expect("Failed to parse ONNX");
+        let model = model.into_optimized().expect("Failed to optimize");
+        let model = model.into_runnable().expect("Failed to make runnable");
+
+        // Test 1: All-5 features (onnxruntime says 0.996699)
+        let input5 = Tensor::from_shape(&[1, 16, 96], &[5.0f32; 16 * 96]).unwrap();
+        let out5 = model.clone().run(tvec!(input5.into())).unwrap();
+        let prob5: f32 = out5[0].clone().into_tensor().cast_to::<f32>().unwrap().into_owned()
+            .into_plain_array::<f32>().unwrap().as_slice().unwrap()[0];
+        println!("tract-onnx all-5 features → {:.6} (onnxruntime: 0.996699)", prob5);
+
+        // Test 2: All-12 features (onnxruntime says 0.996691)
+        let input12 = Tensor::from_shape(&[1, 16, 96], &[12.0f32; 16 * 96]).unwrap();
+        let out12 = model.clone().run(tvec!(input12.into())).unwrap();
+        let prob12: f32 = out12[0].clone().into_tensor().cast_to::<f32>().unwrap().into_owned()
+            .into_plain_array::<f32>().unwrap().as_slice().unwrap()[0];
+        println!("tract-onnx all-12 features → {:.6} (onnxruntime: 0.996691)", prob12);
+
+        // Test 3: All-(-5) features (onnxruntime says 0.236054)
+        let input_neg5 = Tensor::from_shape(&[1, 16, 96], &[-5.0f32; 16 * 96]).unwrap();
+        let out_neg5 = model.clone().run(tvec!(input_neg5.into())).unwrap();
+        let prob_neg5: f32 = out_neg5[0].clone().into_tensor().cast_to::<f32>().unwrap().into_owned()
+            .into_plain_array::<f32>().unwrap().as_slice().unwrap()[0];
+        println!("tract-onnx all-(-5) features → {:.6} (onnxruntime: 0.236054)", prob_neg5);
+
+        // The outputs should be close to onnxruntime's values.
+        // If tract-onnx produces 0.0, there's a bug.
+        assert!(
+            prob5 > 0.5,
+            "tract-onnx all-5 features produced {:.6}, expected ~0.997 — tract-onnx bug!",
+            prob5
+        );
+        assert!(
+            prob12 > 0.5,
+            "tract-onnx all-12 features produced {:.6}, expected ~0.997 — tract-onnx bug!",
+            prob12
+        );
     }
 }
