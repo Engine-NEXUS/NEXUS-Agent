@@ -180,13 +180,17 @@ Write-Log "READY" "  Press Ctrl+C to stop everything" $C_SYS
 Write-Log "READY" "═══════════════════════════════════════════════════════" $C_SYS
 Write-Host ""
 
-# Track file positions for incremental tailing
-$pos = @{
-  STT   = 0
-  Rust  = 0
-  CDP   = 0
-  Err   = 0
-}
+# Track file positions for incremental tailing.
+# IMPORTANT: These MUST be simple variables, NOT hashtable properties.
+# In PowerShell, [ref]$hashtable.Property creates a reference to a boxed
+# COPY of the value, not the actual hashtable slot. So updates inside the
+# function would be lost and the position would stay at 0 forever, causing
+# every cycle to re-read the entire log file from the beginning (the
+# "repeating logs" bug).
+$posSTT = 0
+$posRust = 0
+$posCDP = 0
+$posErr = 0
 
 function Get-NewLines([string]$File, [ref]$Position) {
   if (-not (Test-Path $File)) { return @() }
@@ -220,7 +224,7 @@ try {
     Start-Sleep -Milliseconds 500
 
     # STT logs
-    $sttLines = Get-NewLines $sttLog ([ref]$pos.STT)
+    $sttLines = Get-NewLines $sttLog ([ref]$posSTT)
     foreach ($line in $sttLines) {
       if ($line -match "transcribed (\d+) bytes.*?(\d+) chars in ([\d.]+)s") {
         Write-Log "STT" "transcribed: $($Matches[2]) chars in $($Matches[3])s" $C_STT
@@ -234,7 +238,7 @@ try {
     }
 
     # Rust logs (wake word, audio, baton pass) — limit to 50 lines per cycle
-    $rustLines = Get-NewLines $nexusLog ([ref]$pos.Rust)
+    $rustLines = Get-NewLines $nexusLog ([ref]$posRust)
     $rustShown = 0
     foreach ($line in $rustLines) {
       if ($rustShown -ge 50) { break }
@@ -281,7 +285,7 @@ try {
 
     # Frontend CDP logs
     if ($Debug -and (Test-Path "$LogDir\cdp_unified.log")) {
-      $cdpLines = Get-NewLines "$LogDir\cdp_unified.log" ([ref]$pos.CDP)
+      $cdpLines = Get-NewLines "$LogDir\cdp_unified.log" ([ref]$posCDP)
       foreach ($line in $cdpLines) {
         $clean = $line -replace '\x1b\[[0-9;]*m', ""
         if ($clean -match "\[log\]\s*(.+)") {
@@ -311,7 +315,7 @@ try {
     }
 
     # NEXUS stderr (errors)
-    $errLines = Get-NewLines $nexusErr ([ref]$pos.Err)
+    $errLines = Get-NewLines $nexusErr ([ref]$posErr)
     foreach ($line in $errLines) {
       $clean = $line -replace '\x1b\[[0-9;]*m', ""
       if ($clean -match "sending transcript|worker response") {
