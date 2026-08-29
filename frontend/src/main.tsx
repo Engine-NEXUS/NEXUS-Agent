@@ -123,12 +123,26 @@ async function startListening() {
   // If NEXUS is speaking or thinking, cancel the current turn before
   // starting a new one. This prevents the TTS 'interrupted' error and
   // ensures clean state transitions.
+  //
+  // EXCEPTION: If a long-running query is in flight (PR analysis etc),
+  // do NOT close the session — the HTTP request to the Worker is already
+  // in progress and can't be cancelled. The dedup/queue logic in
+  // recorder.ts handles the new command instead.
   const wasSpeaking = s.state === "speaking";
+  const { isLongRunningInFlight } = await import("./net/wsBridge");
+  const longRunningActive = isLongRunningInFlight();
   if (wasSpeaking || s.state === "thinking") {
-    console.log("[NEXUS] barge-in/turn-transition: cancelling current turn");
-    stopTts();
-    stopVad();
-    await abortCapture().catch(() => {});
+    if (longRunningActive) {
+      console.log("[NEXUS] barge-in: long-running query in flight — NOT closing session (dedup/queue will handle)");
+      stopTts();
+      stopVad();
+      // Don't call abortCapture — it would closeSession and break the in-flight request
+    } else {
+      console.log("[NEXUS] barge-in/turn-transition: cancelling current turn");
+      stopTts();
+      stopVad();
+      await abortCapture().catch(() => {});
+    }
     if (wasSpeaking) {
       // Dual-Phase Post-TTS Mute Gate: 300ms delay to allow DAC audio buffers and room acoustics to clear
       await new Promise((r) => setTimeout(r, 300));

@@ -1,8 +1,65 @@
 import { useAssistant } from "../store/assistant";
-import { openSession, closeSession, sendTranscript } from "../net/wsBridge";
+import {
+  openSession,
+  closeSession,
+  sendTranscript,
+  setLongRunningInFlight,
+  isLongRunningInFlight,
+  isDuplicateLongRunning,
+} from "../net/wsBridge";
 import { transcribeAudio } from "./stt";
 import { speak } from "./ttsPlayer";
 import { parseIntent } from "../intent/parser";
+
+/**
+ * Long-running query queue.
+ *
+ * If the user says a DIFFERENT long-running command while one is in flight,
+ * it's queued here. When the current result arrives (wsBridge clears the
+ * in-flight flag and fires the callback), the next queued command is sent.
+ */
+const pendingLongRunningQueue: string[] = [];
+
+/** Process the next queued long-running command (if any). */
+function processNextQueuedCommand(): void {
+  if (pendingLongRunningQueue.length === 0) return;
+  const next = pendingLongRunningQueue.shift()!;
+  console.log(`[NEXUS] queue: processing next queued command: "${next}"`);
+  // Send it — the session should still be open from the previous command.
+  setLongRunningInFlight(next, processNextQueuedCommand);
+  void sendTranscript(next).then(() => {
+    console.log(`[NEXUS] queue: sent "${next}" to worker`);
+  }).catch((e) => {
+    console.warn(`[NEXUS] queue: failed to send "${next}":`, e);
+  });
+}
+
+/**
+ * Handle a long-running transcript when one is already in flight.
+ *
+ * - SAME command → say "on it sir" + hide, do NOT send again (dedup)
+ * - DIFFERENT command → say "on it sir" + hide, add to queue
+ */
+async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<void> {
+  if (isDuplicateLongRunning(transcript)) {
+    // Same command — don't send again
+    console.log(`[NEXUS] dedup: same command already in flight, not sending again`);
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("On it sir.");
+    void speak("On it sir");
+    useAssistant.getState().setVisible(false);
+    useAssistant.getState().setState("thinking");
+  } else {
+    // Different long-running command — queue it
+    console.log(`[NEXUS] queue: different command while in flight, queuing: "${transcript}"`);
+    pendingLongRunningQueue.push(transcript);
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("On it sir.");
+    void speak("On it sir");
+    useAssistant.getState().setVisible(false);
+    useAssistant.getState().setState("thinking");
+  }
+}
 
 /**
  * Detect if a query is a long-running analysis (PR review, repo analysis, etc).
@@ -413,10 +470,23 @@ export async function finishCapture(): Promise<void> {
     // sidebar + speak "Here is the analysis sir" when the response arrives.
     const isLong = isLongRunningQuery(transcript);
     console.log("[NEXUS] finishCapture: intent=unknown, isLongRunning=", isLong, "transcript=", transcript);
+
+    // ─── Dedup + Queue for long-running queries ──────────────────────
+    // If a long-running query is already in flight:
+    //   - SAME command → say "on it sir" + hide, do NOT send again
+    //   - DIFFERENT command → say "on it sir" + hide, add to queue
+    if (isLong && isLongRunningInFlight()) {
+      captureInProgress = false;
+      await handleDuplicateOrQueuedLongRunning(transcript);
+      return;
+    }
+
     if (isLong) {
       console.log("[NEXUS] calling ackLongRunningQuery...");
       await ackLongRunningQuery();
       console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
+      // Track in-flight state for dedup + queue
+      setLongRunningInFlight(transcript, processNextQueuedCommand);
     }
     // Release captureInProgress BEFORE sendTranscript so subsequent voice
     // commands can be processed while the Worker is generating the response.
@@ -597,10 +667,23 @@ export async function finishCaptureFromVad(
     // sidebar + speak "Here is the analysis sir" when the response arrives.
     const isLong = isLongRunningQuery(transcript);
     console.log("[NEXUS] finishCaptureFromVad: intent=unknown, isLongRunning=", isLong, "transcript=", transcript);
+
+    // ─── Dedup + Queue for long-running queries ──────────────────────
+    // If a long-running query is already in flight:
+    //   - SAME command → say "on it sir" + hide, do NOT send again
+    //   - DIFFERENT command → say "on it sir" + hide, add to queue
+    if (isLong && isLongRunningInFlight()) {
+      captureInProgress = false;
+      await handleDuplicateOrQueuedLongRunning(transcript);
+      return;
+    }
+
     if (isLong) {
       console.log("[NEXUS] calling ackLongRunningQuery...");
       await ackLongRunningQuery();
       console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
+      // Track in-flight state for dedup + queue
+      setLongRunningInFlight(transcript, processNextQueuedCommand);
     }
     // Release captureInProgress BEFORE sendTranscript so subsequent voice
     // commands can be processed while the Worker is generating the response.

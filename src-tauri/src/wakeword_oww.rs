@@ -40,9 +40,13 @@ mod engine {
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
 
     use circular_buffer::CircularBuffer;
     use serde::{Deserialize, Serialize};
+
+    /// Throttle counter for "audio passed gate" debug logs (avoids 12.5 logs/sec flood).
+    static GATE_PASS_COUNT: AtomicU64 = AtomicU64::new(0);
     use tract_onnx::prelude::*;
 
     type ModelType = Arc<TypedSimplePlan>;
@@ -539,18 +543,23 @@ mod engine {
                 return (false, 0.0, None);
             }
 
-            // Log when audio passes the gate (for debugging mic issues)
-            tracing::debug!(
-                "wake: audio passed gate (RMS={:.6}), running classifier...",
-                rms
-            );
+            // Log when audio passes the gate (throttled: only every 1000th pass
+            // to avoid flooding logs at 12.5 lines/sec).
+            use std::sync::atomic::Ordering;
+            GATE_PASS_COUNT.fetch_add(1, Ordering::Relaxed);
+            if GATE_PASS_COUNT.load(Ordering::Relaxed) % 1000 == 0 {
+                tracing::debug!(
+                    "wake: audio passed gate x1000 (last RMS={:.6}), running classifier...",
+                    rms
+                );
+            }
 
             // AGC: amplify quiet speech to target RMS so the model sees
             // consistent-volume input regardless of how loud the user spoke.
             // This is the key fix for "low voice and high voice the same".
             let chunk: Vec<f32> = if rms < TARGET_RMS {
                 let gain = (TARGET_RMS / rms).min(MAX_GAIN);
-                tracing::debug!("wake: AGC gain={:.1}x (RMS {:.6} → {:.6})", gain, rms, TARGET_RMS);
+                tracing::trace!("wake: AGC gain={:.1}x (RMS {:.6} → {:.6})", gain, rms, TARGET_RMS);
                 chunk.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect()
             } else {
                 chunk
