@@ -611,8 +611,8 @@ fn show_sidebar_inner<R: Runtime>(
     #[cfg(target_os = "windows")]
     {
         use window_vibrancy::apply_blur;
-        // Re-apply after show. White 35% alpha.
-        if let Err(e) = apply_blur(&win, Some((255, 255, 255, 90))) {
+        // Re-apply after show. Dark 60% alpha.
+        if let Err(e) = apply_blur(&win, Some((18, 18, 18, 150))) {
             tracing::warn!("sidebar: re-apply blur failed: {e:?}");
         }
     }

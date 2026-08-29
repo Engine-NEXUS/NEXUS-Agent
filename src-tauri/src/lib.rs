@@ -404,10 +404,8 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(sidebar) = app.get_webview_window("sidebar") {
                 use window_vibrancy::apply_blur;
-                // Use white color with 35% alpha (90/255) to tell DWM to composition
-                // the blur correctly, avoiding the solid pitch black background bug
-                // that occurs with 0 alpha.
-                if let Err(e) = apply_blur(&sidebar, Some((255, 255, 255, 90))) {
+                // Use dark color with 60% alpha to match Apple Music dark theme.
+                if let Err(e) = apply_blur(&sidebar, Some((18, 18, 18, 150))) {
                     tracing::warn!("sidebar: apply_blur failed: {e:?}");
                 } else {
                     tracing::info!("sidebar: DWM blur registered on HWND at startup");

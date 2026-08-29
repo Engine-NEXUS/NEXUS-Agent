@@ -60,7 +60,7 @@ export async function transcribeGeminiAudio(
   samples: Int16Array,
   apiKey: string,
 ): Promise<string> {
-  const models = ["gemini-2.0-flash", "gemini-1.5-flash"];
+  const models = ["gemini-3.5-transcribe", "gemini-2.0-flash", "gemini-1.5-flash"];
   const base64Wav = pcmToWavBase64(samples, 16000);
 
   for (const model of models) {
@@ -153,9 +153,11 @@ export async function transcribeAudio(samples: Int16Array): Promise<string> {
     settings = await invoke<any>("get_settings").catch(() => null);
   } catch {}
 
-  // Tier 1: Gemini 2.0 / 1.5 Flash Transcribe
-  if (settings?.geminiApiKey && settings.geminiApiKey.startsWith("AIza")) {
-    const geminiText = await transcribeGeminiAudio(samples, settings.geminiApiKey);
+  // Tier 1: Gemini 3.5 Transcribe
+  const DEFAULT_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
+  const apiKey = settings?.geminiApiKey || DEFAULT_KEY;
+  if (apiKey && (apiKey.startsWith("AIza") || apiKey.startsWith("AQ."))) {
+    const geminiText = await transcribeGeminiAudio(samples, apiKey);
     if (geminiText) return geminiText;
   }
 
