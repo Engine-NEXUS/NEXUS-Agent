@@ -670,6 +670,7 @@ pub fn run() {
             stt::transcribe_audio,
             stt::stt_status,
             tts::speak_text,
+            tts::stop_tts,
             diagnostics::nexus_diagnostics,
             command_executor::execute_command,
             intent_parser::parse_transcript,

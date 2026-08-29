@@ -1,12 +1,30 @@
 use crate::meeting_detect::MeetingState;
 use kokoro_micro::TtsEngine;
 use rodio::{buffer::SamplesBuffer, OutputStream, Sink};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::State;
 
 pub struct TtsState {
     pub engine: Arc<Mutex<Option<TtsEngine>>>,
+}
+
+/// Global flag: set to true by `stop_tts` to signal the playback thread
+/// to stop the current audio immediately.
+static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// IPC: Stop any currently-playing TTS audio.
+///
+/// Sets a global flag that the playback thread in `speak_text` polls.
+/// The playback thread calls `sink.stop()` and exits as soon as the
+/// flag is seen. This provides near-instant barge-in when the user
+/// presses Ctrl+Space while NEXUS is speaking.
+#[tauri::command]
+pub fn stop_tts() -> Result<(), String> {
+    STOP_REQUESTED.store(true, Ordering::SeqCst);
+    tracing::info!("tts: stop requested");
+    Ok(())
 }
 
 #[tauri::command]
@@ -18,9 +36,12 @@ pub async fn speak_text(
     meeting: State<'_, Arc<MeetingState>>,
 ) -> Result<(), String> {
     tracing::info!("tts: speaking '{}'", text);
-    
+
     // 1. Mark TTS as playing to suppress wake word self-trigger
     meeting.set_tts_playing(true);
+
+    // Clear any previous stop request before starting new playback
+    STOP_REQUESTED.store(false, Ordering::SeqCst);
 
     // 2. Synthesize audio on a blocking thread to avoid starving the tokio runtime.
     // Note: kokoro-micro internally multiplies speed by 0.65 (SPEED_SCALE = 0.65), which
@@ -58,7 +79,17 @@ pub async fn speak_text(
                         // Kokoro output is standard 24kHz mono PCM (f32)
                         let source = SamplesBuffer::new(1, 24000, audio);
                         sink.append(source);
-                        sink.sleep_until_end();
+
+                        // Poll for stop request instead of sink.sleep_until_end()
+                        // so the user can barge-in with Ctrl+Space.
+                        while !sink.empty() {
+                            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                                sink.stop();
+                                tracing::info!("tts: playback stopped by user (barge-in)");
+                                return Ok(());
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                        }
                         tracing::info!("tts: audio playback completed");
                         Ok(())
                     }

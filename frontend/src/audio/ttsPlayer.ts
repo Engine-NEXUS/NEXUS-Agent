@@ -139,8 +139,10 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
 }
 
 export function stopTts(): void {
-  // TODO: Implement rodio sink cancellation in Rust
-  // For now we just reset frontend state
+  // Tell Rust to stop the rodio playback immediately (barge-in)
+  import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke("stop_tts"))
+    .catch((e: unknown) => console.warn("[TTS] stop_tts failed:", e));
   void emitTtsEvent("tts-ended");
   useAssistant.getState().setSpeakSeq(null);
 }
