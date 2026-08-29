@@ -26,6 +26,7 @@ mod stt_server_manager;
 mod voice_profile;
 mod meeting_detect;
 mod mic_permissions;
+mod mpris;
 
 use tauri::{Emitter, Listener, Manager};
 #[cfg(not(target_os = "windows"))]
