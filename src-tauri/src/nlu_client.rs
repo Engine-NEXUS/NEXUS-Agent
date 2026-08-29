@@ -11,7 +11,7 @@ use crate::intent_parser::{ParseResult, ParsedIntent};
 use serde::Deserialize;
 use std::time::Duration;
 
-/// NLU server port (separate from STT port 39217).
+/// NLU server port (separate from the old STT sidecar port).
 const NLU_PORT: u16 = 39218;
 
 /// NLU server response format.

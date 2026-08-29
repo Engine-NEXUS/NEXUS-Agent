@@ -9,23 +9,26 @@ on:
 jobs:
   frontend-check:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend deps
-        run: npm --prefix frontend install
+        run: npm ci
 
       - name: TypeScript check
-        run: npm --prefix frontend exec tsc -- --noEmit
+        run: npx tsc --noEmit
 
       - name: Build frontend
-        run: npm --prefix frontend run build
+        run: npm run build
 
   rust-check-linux:
     runs-on: ubuntu-latest

@@ -1,8 +1,8 @@
 //! Connection diagnostics — checks all NEXUS services and logs status.
 //!
 //! Services checked:
-//!   1. STT server (local faster-whisper on port 39217)
-//!   2. TTS (checks if at least one provider is configured)
+//!   1. STT (in-process Moonshine ONNX engine readiness)
+//!   2. TTS (in-process Kokoro engine readiness)
 //!   3. Cloudflare Worker (HTTP GET to /health)
 //!   4. GitHub OAuth (via Worker /oauth/status)
 //!   5. Google OAuth (via Worker /oauth/status)

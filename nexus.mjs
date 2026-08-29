@@ -53,10 +53,24 @@ function run(cmd, args, opts = {}) {
   const cwd = opts.cwd || ROOT;
   const label = opts.label || `${cmd} ${args.join(" ")}`;
   if (opts.silent !== true) info(label);
-  // On Windows, npm/cargo/python are .cmd/.exe shims — spawnSync needs
-  // shell:true to resolve them (npm is npm.cmd, not npm).
-  const useShell = opts.shell !== undefined ? opts.shell : IS_WIN;
-  const result = spawnSync(cmd, args, {
+  // On Windows, npm is npm.cmd (a batch shim), not a plain executable.
+  // spawnSync without shell:true can't resolve .cmd files. We resolve
+  // the full path ourselves to avoid the shell:true arg-injection warning.
+  let resolvedCmd = cmd;
+  if (IS_WIN && !opts.shell) {
+    const extensions = [".cmd", ".bat", ".exe", ""];
+    for (const ext of extensions) {
+      const candidate = cmd + ext;
+      if (existsSync(candidate)) { resolvedCmd = candidate; break; }
+      // Also check PATH
+      try {
+        const found = execSync(`where ${cmd}${ext}`, { stdio: "pipe", encoding: "utf-8" }).trim().split(/\r?\n/)[0];
+        if (found && existsSync(found)) { resolvedCmd = found; break; }
+      } catch {}
+    }
+  }
+  const useShell = opts.shell !== undefined ? opts.shell : false;
+  const result = spawnSync(resolvedCmd, args, {
     cwd,
     stdio: opts.stdio || "inherit",
     shell: useShell,
