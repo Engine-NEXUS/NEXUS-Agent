@@ -1,7 +1,7 @@
 use crate::meeting_detect::MeetingState;
 use kokoro_micro::TtsEngine;
 use rodio::{buffer::SamplesBuffer, OutputStream, Sink};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::State;
@@ -10,20 +10,21 @@ pub struct TtsState {
     pub engine: Arc<Mutex<Option<TtsEngine>>>,
 }
 
-/// Global flag: set to true by `stop_tts` to signal the playback thread
-/// to stop the current audio immediately.
-static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Global generation counter: incremented by `stop_tts` to signal the playback thread
+/// to stop the current audio immediately. Using a generation counter prevents race
+/// conditions where a new speech request clears a boolean flag before the previous
+/// playback thread has polled it.
+static TTS_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 /// IPC: Stop any currently-playing TTS audio.
 ///
-/// Sets a global flag that the playback thread in `speak_text` polls.
-/// The playback thread calls `sink.stop()` and exits as soon as the
-/// flag is seen. This provides near-instant barge-in when the user
-/// presses Ctrl+Space while NEXUS is speaking.
+/// Increments a global generation counter that the playback thread in `speak_text` polls.
+/// The playback thread calls `sink.stop()` and exits as soon as it sees a newer generation.
+/// This provides near-instant barge-in when the user presses Ctrl+Space while NEXUS is speaking.
 #[tauri::command]
 pub fn stop_tts() -> Result<(), String> {
-    STOP_REQUESTED.store(true, Ordering::SeqCst);
-    tracing::info!("tts: stop requested");
+    TTS_GENERATION.fetch_add(1, Ordering::SeqCst);
+    tracing::info!("tts: stop requested (generation {})", TTS_GENERATION.load(Ordering::SeqCst));
     Ok(())
 }
 
@@ -40,11 +41,9 @@ pub async fn speak_text(
     // 1. Mark TTS as playing to suppress wake word self-trigger
     meeting.set_tts_playing(true);
 
-    // Do NOT clear STOP_REQUESTED here — if the user pressed Ctrl+Space
-    // while the previous speak_text was finishing, the flag should still
-    // be set. We check it after synthesis and skip playback if set.
-    // The flag is cleared at the END of this function (after playback
-    // completes or is stopped).
+    // Capture the current TTS generation. If stop_tts is called after this,
+    // the global generation will increment and we will abort playback.
+    let my_generation = TTS_GENERATION.load(Ordering::SeqCst);
 
     // 2. Synthesize audio on a blocking thread to avoid starving the tokio runtime.
     // Note: kokoro-micro internally multiplies speed by 0.65 (SPEED_SCALE = 0.65), which
@@ -74,7 +73,7 @@ pub async fn speak_text(
     .map_err(|e| format!("TTS task panicked: {}", e))??;
 
     // Check if stop was requested DURING synthesis — if so, skip playback
-    if STOP_REQUESTED.load(Ordering::SeqCst) {
+    if TTS_GENERATION.load(Ordering::SeqCst) > my_generation {
         tracing::info!("tts: stop requested during synthesis, skipping playback");
         meeting.set_tts_playing(false);
         return Ok(());
@@ -96,7 +95,7 @@ pub async fn speak_text(
                         // Poll for stop request instead of sink.sleep_until_end()
                         // so the user can barge-in with Ctrl+Space.
                         while !sink.empty() {
-                            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                            if TTS_GENERATION.load(Ordering::SeqCst) > my_generation {
                                 sink.stop();
                                 tracing::info!("tts: playback stopped by user (barge-in)");
                                 return Ok(());
@@ -124,10 +123,7 @@ pub async fn speak_text(
         Err("Audio thread panicked".to_string())
     });
 
-    // 4. Clear the stop flag (playback is done or was stopped)
-    STOP_REQUESTED.store(false, Ordering::SeqCst);
-
-    // 5. Grace period for acoustic settling before resuming wake word detection
+    // 4. Grace period for acoustic settling before resuming wake word detection
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     meeting.set_tts_playing(false);
 
