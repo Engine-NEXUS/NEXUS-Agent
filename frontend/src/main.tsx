@@ -219,6 +219,49 @@ async function startListening() {
   void wakeWithGreeting();
 };
 
+/**
+ * Called from Rust when the first-run setup wizard completes.
+ * Speaks the first-run greeting: "NEXUS online, sir. Ready when you are."
+ * Shows the orb briefly, then hides it. Does NOT transition to listening.
+ *
+ * After the greeting, warms up the mic stream so the first wake is fast.
+ * This is safe because the setup wizard already verified mic permission.
+ */
+(window as any).__NEXUS_FIRST_RUN_GREETING__ = async () => {
+  console.log("[NEXUS] __NEXUS_FIRST_RUN_GREETING__ invoked");
+  const { useAssistant } = await import("./store/assistant");
+  const { speak } = await import("./audio/ttsPlayer");
+  const { invoke } = await import("@tauri-apps/api/core");
+
+  const s = useAssistant.getState();
+  s.setVisible(true);
+  s.setState("speaking");
+  s.addAssistantMessage("NEXUS online, sir. Ready when you are.");
+
+  // Mark today as greeted so the first wake doesn't re-greet
+  try {
+    await invoke("mark_greeted_today");
+  } catch (e) {
+    console.warn("[NEXUS] mark_greeted_today failed:", e);
+  }
+
+  void speak("NEXUS online, sir. Ready when you are.").then(() => {
+    console.log("[NEXUS] first-run greeting done — hiding orb");
+    s.setState("idle");
+    s.setVisible(false);
+    setTimeout(() => s.reset(), 550);
+  });
+
+  // Warm up the mic now that permission has been granted during setup.
+  // This is safe because the setup wizard's Permissions step verified
+  // getUserMedia works. The mic stream will be reused on first wake.
+  // NOTE: We wait 2s after the greeting starts so the TTS audio doesn't
+  // interfere with the mic warm-up on Intel SST drivers.
+  setTimeout(() => {
+    warmMic().catch((e) => console.warn("[NEXUS] post-setup warmMic failed:", e));
+  }, 2000);
+};
+
 // Tauri IPC wake events are NOT listened to here anymore.
 // The Rust side calls window.__NEXUS_WAKE__() directly via eval(),
 // which is more reliable than the event system for repeated rapid events.

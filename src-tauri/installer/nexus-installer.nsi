@@ -880,6 +880,10 @@ Section Uninstall
   ; We do this when not updating (to preserve the registry value on updates)
   ${If} $UpdateMode <> 1
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+
+    ; Also remove the NEXUS Scheduled Task (used for auto-start with --background)
+    ; This prevents the app from launching on next login after uninstall.
+    nsExec::ExecToLog 'powershell -NoProfile -NonInteractive -Command "Unregister-ScheduledTask -TaskName ''NEXUS'' -Confirm:$false -ErrorAction SilentlyContinue"'
   ${EndIf}
 
   ; Delete app data if the checkbox is selected

@@ -62,21 +62,30 @@ The hallucination filter is still active in the new Moonshine-based
 Filtered text is replaced with empty string, triggering the frontend's
 "didn't catch that" retry logic (up to 3 retries).
 
-## NEXUS CLI (`scripts/nexus.bat`)
+## NEXUS CLI — Unified Cross-Platform Command (`nexus.mjs`)
 
-A simple command-line interface for NEXUS:
+The unified `nexus` command works on Windows, macOS, and Linux:
 
 ```
-nexus start       Start NEXUS with unified console
-nexus stop        Stop NEXUS and STT server
-nexus status      Check if NEXUS is running
-nexus logs        Tail NEXUS logs in real-time
-nexus build       Rebuild NEXUS
-nexus diagnostics Check all service connections
+nexus install     Install prerequisites + build + global 'nexus' command
+nexus setup       Install prerequisites + build (no global command)
+nexus build       Build frontend + Rust release binary
+nexus dev         Tauri dev mode (hot reload via Vite)
+nexus start       Launch the built app (unified console on Windows)
+nexus run         Alias for 'start'
+nexus check       Diagnostics (tools, frontend, Rust, NLU, Worker)
+nexus clean       Remove build artifacts
+nexus worker      Deploy the Cloudflare Worker (optional)
 nexus help        Show help
 ```
 
-Added to user PATH. Available from any terminal after restarting it.
+- **Windows:** `nexus.cmd` shim → `node nexus.mjs`
+- **Unix:** `nexus` shell script → `node nexus.mjs`
+- **Global install:** `nexus install` creates a global command in
+  `%USERPROFILE%\.local\bin` (Windows) or `/usr/local/bin` (Unix).
+- **`nexus start` on Windows** uses `scripts/run.ps1` for the unified
+  color-coded console (Rust logs, audio, frontend CDP in one stream).
+- The old `scripts/nexus.bat` and `scripts/nexus.cmd` have been removed.
 
 ## Connection Diagnostics (`src-tauri/src/diagnostics.rs`)
 
@@ -84,15 +93,15 @@ Checks 5 services and logs a formatted table on startup:
 
 | Service | Check method | Expected |
 |---------|-------------|----------|
-| STT | TCP connect to port 39217 + HTTP GET /health | OK if running |
-| TTS | Check settings.json for provider keys | Always OK (Web Speech fallback) |
+| STT | In-process Moonshine readiness (hardcoded ready) | Always OK (in-process) |
+| TTS | In-process Kokoro/Fish Audio readiness (hardcoded ready) | Always OK |
 | Cloudflare Worker | HTTPS GET to /health | OK if reachable |
 | GitHub | HTTPS GET to Worker /oauth/status | OK if OAuth connected |
 | Google | HTTPS GET to Worker /oauth/status | OK if OAuth connected |
 
 Also available as:
 - Tauri command: `nexus_diagnostics` (returns JSON to frontend)
-- CLI: `nexus diagnostics` (formatted terminal output)
+- CLI: `nexus check` (build/tool diagnostics via `nexus.mjs`)
 - Startup: auto-logged 5s after boot
 
 ## Wake Word Model Validation + Mic Silence Recovery (2026-08-30)
@@ -168,7 +177,7 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 - `test_mic_freq.py` — records and shows frequency content
 - `gen_tts.py` — generates TTS "NEXUS" samples via Windows SAPI
 
-## RAM Optimization — Lazy Windows + Lazy STT (2026-08-30)
+## RAM Optimization — Lazy Windows + In-Process STT (2026-08-30)
 
 **Idle RAM: 384 MB** (down from 1,644 MB — 77% reduction).
 
@@ -176,7 +185,7 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 - `tauri.conf.json` created 5 windows at startup (main, setup, settings,
   sidebar, architect). Each WebView2 window spawns ~7 processes (~250 MB).
   4 of the 5 windows were `visible: false` but still consumed full RAM.
-- The STT server (faster-whisper tiny.en) ran constantly, using ~340 MB
+- The old STT server (faster-whisper tiny.en) ran constantly, using ~340 MB
   even when no one was speaking.
 
 ### Fix 1: Lazy window creation (`src-tauri/src/dyn_windows.rs`)
@@ -189,13 +198,11 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 - Platform effects (DWM corners, macOS vibrancy) applied at creation time
   inside `get_or_create_window()`.
 
-### Fix 2: Lazy STT server (`src-tauri/src/lazy_stt.rs`)
-- STT server is NOT started at boot (removed from `scripts/run.ps1`).
-- `lazy_stt::ensure_stt_running()` is called when the wake word fires.
-- `lazy_stt::mark_stt_request()` resets the idle timer on each transcription.
-- A background thread kills the STT server after 60s of no requests.
-- If an external STT server is already running on port 39217 (e.g. started
-  manually), the lazy manager detects it and skips spawning its own.
+### Fix 2: In-process Moonshine STT (replaces lazy STT server)
+- STT is now in-process Moonshine Tiny via `transcribe-rs` — no Python
+  server, no port, no idle timeout. See "STT Architecture" section above.
+- The old `lazy_stt.rs` and `stt_server.py` have been removed.
+- STT RAM is now ~0 MB at idle (model loaded lazily on first transcription).
 
 ### Measured RAM (idle, after fix)
 | Component          | Before   | After    |
@@ -208,7 +215,7 @@ Updating to the latest driver from the laptop manufacturer (HP) may help.
 ### Files changed
 - `src-tauri/tauri.conf.json` — removed 4 windows, kept only `main`
 - `src-tauri/src/dyn_windows.rs` — NEW: dynamic window creation/destruction
-- `src-tauri/src/lazy_stt.rs` — NEW: lazy STT server manager
+- `src-tauri/src/stt.rs` — in-process Moonshine (replaces lazy_stt.rs)
 - `src-tauri/src/lib.rs` — registered new modules, removed startup sidebar vibrancy
 - `src-tauri/src/commands.rs` — all show/hide functions use dyn_windows
 - `src-tauri/src/architect.rs` — uses dyn_windows for architect window
@@ -412,8 +419,9 @@ this — the Vite server serves any HTML file on demand).
 
 | Service           | Port    | Notes                                        |
 | ----------------- | ------- | -------------------------------------------- |
-| STT (faster-whisper) | `39217` | Registered range (1024-49151), avoids ephemeral and dev ports. Override: `NEXUS_STT_PORT` |
-| Sidecar (FastAPI)    | `41098` | Registered range, not ephemeral. Override: `SIDECAR_PORT` |
+| STT (Moonshine)   | —       | In-process Rust, no port (transcribe-rs)     |
+| NLU server        | `39218` | Lazy Python sidecar (BERT-Mini ONNX). Override: `NLU_PORT` |
+| Sidecar (legacy)  | `41098` | Legacy FastAPI sidecar, not used at runtime  |
 | Vite dev server   | `5173`  | Dev only                                     |
 
 ## Architecture (serverless — 2026-08-27)

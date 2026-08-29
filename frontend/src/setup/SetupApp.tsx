@@ -10,8 +10,8 @@ import {
 import { VoiceEnrollment } from "./VoiceEnrollment";
 import { CURATED_VOICES, previewVoice, stopTts, type VoiceOption } from "../audio/ttsPlayer";
 
-type Step = 0 | 1 | 2;
-const STEP_LABELS = ["Persona & Voice", "Preferences", "Accounts"];
+type Step = 0 | 1 | 2 | 3;
+const STEP_LABELS = ["Persona & Voice", "Permissions", "Preferences", "Accounts"];
 
 export function SetupApp() {
   const [step, setStep] = useState<Step>(0);
@@ -24,6 +24,10 @@ export function SetupApp() {
   const [hotkey, setHotkey] = useState("Ctrl+Shift+Space");
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
   const [autostart, setAutostart] = useState(true);
+
+  // Mic permission
+  const [micStatus, setMicStatus] = useState<"checking" | "granted" | "denied" | "no_device">("checking");
+  const [micTesting, setMicTesting] = useState(false);
 
   // Accounts
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
@@ -52,6 +56,13 @@ export function SetupApp() {
       .catch(() => {});
   }, []);
 
+  // Auto-check mic permission when entering the Permissions step
+  useEffect(() => {
+    if (step === 1) {
+      runMicCheck();
+    }
+  }, [step]);
+
   const handlePreview = async (voice: VoiceOption, e: React.MouseEvent) => {
     e.stopPropagation();
     if (playingVoice === voice.id) {
@@ -78,7 +89,7 @@ export function SetupApp() {
   }, [serverUrl, userId]);
 
   useEffect(() => {
-    if (step === 2) checkServer();
+    if (step === 3) checkServer();
   }, [step, checkServer]);
 
   const handleConnect = async (provider: "google" | "github") => {
@@ -96,6 +107,70 @@ export function SetupApp() {
       setError(`${provider} connection failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setConnecting(null);
+    }
+  };
+
+  // ─── Mic permission check ──────────────────────────────────────
+  //
+  // Two-stage check:
+  //   1. Rust-side: check_mic_permission() probes cpal for the default input
+  //      device. Detects if Windows mic privacy is globally off.
+  //   2. Frontend-side: getUserMedia() to trigger the WebView2/browser mic
+  //      permission prompt and verify the user actually grants it.
+
+  const runMicCheck = async () => {
+    setMicStatus("checking");
+
+    // Stage 1: Rust probe (checks OS-level mic privacy)
+    try {
+      const result = await invoke<string>("check_mic_permission");
+      if (result === "no_device") {
+        setMicStatus("no_device");
+        return;
+      }
+      if (result === "denied") {
+        setMicStatus("denied");
+        return;
+      }
+    } catch (e) {
+      console.warn("check_mic_permission failed:", e);
+      // Continue to getUserMedia check anyway
+    }
+
+    // Stage 2: Frontend getUserMedia (triggers WebView2 permission prompt)
+    setMicTesting(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      // Success — stop the tracks immediately, we just wanted permission
+      stream.getTracks().forEach((t) => t.stop());
+      setMicStatus("granted");
+      console.log("[NEXUS] setup: mic permission granted");
+    } catch (err) {
+      console.error("[NEXUS] setup: mic permission denied:", err);
+      const name = (err as Error)?.name;
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setMicStatus("denied");
+      } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+        setMicStatus("no_device");
+      } else {
+        setMicStatus("denied");
+      }
+    } finally {
+      setMicTesting(false);
+    }
+  };
+
+  const handleOpenMicSettings = async () => {
+    try {
+      await invoke("open_mic_settings");
+    } catch (e) {
+      console.error("open_mic_settings failed:", e);
     }
   };
 
@@ -118,12 +193,21 @@ export function SetupApp() {
   const handleFinish = async () => {
     try {
       await saveAllSettings();
-      await invoke("close_setup_window");
+      // Sync autostart with the OS before closing setup
+      try {
+        await invoke("set_autostart", { enabled: autostart });
+      } catch (e) {
+        console.warn("set_autostart failed:", e);
+      }
+      await invoke("close_setup_window", { firstRun: true });
       setSaved(true);
     } catch (err) {
       setError(`Failed to finish: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+
+  // Prevent advancing past Permissions step if mic is not granted
+  const canAdvanceFromPermissions = micStatus === "granted";
 
   return (
     <div className="setup-root">
@@ -173,8 +257,143 @@ export function SetupApp() {
             </div>
           )}
 
-          {/* ── Step 1: Preferences ── */}
+          {/* ── Step 1: Microphone Permission ── */}
           {step === 1 && (
+            <>
+              <StepHeader step={step} />
+              <section className="setup-section">
+                <h2>Microphone Access</h2>
+                <p style={{ marginBottom: "var(--nx-space-4)", color: "var(--nx-text-secondary)", fontSize: "var(--nx-text-sm)" }}>
+                  NEXUS needs microphone access to hear your wake word and voice commands.
+                  Your audio never leaves this device — all speech recognition runs locally.
+                </p>
+
+                {/* Permission status card */}
+                <div style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "var(--nx-space-4)",
+                  padding: "var(--nx-space-6)",
+                  border: "1px solid var(--nx-border)",
+                  borderRadius: "12px",
+                  background: "var(--nx-bg-secondary)",
+                }}>
+                  {/* Status icon */}
+                  <div style={{
+                    width: "64px",
+                    height: "64px",
+                    borderRadius: "50%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "28px",
+                    background: micStatus === "granted" ? "rgba(34,197,94,0.15)" :
+                               micStatus === "denied" ? "rgba(239,68,68,0.15)" :
+                               micStatus === "no_device" ? "rgba(234,179,8,0.15)" :
+                               "rgba(59,130,246,0.15)",
+                  }}>
+                    {micStatus === "granted" && "✓"}
+                    {micStatus === "denied" && "✕"}
+                    {micStatus === "no_device" && "!"}
+                    {(micStatus === "checking" || micTesting) && (
+                      <div style={{
+                        width: "28px",
+                        height: "28px",
+                        border: "3px solid rgba(59,130,246,0.3)",
+                        borderTopColor: "rgba(59,130,246,0.8)",
+                        borderRadius: "50%",
+                        animation: "spin 0.8s linear infinite",
+                      }} />
+                    )}
+                  </div>
+
+                  {/* Status text */}
+                  <div style={{ textAlign: "center" }}>
+                    {micStatus === "checking" && (
+                      <p style={{ fontSize: "var(--nx-text-sm)", color: "var(--nx-text-secondary)" }}>
+                        Checking microphone access...
+                      </p>
+                    )}
+                    {micTesting && (
+                      <p style={{ fontSize: "var(--nx-text-sm)", color: "var(--nx-text-secondary)" }}>
+                        Requesting permission — please click "Allow" if prompted...
+                      </p>
+                    )}
+                    {micStatus === "granted" && (
+                      <>
+                        <p style={{ fontSize: "var(--nx-text-sm)", fontWeight: 600, color: "var(--nx-text-primary)" }}>
+                          Microphone Ready
+                        </p>
+                        <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px" }}>
+                          NEXUS can hear you. Audio stays on this device.
+                        </p>
+                      </>
+                    )}
+                    {micStatus === "denied" && (
+                      <>
+                        <p style={{ fontSize: "var(--nx-text-sm)", fontWeight: 600, color: "#ef4444" }}>
+                          Microphone Access Denied
+                        </p>
+                        <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px", maxWidth: "320px" }}>
+                          NEXUS needs microphone access to function. Enable it in Windows Settings →
+                          Privacy → Microphone, then click "Check Again".
+                        </p>
+                      </>
+                    )}
+                    {micStatus === "no_device" && (
+                      <>
+                        <p style={{ fontSize: "var(--nx-text-sm)", fontWeight: 600, color: "#eab308" }}>
+                          No Microphone Found
+                        </p>
+                        <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px" }}>
+                          No input devices detected. Connect a microphone and click "Check Again".
+                        </p>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Action buttons */}
+                  <div style={{ display: "flex", gap: "var(--nx-space-3)" }}>
+                    {micStatus !== "granted" && micStatus !== "checking" && !micTesting && (
+                      <button
+                        className="setup-btn setup-btn--primary"
+                        onClick={runMicCheck}
+                      >
+                        Check Again
+                      </button>
+                    )}
+                    {micStatus === "denied" && (
+                      <button
+                        className="setup-btn"
+                        onClick={handleOpenMicSettings}
+                      >
+                        Open Windows Settings
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Privacy note */}
+                <div style={{
+                  marginTop: "var(--nx-space-4)",
+                  padding: "12px 16px",
+                  borderRadius: "8px",
+                  background: "rgba(59,130,246,0.08)",
+                  border: "1px solid rgba(59,130,246,0.2)",
+                  fontSize: "var(--nx-text-xs)",
+                  color: "var(--nx-text-secondary)",
+                }}>
+                  <strong style={{ color: "var(--nx-text-primary)" }}>Privacy:</strong> All speech recognition
+                  runs locally via Moonshine ONNX. Audio is never sent to the cloud. Only the transcribed
+                  text is sent to the NEXUS Worker for intent processing.
+                </div>
+              </section>
+            </>
+          )}
+
+          {/* ── Step 2: Preferences ── */}
+          {step === 2 && (
             <>
               <StepHeader step={step} />
               <section className="setup-section">
@@ -232,8 +451,8 @@ export function SetupApp() {
             </>
           )}
 
-          {/* ── Step 2: Accounts ── */}
-          {step === 2 && (
+          {/* ── Step 3: Accounts ── */}
+          {step === 3 && (
             <>
               <StepHeader step={step} />
               <section className="setup-section">
@@ -300,9 +519,10 @@ export function SetupApp() {
         )}
         <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
           {saved && <span className="setup-saved">Ready!</span>}
-          {step < 2 ? (
+          {step < 3 ? (
             <button
               className="setup-btn setup-btn--primary"
+              disabled={step === 1 && !canAdvanceFromPermissions}
               onClick={async () => {
                 await saveAllSettings();
                 setStep((step + 1) as Step);
@@ -326,13 +546,13 @@ function StepHeader({ step }: { step: Step }) {
     <div className="setup-step-header">
       <div className="setup-step-indicator">
         {STEP_LABELS.map((label, i) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", flex: i < 2 ? 1 : undefined }}>
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", flex: i < 3 ? 1 : undefined }}>
             <div className={`setup-step-dot ${i === step ? "setup-step-dot--active" : ""} ${i < step ? "setup-step-dot--completed" : ""}`} />
-            {i < 2 && <div className={`setup-step-bar ${i < step ? "setup-step-bar--completed" : ""}`} />}
+            {i < 3 && <div className={`setup-step-bar ${i < step ? "setup-step-bar--completed" : ""}`} />}
           </div>
         ))}
       </div>
-      <div className="setup-step-label">Step {step + 1} of 3</div>
+      <div className="setup-step-label">Step {step + 1} of 4</div>
       <div className="setup-step-title">{STEP_LABELS[step]}</div>
     </div>
   );

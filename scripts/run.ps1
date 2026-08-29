@@ -1,6 +1,6 @@
 # NEXUS Unified Launcher
-# Runs STT server + NEXUS desktop app in ONE terminal with color-coded logs.
-# All output (STT transcription, Rust wake-word, frontend console, commands)
+# Runs the NEXUS desktop app in ONE terminal with color-coded logs.
+# All output (Rust wake-word, audio, frontend console, commands)
 # appears in a single scrolling view.
 #
 # Usage:
@@ -21,7 +21,7 @@ $LogDir = "$env:APPDATA\com.nexus.assistant"
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 # ─── Colors ────────────────────────────────────────────────────────────────
-$C_STT   = "Cyan"      # STT server logs
+$C_STT   = "Cyan"      # STT transcription logs (in-process Moonshine)
 $C_RUST  = "Green"     # Rust wake-word / audio logs
 $C_FRONT = "Yellow"    # Frontend console logs (via CDP)
 $C_CMD   = "Magenta"   # Command execution
@@ -49,7 +49,6 @@ function Stop-All {
     } catch {}
   }
   Get-Process nexus -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*stt_server*" } | Stop-Process -Force -ErrorAction SilentlyContinue
   Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*cdp_monitor*" } | Stop-Process -Force -ErrorAction SilentlyContinue
   Write-Log "STOP" "All processes stopped." $C_ERR
 }
@@ -76,7 +75,7 @@ if ($Build) {
 }
 
 # ─── Kill any existing instances ───────────────────────────────────────────
-Write-Log "INIT" "Killing existing NEXUS / STT instances..." $C_SYS
+Write-Log "INIT" "Killing existing NEXUS instances..." $C_SYS
 
 # Build a set of nexus.exe PIDs so we can kill only OUR WebView2 children.
 # Killing ALL msedgewebview2.exe processes would also kill WhatsApp, M365
@@ -114,30 +113,20 @@ if ($nexusPids) {
   Write-Log "INIT" "No existing NEXUS process found" $C_SYS
 }
 
-Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*stt_server*" } | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 3
 
 # Clear old log files so the tail loop doesn't read stale content
 Write-Log "INIT" "Clearing old logs..." $C_SYS
-$sttLog = "$LogDir\stt_unified.log"
-$sttErr = "$LogDir\stt_unified_err.log"
 $nexusLog = "$LogDir\nexus_unified.log"
 $nexusErr = "$LogDir\nexus_unified_err.log"
 $cdpLog = "$LogDir\cdp_unified.log"
 $cdpErr = "$LogDir\cdp_unified_err.log"
-foreach ($f in @($sttLog, $sttErr, $nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
+foreach ($f in @($nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
   if (Test-Path $f) { Clear-Content $f -Force -ErrorAction SilentlyContinue }
 }
 
-# ─── STT Server ────────────────────────────────────────────────────────────
-# NOTE: STT server is now started LAZILY by the Rust app (lazy_stt.rs) when
-# the wake word fires, and killed after 60s of idle. This saves ~340 MB RAM
-# at idle. The script path is auto-detected by lazy_stt.rs.
-# If an external STT server is already running on port 39217, the Rust app
-# will detect it and skip spawning its own.
-Write-Log "INIT" "STT server will be started on-demand by NEXUS (lazy STT)" $C_STT
-
 # ─── Start NEXUS ───────────────────────────────────────────────────────────
+# STT is in-process Moonshine (transcribe-rs) — no external server needed.
 Write-Log "INIT" "Starting NEXUS desktop app..." $C_RUST
 
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = if ($Debug) { "--remote-debugging-port=9222" } else { "" }
@@ -175,7 +164,7 @@ if ($Debug -and (Test-Path $cdpScript)) {
 # ─── Tail all logs in one stream ───────────────────────────────────────────
 Write-Log "READY" "═══════════════════════════════════════════════════════" $C_SYS
 Write-Log "READY" "  NEXUS Unified Console — all logs below" $C_SYS
-Write-Log "READY" "  STT=Cyan  Rust=Green  Frontend=Yellow  Cmd=Magenta" $C_SYS
+Write-Log "READY" "  Rust=Green  Frontend=Yellow  Cmd=Magenta  STT=Cyan" $C_SYS
 Write-Log "READY" "  Press Ctrl+C to stop everything" $C_SYS
 Write-Log "READY" "═══════════════════════════════════════════════════════" $C_SYS
 Write-Host ""
@@ -187,7 +176,6 @@ Write-Host ""
 # function would be lost and the position would stay at 0 forever, causing
 # every cycle to re-read the entire log file from the beginning (the
 # "repeating logs" bug).
-$posSTT = 0
 $posRust = 0
 $posCDP = 0
 $posErr = 0
@@ -222,20 +210,6 @@ function Get-NewLines([string]$File, [ref]$Position) {
 try {
   while (-not $nexusProc.HasExited) {
     Start-Sleep -Milliseconds 500
-
-    # STT logs
-    $sttLines = Get-NewLines $sttLog ([ref]$posSTT)
-    foreach ($line in $sttLines) {
-      if ($line -match "transcribed (\d+) bytes.*?(\d+) chars in ([\d.]+)s") {
-        Write-Log "STT" "transcribed: $($Matches[2]) chars in $($Matches[3])s" $C_STT
-      } elseif ($line -match "INFO") {
-        $clean = $line -replace '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} INFO ', ""
-        if ($clean) { Write-Log "STT" $clean $C_STT }
-      } elseif ($line -match "ERROR|WARN") {
-        $clean = $line -replace '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} ', ""
-        Write-Log "STT" $clean $C_ERR
-      }
-    }
 
     # Rust logs (wake word, audio, baton pass) — limit to 50 lines per cycle
     $rustLines = Get-NewLines $nexusLog ([ref]$posRust)
@@ -298,7 +272,7 @@ try {
               Write-Log "VAD" $msg $C_FRONT
             }
           } elseif ($msg -match "STT correction|transcript=|intent=|isLongRunning") {
-            Write-Log "STT" $msg $C_FRONT
+            Write-Log "STT" $msg $C_STT
           } elseif ($msg -match "result:|sendTranscript|sidebar:|ackLong") {
             Write-Log "CMD" $msg $C_CMD
           } elseif ($msg -match "TTS|speak|WebSpeech") {

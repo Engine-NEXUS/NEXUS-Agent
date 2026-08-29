@@ -1,5 +1,8 @@
 //! IPC commands for setup window management and configuration.
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, Runtime};
@@ -44,16 +47,24 @@ pub fn open_setup_window<R: Runtime>(
 
 /// IPC: close/destroy the setup window and activate the main assistant orb.
 /// Destroys the window (not just hide) to free ~250 MB of WebView2 processes.
+/// If `first_run` is true, speaks the first-run greeting instead of waking.
 #[tauri::command]
 pub fn close_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
+    first_run: Option<bool>,
 ) -> Result<(), String> {
     let _ = crate::dyn_windows::destroy_window(&app, "setup");
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.show();
         let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
         let _ = main_win.set_ignore_cursor_events(false);
-        let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+        if first_run.unwrap_or(false) {
+            let _ = main_win.eval(
+                "window.__NEXUS_FIRST_RUN_GREETING__ && window.__NEXUS_FIRST_RUN_GREETING__()",
+            );
+        } else {
+            let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+        }
     }
     Ok(())
 }
@@ -1045,6 +1056,230 @@ pub fn save_settings<R: Runtime>(
     let config_path = dir.join("nexus-config.json");
     std::fs::write(&config_path, config.to_string()).map_err(|e| e.to_string())?;
     tracing::info!("settings saved to {:?}", path);
+    Ok(())
+}
+
+// ─── Autostart management ───────────────────────────────────────────
+//
+// Windows: uses a Scheduled Task named "NEXUS" with AtLogOn trigger.
+// macOS/Linux: uses tauri-plugin-autostart (LaunchAgent / systemd).
+
+/// IPC: Enable or disable auto-start at login.
+/// On Windows, creates/removes the "NEXUS" Scheduled Task.
+/// On macOS/Linux, calls the autostart plugin enable/disable.
+#[tauri::command]
+pub fn set_autostart<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = &app; // unused on Windows — autostart uses PowerShell directly
+        let exe_path = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .map_err(|e| e.to_string())?;
+
+        if enabled {
+            // Create/update scheduled task with --background flag for silent start
+            let ps_script = format!(
+                r#"$exe = '{}';
+                $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name;
+                $action = New-ScheduledTaskAction -Execute $exe -Argument '--background';
+                $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user;
+                $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0);
+                $result = Register-ScheduledTask -TaskName 'NEXUS' -Action $action -Trigger $trigger -Settings $settings -User $user -Force;
+                if ($result) {{ Write-Output 'NEXUS_TASK_OK' }} else {{ Write-Output 'NEXUS_TASK_FAIL' }}"#,
+                exe_path
+            );
+            let result = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                .output();
+            match result {
+                Ok(out) if out.status.success()
+                    && String::from_utf8_lossy(&out.stdout).contains("NEXUS_TASK_OK") =>
+                {
+                    tracing::info!("autostart: scheduled task 'NEXUS' created (AtLogOn, --background)");
+                    Ok(true)
+                }
+                Ok(out) => {
+                    tracing::warn!(
+                        "autostart: Register-ScheduledTask failed: stdout={} stderr={}",
+                        String::from_utf8_lossy(&out.stdout).trim(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                    Err("Failed to create scheduled task".to_string())
+                }
+                Err(e) => Err(format!("PowerShell error: {e}")),
+            }
+        } else {
+            // Remove the scheduled task
+            let result = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command",
+                    "Unregister-ScheduledTask -TaskName 'NEXUS' -Confirm:$false"])
+                .creation_flags(0x08000000)
+                .output();
+            match result {
+                Ok(out) if out.status.success() => {
+                    tracing::info!("autostart: scheduled task 'NEXUS' removed");
+                    Ok(false)
+                }
+                Ok(out) => {
+                    // Task may not exist — that's fine, it's already disabled
+                    tracing::info!(
+                        "autostart: Unregister-ScheduledTask completed (stderr={})",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                    Ok(false)
+                }
+                Err(e) => Err(format!("PowerShell error: {e}")),
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let autostart = app.autolaunch();
+        if enabled {
+            autostart.enable().map_err(|e| e.to_string())?;
+            tracing::info!("autostart: enabled (LaunchAgent)");
+        } else {
+            autostart.disable().map_err(|e| e.to_string())?;
+            tracing::info!("autostart: disabled");
+        }
+        Ok(enabled)
+    }
+}
+
+/// IPC: Check if auto-start is currently enabled.
+#[tauri::command]
+pub fn is_autostart_enabled<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app; // unused on Windows
+        let result = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                "Get-ScheduledTask -TaskName 'NEXUS' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty State"])
+            .creation_flags(0x08000000)
+            .output();
+        match result {
+            Ok(out) => {
+                let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let enabled = state == "Ready" || state == "Running";
+                Ok(enabled)
+            }
+            Err(e) => {
+                tracing::warn!("is_autostart_enabled: {e}");
+                Ok(false)
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let autostart = app.autolaunch();
+        Ok(autostart.is_enabled().unwrap_or(false))
+    }
+}
+
+// ─── Microphone permission ──────────────────────────────────────────
+//
+// On Windows, desktop (Win32) apps don't need per-app mic permission like UWP
+// apps do. However, the GLOBAL mic privacy toggle (Settings → Privacy →
+// Microphone → "Allow apps to access your microphone") can block all apps.
+// When that's off, cpal returns an empty device list or fails to build a
+// stream. We probe the default input device to detect this state.
+
+/// IPC: Check if the microphone is accessible.
+///
+/// Probes cpal's default input device. Returns:
+///   "granted"   — device found and stream can be built
+///   "denied"    — no input devices or stream build failed (likely mic privacy off)
+///   "no_device" — no input devices at all (no mic connected)
+#[tauri::command]
+pub fn check_mic_permission() -> String {
+    use cpal::traits::{DeviceTrait, HostTrait};
+
+    let host = cpal::default_host();
+
+    // Check if there are any input devices at all
+    let devices = match host.input_devices() {
+        Ok(d) => d.collect::<Vec<_>>(),
+        Err(e) => {
+            tracing::warn!("check_mic_permission: input_devices() failed: {e}");
+            return "denied".to_string();
+        }
+    };
+
+    if devices.is_empty() {
+        tracing::warn!("check_mic_permission: no input devices found");
+        return "no_device".to_string();
+    }
+
+    // Try the default device
+    match host.default_input_device() {
+        Some(device) => {
+            let dev_name = device.name().unwrap_or_else(|_| "unknown".into());
+            tracing::info!("check_mic_permission: probing device '{}'", dev_name);
+
+            // Try to build a minimal stream config to verify access
+            let default_config = device.default_input_config();
+            match default_config {
+                Ok(_config) => {
+                    // If we can get a default config, the device is accessible.
+                    // Actually building a stream would require a callback and
+                    // play() call, which is heavy for a permission check.
+                    // Getting the default config is sufficient — if mic privacy
+                    // is off, this returns an error on Windows.
+                    tracing::info!("check_mic_permission: granted (device '{}')", dev_name);
+                    "granted".to_string()
+                }
+                Err(e) => {
+                    tracing::warn!("check_mic_permission: default_input_config failed: {e}");
+                    "denied".to_string()
+                }
+            }
+        }
+        None => {
+            tracing::warn!("check_mic_permission: no default input device");
+            "no_device".to_string()
+        }
+    }
+}
+
+/// IPC: Open the OS microphone privacy settings.
+///
+/// On Windows, opens `ms-settings:privacy-microphone`.
+/// On macOS, opens System Settings → Microphone.
+/// On Linux, this is a no-op (PipeWire/PulseAudio handle permissions differently).
+#[tauri::command]
+pub fn open_mic_settings() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "ms-settings:privacy-microphone"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        tracing::info!("opened Windows mic privacy settings");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // No standard mic privacy settings on most Linux distros
+        tracing::info!("open_mic_settings: no-op on Linux");
+    }
+
     Ok(())
 }
 

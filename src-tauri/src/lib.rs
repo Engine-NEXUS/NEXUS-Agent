@@ -196,6 +196,14 @@ pub fn run() {
             // Check if secondary launch requested setup wizard or settings window
             let is_setup = args.iter().any(|a| a == "--setup" || a == "-s");
             let is_settings = args.iter().any(|a| a == "--settings");
+            let is_background = args.iter().any(|a| a == "--background");
+
+            if is_background && !is_setup && !is_settings {
+                // Silent background launch — don't show the orb, just ensure the
+                // tray is running. This handles the scheduled-task auto-start case.
+                tracing::info!("single-instance: --background launch, staying hidden");
+                return;
+            }
 
             if is_setup {
                 if let Ok(win) = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::setup()) {
@@ -240,21 +248,39 @@ pub fn run() {
                 let _ = app.deep_link().register("nexus");
             }
 
-            // ─── Autostart: Windows Scheduled Task (zero-delay) ───────────
+            // ─── Autostart: respect settings.autostart ───────────────────
             //
             // On Windows, we use a Scheduled Task with "At log on" trigger
             // instead of the HKCU\...\Run registry key. This launches NEXUS
             // IMMEDIATELY when the user logs on — no 10-30s desktop-settle
-            // delay. This is the same technique Discord, Steam, and other
-            // startup-optimized apps use.
+            // delay. The task launches with --background for silent tray start.
             //
-            // We use PowerShell's Register-ScheduledTask cmdlet instead of
-            // schtasks.exe because schtasks.exe requires admin privileges
-            // for /rl highest, while Register-ScheduledTask works for the
-            // current user without elevation.
-            //
-            // On macOS/Linux, we keep tauri-plugin-autostart (LaunchAgent /
+            // On macOS/Linux, we use tauri-plugin-autostart (LaunchAgent /
             // systemd user units are already zero-delay on those platforms).
+            //
+            // The autostart setting is read from settings.json. If the file
+            // doesn't exist yet (first run), we default to enabled.
+            let autostart_enabled = {
+                let dir = app.path().app_data_dir();
+                let settings_path = dir
+                    .as_ref()
+                    .ok()
+                    .map(|d| d.join("settings.json"));
+                let mut enabled = true; // default: enabled
+                if let Some(ref path) = settings_path {
+                    if path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(path) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                if let Some(v) = json.get("autostart").and_then(|v| v.as_bool()) {
+                                    enabled = v;
+                                }
+                            }
+                        }
+                    }
+                }
+                enabled
+            };
+
             #[cfg(target_os = "windows")]
             {
                 let exe_path = std::env::current_exe()
@@ -262,7 +288,7 @@ pub fn run() {
                     .unwrap_or_default();
 
                 if !exe_path.is_empty() {
-                    // Remove old HKCU\Run entry (from the previous autostart plugin)
+                    // Always remove old HKCU\Run entry (from the previous autostart plugin)
                     // to avoid double-launching.
                     let _ = std::process::Command::new("reg")
                         .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
@@ -270,45 +296,51 @@ pub fn run() {
                         .creation_flags(0x08000000) // CREATE_NO_WINDOW
                         .status();
 
-                    // Create/update the scheduled task via PowerShell.
-                    // Register-ScheduledTask is idempotent with -Force and
-                    // doesn't require admin privileges when -User is specified.
-                    // We pass the current user's identity to both the trigger
-                    // and the registration to avoid "Access is denied" errors.
-                    let ps_script = format!(
-                        r#"$exe = '{}';
-                        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name;
-                        $action = New-ScheduledTaskAction -Execute $exe;
-                        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user;
-                        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0);
-                        $result = Register-ScheduledTask -TaskName 'NEXUS' -Action $action -Trigger $trigger -Settings $settings -User $user -Force;
-                        if ($result) {{ Write-Output 'NEXUS_TASK_OK' }} else {{ Write-Output 'NEXUS_TASK_FAIL' }}"#,
-                        exe_path
-                    );
+                    if autostart_enabled {
+                        // Create/update the scheduled task with --background flag
+                        let ps_script = format!(
+                            r#"$exe = '{}';
+                            $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name;
+                            $action = New-ScheduledTaskAction -Execute $exe -Argument '--background';
+                            $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user;
+                            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0);
+                            $result = Register-ScheduledTask -TaskName 'NEXUS' -Action $action -Trigger $trigger -Settings $settings -User $user -Force;
+                            if ($result) {{ Write-Output 'NEXUS_TASK_OK' }} else {{ Write-Output 'NEXUS_TASK_FAIL' }}"#,
+                            exe_path
+                        );
 
-                    let result = std::process::Command::new("powershell")
-                        .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
-                        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-                        .output();
+                        let result = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                            .output();
 
-                    match result {
-                        Ok(out) if out.status.success()
-                            && String::from_utf8_lossy(&out.stdout).contains("NEXUS_TASK_OK") =>
-                        {
-                            tracing::info!(
-                                "autostart: scheduled task 'NEXUS' created (AtLogOn, zero-delay)"
-                            );
+                        match result {
+                            Ok(out) if out.status.success()
+                                && String::from_utf8_lossy(&out.stdout).contains("NEXUS_TASK_OK") =>
+                            {
+                                tracing::info!(
+                                    "autostart: scheduled task 'NEXUS' created (AtLogOn, --background)"
+                                );
+                            }
+                            Ok(out) => {
+                                tracing::warn!(
+                                    "autostart: Register-ScheduledTask failed: stdout={} stderr={}",
+                                    String::from_utf8_lossy(&out.stdout).trim(),
+                                    String::from_utf8_lossy(&out.stderr).trim()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("autostart: failed to run PowerShell: {e}");
+                            }
                         }
-                        Ok(out) => {
-                            tracing::warn!(
-                                "autostart: Register-ScheduledTask failed: stdout={} stderr={}",
-                                String::from_utf8_lossy(&out.stdout).trim(),
-                                String::from_utf8_lossy(&out.stderr).trim()
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!("autostart: failed to run PowerShell: {e}");
-                        }
+                    } else {
+                        // Autostart disabled — remove the scheduled task if it exists
+                        let _ = std::process::Command::new("powershell")
+                            .args(["-NoProfile", "-NonInteractive", "-Command",
+                                "Unregister-ScheduledTask -TaskName 'NEXUS' -Confirm:$false -ErrorAction SilentlyContinue"])
+                            .creation_flags(0x08000000)
+                            .output();
+                        tracing::info!("autostart: disabled (scheduled task removed)");
                     }
                 }
             }
@@ -317,7 +349,13 @@ pub fn run() {
             {
                 // macOS/Linux: use tauri-plugin-autostart (LaunchAgent / systemd)
                 let autostart = app.autolaunch();
-                let _ = autostart.enable();
+                if autostart_enabled {
+                    let _ = autostart.enable();
+                    tracing::info!("autostart: enabled (LaunchAgent)");
+                } else {
+                    let _ = autostart.disable();
+                    tracing::info!("autostart: disabled");
+                }
             }
 
             // Tray menu.
@@ -515,6 +553,20 @@ pub fn run() {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
+            } else {
+                // ─── --background flag: silent tray-only startup ────────
+                //
+                // When launched by the scheduled task (auto-start), the app
+                // passes --background. In this mode, the main orb window stays
+                // hidden and the app runs silently in the system tray.
+                // The user activates it via wake word, hotkey, or tray click.
+                let is_background = std::env::args().any(|arg| arg == "--background");
+                if is_background {
+                    tracing::info!("startup: --background mode — orb hidden, tray only");
+                    if let Some(main_win) = app.get_webview_window("main") {
+                        let _ = main_win.hide();
+                    }
+                }
             }
 
             // Run connection diagnostics on startup.
@@ -571,6 +623,10 @@ pub fn run() {
             commands::close_settings_window,
             commands::get_settings,
             commands::save_settings,
+            commands::set_autostart,
+            commands::is_autostart_enabled,
+            commands::check_mic_permission,
+            commands::open_mic_settings,
             commands::clear_transcript,
             commands::refresh_app_registry,
             commands::show_sidebar,

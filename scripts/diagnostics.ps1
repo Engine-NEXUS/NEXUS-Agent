@@ -1,5 +1,6 @@
 # NEXUS Connection Diagnostics
 # Checks: STT, TTS, Cloudflare Worker, GitHub, Google
+# STT is in-process Moonshine (transcribe-rs) — no external server/port.
 
 $cfg = "$env:APPDATA\com.nexus.assistant\nexus-config.json"
 $worker = ""
@@ -17,20 +18,15 @@ Write-Host "  NEXUS Connection Diagnostics" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 1. STT
+# 1. STT (in-process Moonshine — always ready if NEXUS is running)
 Write-Host -NoNewline "  [STT]    "
-try {
-    $r = Invoke-WebRequest -Uri "http://127.0.0.1:39217/health" -TimeoutSec 3 -UseBasicParsing
-    $b = $r.Content
-    if ($b -match "tiny.en") { $m = "tiny.en" }
-    elseif ($b -match "base.en") { $m = "base.en" }
-    elseif ($b -match "small.en") { $m = "small.en" }
-    else { $m = "unknown" }
-    Write-Host "CONNECTED" -ForegroundColor Green
-    Write-Host "           Model: $m"
-} catch {
-    Write-Host "OFFLINE" -ForegroundColor Red
-    Write-Host "           Not running on port 39217 (auto-starts on wake)"
+$nexusProc = Get-Process nexus -ErrorAction SilentlyContinue
+if ($nexusProc) {
+    Write-Host "READY" -ForegroundColor Green
+    Write-Host "           In-process Moonshine Tiny (transcribe-rs, ONNX Int8)"
+} else {
+    Write-Host "NOT RUNNING" -ForegroundColor Yellow
+    Write-Host "           Start NEXUS first: nexus start"
 }
 
 # 2. TTS

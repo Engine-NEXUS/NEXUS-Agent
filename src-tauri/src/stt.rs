@@ -10,6 +10,17 @@ pub struct SttState {
     pub transcriber: Arc<Mutex<Option<MoonshineModel>>>,
 }
 
+/// The HuggingFace repo for the Moonshine Tiny ONNX model.
+const MOONSHINE_HF_REPO: &str = "onnx-community/moonshine-tiny-ONNX";
+
+/// Files needed for Int8 quantization (smallest, ~32 MB total).
+/// tokenizer.json is in the repo root, ONNX files are in the onnx/ subdir.
+const MOONSHINE_FILES: &[(&str, &str)] = &[
+    ("tokenizer.json", "tokenizer.json"),
+    ("onnx/encoder_model_int8.onnx", "encoder_model_int8.onnx"),
+    ("onnx/decoder_model_merged_int8.onnx", "decoder_model_merged_int8.onnx"),
+];
+
 /// Resolve the Moonshine model directory.
 /// Looks in (1) NEXUS_STT_MODEL_DIR env var, (2) app data dir /models/moonshine,
 /// (3) dev path <repo>/src-tauri/models/moonshine.
@@ -44,7 +55,80 @@ fn resolve_model_dir() -> Result<PathBuf, String> {
         }
     }
 
-    Err("Moonshine model directory not found. Place ONNX model files in %APPDATA%/com.nexus.assistant/models/moonshine or set NEXUS_STT_MODEL_DIR.".to_string())
+    Err("Moonshine model directory not found. Run 'nexus install' to download the model, or set NEXUS_STT_MODEL_DIR.".to_string())
+}
+
+/// Check if the model directory has all required files.
+fn model_dir_is_complete(dir: &PathBuf) -> bool {
+    for (_, local_name) in MOONSHINE_FILES {
+        if !dir.join(local_name).exists() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Download the Moonshine Tiny ONNX model files from HuggingFace.
+/// Downloads to the app data dir: %APPDATA%/com.nexus.assistant/models/moonshine/
+async fn download_moonshine_model() -> Result<PathBuf, String> {
+    let model_dir = if let Ok(appdata) = std::env::var("APPDATA") {
+        PathBuf::from(&appdata)
+            .join("com.nexus.assistant")
+            .join("models")
+            .join("moonshine")
+    } else {
+        return Err("Cannot determine APPDATA for model storage".to_string());
+    };
+
+    // Create the directory if it doesn't exist
+    std::fs::create_dir_all(&model_dir)
+        .map_err(|e| format!("Failed to create model dir: {}", e))?;
+
+    // Check if already downloaded
+    if model_dir_is_complete(&model_dir) {
+        tracing::info!("stt: Moonshine model already present at {:?}", model_dir);
+        return Ok(model_dir);
+    }
+
+    tracing::info!("stt: downloading Moonshine Tiny Int8 model from HuggingFace (~32 MB)...");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    for (remote_path, local_name) in MOONSHINE_FILES {
+        let local_path = model_dir.join(local_name);
+        if local_path.exists() {
+            continue; // Skip already-downloaded files
+        }
+
+        let url = format!("https://huggingface.co/{}/resolve/main/{}", MOONSHINE_HF_REPO, remote_path);
+        tracing::info!("stt: downloading {} -> {}", url, local_path.display());
+
+        let resp = client.get(&url)
+            .header("User-Agent", "NEXUS/1.0")
+            .send()
+            .await
+            .map_err(|e| format!("Download failed for {}: {}", remote_path, e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("Download failed for {}: HTTP {}", remote_path, resp.status()));
+        }
+
+        let bytes = resp.bytes()
+            .await
+            .map_err(|e| format!("Download read failed for {}: {}", remote_path, e))?;
+
+        std::fs::write(&local_path, &bytes)
+            .map_err(|e| format!("Failed to write {}: {}", local_path.display(), e))?;
+
+        let size_mb = bytes.len() as f64 / 1024.0 / 1024.0;
+        tracing::info!("stt: downloaded {} ({:.1} MB)", local_name, size_mb);
+    }
+
+    tracing::info!("stt: Moonshine model download complete.");
+    Ok(model_dir)
 }
 
 #[tauri::command]
@@ -58,17 +142,30 @@ pub async fn transcribe_audio(
     let mut lock = transcriber_arc.lock().await;
 
     if lock.is_none() {
-        tracing::info!("stt: initializing Moonshine Tiny model...");
-        let model_dir = resolve_model_dir()?;
+        tracing::info!("stt: initializing Moonshine Tiny model (Int8)...");
+
+        // Try to resolve the model directory; if not found, auto-download
+        let model_dir = match resolve_model_dir() {
+            Ok(dir) if model_dir_is_complete(&dir) => dir,
+            Ok(dir) => {
+                tracing::info!("stt: model dir exists but incomplete, re-downloading...");
+                download_moonshine_model().await?
+            }
+            Err(_) => {
+                tracing::info!("stt: model dir not found, auto-downloading from HuggingFace...");
+                download_moonshine_model().await?
+            }
+        };
+
         tracing::info!("stt: using model dir: {:?}", model_dir);
         let model = MoonshineModel::load(
             &model_dir,
             MoonshineVariant::Tiny,
-            &Quantization::default(),
+            &Quantization::Int8,
         )
             .map_err(|e| format!("Failed to init Moonshine: {}", e))?;
         *lock = Some(model);
-        tracing::info!("stt: Moonshine initialized.");
+        tracing::info!("stt: Moonshine Tiny Int8 initialized.");
     }
 
     let model = lock.as_mut().unwrap();

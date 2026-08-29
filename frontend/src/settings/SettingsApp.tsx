@@ -97,6 +97,12 @@ export function SettingsApp() {
   const handleSave = async () => {
     try {
       await invoke("save_settings", { settings });
+      // Sync autostart setting with the OS
+      try {
+        await invoke("set_autostart", { enabled: settings.autostart });
+      } catch (e) {
+        console.warn("set_autostart failed:", e);
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch {

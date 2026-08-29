@@ -20,6 +20,10 @@
 // ==============================================================================
 
 import { execSync, spawnSync } from "node:child_process";
+// Suppress the Node DEP0190 deprecation warning about shell:true with args.
+// We control all arguments (no user input) — the warning is a false positive
+// for our use case of launching .cmd shims like npm.cmd on Windows.
+process.removeAllListeners("warning");
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,27 +57,46 @@ function run(cmd, args, opts = {}) {
   const cwd = opts.cwd || ROOT;
   const label = opts.label || `${cmd} ${args.join(" ")}`;
   if (opts.silent !== true) info(label);
-  // On Windows, npm is npm.cmd (a batch shim), not a plain executable.
-  // spawnSync without shell:true can't resolve .cmd files. We resolve
-  // the full path ourselves to avoid the shell:true arg-injection warning.
+  // On Windows, npm/cargo/python are .cmd/.bat/.exe shims. Node's spawnSync
+  // cannot execute .cmd/.bat files without shell:true. We resolve the full
+  // path via `where`, then use shell:true only when needed (.cmd/.bat).
+  // For .exe files (cargo, python, nexus.exe) we use shell:false to avoid
+  // the Node DEP0190 arg-injection deprecation warning.
   let resolvedCmd = cmd;
+  let needsShell = opts.shell || false;
   if (IS_WIN && !opts.shell) {
-    const extensions = [".cmd", ".bat", ".exe", ""];
-    for (const ext of extensions) {
-      const candidate = cmd + ext;
-      if (existsSync(candidate)) { resolvedCmd = candidate; break; }
-      // Also check PATH
-      try {
-        const found = execSync(`where ${cmd}${ext}`, { stdio: "pipe", encoding: "utf-8" }).trim().split(/\r?\n/)[0];
-        if (found && existsSync(found)) { resolvedCmd = found; break; }
-      } catch {}
+    try {
+      const lines = execSync(`where ${cmd}`, { stdio: "pipe", encoding: "utf-8" }).trim().split(/\r?\n/);
+      const priority = [".cmd", ".bat", ".exe"];
+      const best = lines.find(l => priority.some(ext => l.toLowerCase().endsWith(ext)));
+      if (best) {
+        resolvedCmd = best;
+        // .cmd and .bat files require shell:true to execute
+        if (best.toLowerCase().endsWith(".cmd") || best.toLowerCase().endsWith(".bat")) {
+          needsShell = true;
+        }
+      } else if (lines[0]) {
+        resolvedCmd = lines[0];
+      }
+    } catch {
+      // `where` failed — cmd may be a full path already; fall through
     }
   }
-  const useShell = opts.shell !== undefined ? opts.shell : false;
-  const result = spawnSync(resolvedCmd, args, {
+  // When the resolved command is a .cmd/.bat with spaces in the path
+  // (e.g. "C:\Program Files\nodejs\npm.cmd"), spawnSync with shell:true
+  // fails because cmd.exe splits on spaces. In that case, use the bare
+  // command name (npm, not the full path) — the directory is already on
+  // PATH, so cmd.exe will find it.
+  let result;
+  let finalCmd = resolvedCmd;
+  if (needsShell && IS_WIN && resolvedCmd.includes(" ")) {
+    // Extract just the filename (npm.cmd -> npm) — cmd.exe resolves via PATH
+    finalCmd = cmd; // use the original bare name, not the full path
+  }
+  result = spawnSync(finalCmd, args, {
     cwd,
     stdio: opts.stdio || "inherit",
-    shell: useShell,
+    shell: needsShell,
     env: { ...process.env, ...opts.env },
     encoding: "utf-8",
   });
@@ -264,6 +287,79 @@ function installLinux() {
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
+/// Download the Moonshine Tiny ONNX model (Int8, ~32 MB) from HuggingFace.
+/// Files go to %APPDATA%/com.nexus.assistant/models/moonshine/ (Windows)
+/// or ~/.local/share/com.nexus.assistant/models/moonshine/ (Unix).
+function downloadMoonshineModel() {
+  const HF_REPO = "onnx-community/moonshine-tiny-ONNX";
+  const files = [
+    ["tokenizer.json", "tokenizer.json"],
+    ["onnx/encoder_model_int8.onnx", "encoder_model_int8.onnx"],
+    ["onnx/decoder_model_merged_int8.onnx", "decoder_model_merged_int8.onnx"],
+  ];
+
+  // Resolve model directory
+  let modelDir;
+  if (IS_WIN) {
+    modelDir = join(process.env.APPDATA || "", "com.nexus.assistant", "models", "moonshine");
+  } else {
+    const dataDir = process.env.XDG_DATA_HOME || join(process.env.HOME || "", ".local", "share");
+    modelDir = join(dataDir, "com.nexus.assistant", "models", "moonshine");
+  }
+
+  // Check if already complete
+  const allPresent = files.every(([, local]) => existsSync(join(modelDir, local)));
+  if (allPresent) {
+    ok("Moonshine Tiny Int8 model already present");
+    return;
+  }
+
+  if (!existsSync(modelDir)) mkdirSync(modelDir, { recursive: true });
+
+  info("Downloading Moonshine Tiny Int8 model from HuggingFace (~32 MB)...");
+  let downloaded = 0;
+  for (const [remote, local] of files) {
+    const localPath = join(modelDir, local);
+    if (existsSync(localPath)) { downloaded++; continue; }
+
+    const url = `https://huggingface.co/${HF_REPO}/resolve/main/${remote}`;
+    info(`  Downloading ${remote}...`);
+
+    // Use curl (available on all platforms) for the download
+    const curlArgs = ["-L", "-o", localPath, "--progress-bar", url];
+    const result = spawnSync("curl", curlArgs, {
+      stdio: "inherit",
+      shell: IS_WIN,
+      encoding: "utf-8",
+    });
+
+    if (result.status !== 0 || !existsSync(localPath)) {
+      // Try PowerShell as fallback on Windows
+      if (IS_WIN) {
+        try {
+          execSync(
+            `powershell -NoProfile -Command "Invoke-WebRequest -Uri '${url}' -OutFile '${localPath}' -UseBasicParsing"`,
+            { stdio: "inherit", encoding: "utf-8" }
+          );
+        } catch {
+          warn(`Failed to download ${remote} — NEXUS will auto-download on first transcription`);
+          return;
+        }
+      } else {
+        warn(`Failed to download ${remote} — NEXUS will auto-download on first transcription`);
+        return;
+      }
+    }
+    downloaded++;
+    const sizeMB = (statSync(localPath).size / 1024 / 1024).toFixed(1);
+    ok(`  ${local} (${sizeMB} MB)`);
+  }
+
+  if (downloaded === files.length) {
+    ok("Moonshine Tiny Int8 model downloaded successfully");
+  }
+}
+
 function cmdSetup() {
   console.log(`\n${C.bold}${C.cyan}╔═══════════════════════════════════════════════════════════╗${C.reset}`);
   console.log(`${C.bold}${C.cyan}║         NEXUS — Cross-Platform Setup & Build               ║${C.reset}`);
@@ -318,7 +414,10 @@ function cmdSetup() {
     warn("NLU model not found — NLU server will fail. Run: cd server/nlu && python train.py");
   }
 
-  // 7. Build
+  // 7. Download Moonshine STT model (Int8, ~32 MB from HuggingFace)
+  downloadMoonshineModel();
+
+  // 8. Build
   info("Building NEXUS...");
   cmdBuild();
 
@@ -419,7 +518,33 @@ function cmdInstall() {
   console.log(`${C.bold}${C.green}═════════════════════════════════════════════════════════════${C.reset}\n`);
 }
 
+// Kill any running NEXUS process so cargo can replace the binary.
+// On Windows, cargo build fails with "Access is denied (os error 5)" if
+// nexus.exe is still running. On Unix, the linker may also fail.
+function killRunningNexus() {
+  if (IS_WIN) {
+    try {
+      execSync("taskkill /F /IM nexus.exe", { stdio: "pipe", encoding: "utf-8" });
+      warn("Killed running nexus.exe — needed to rebuild the binary");
+      // Give Windows time to release the file lock
+      setTimeout(() => {}, 1000);
+    } catch {
+      // No nexus.exe running — good
+    }
+  } else {
+    try {
+      execSync("pkill -f nexus", { stdio: "pipe", encoding: "utf-8" });
+      warn("Killed running nexus process");
+    } catch {
+      // No nexus process running — good
+    }
+  }
+}
+
 function cmdBuild() {
+  // Kill any running instance first — cargo can't replace a running binary
+  killRunningNexus();
+
   info("Building frontend (Vite)...");
   run("npm", ["--prefix", "frontend", "install"], { allowFail: true, stdio: "ignore" });
   run("npm", ["--prefix", "frontend", "run", "build"]);
@@ -456,8 +581,35 @@ function cmdRun() {
     err("Release binary not found. Run: nexus build");
     process.exit(1);
   }
-  info(`Launching NEXUS: ${binPath}`);
-  run(binPath, [], { stdio: "ignore" });
+
+  if (IS_WIN) {
+    // Windows: use run.ps1 for the unified color-coded console experience.
+    // It kills old instances, clears logs, launches nexus.exe, and tails
+    // all logs (Rust wake-word, audio, frontend CDP) in one stream.
+    const runScript = join(ROOT, "scripts", "run.ps1");
+    if (existsSync(runScript)) {
+      info("Launching NEXUS via unified console (run.ps1)...");
+      // Pass through any extra args (e.g. -Build, -Debug)
+      const extraArgs = process.argv.slice(3).filter(a => !a.startsWith("-"));
+      const psArgs = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", runScript];
+      // Check for --debug or -Debug flag
+      if (process.argv.includes("--debug") || process.argv.includes("-Debug")) {
+        psArgs.push("-Debug");
+      }
+      if (process.argv.includes("--build") || process.argv.includes("-Build")) {
+        psArgs.push("-Build");
+      }
+      run("pwsh", psArgs, { shell: false });
+      return;
+    }
+    // Fall back to direct launch if run.ps1 doesn't exist
+    info(`Launching NEXUS: ${binPath}`);
+    run(binPath, [], { stdio: "ignore" });
+  } else {
+    // Unix: launch directly (no run.ps1 equivalent)
+    info(`Launching NEXUS: ${binPath}`);
+    run(binPath, [], { stdio: "ignore" });
+  }
 }
 
 function cmdCheck() {
