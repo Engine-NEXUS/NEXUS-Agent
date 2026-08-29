@@ -11,29 +11,7 @@
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "NEXUS",
-        "width": 200,
-        "height": 200,
-        "minWidth": 200,
-        "minHeight": 200,
-        "resizable": false,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "shadow": false,
-        "focus": false,
-        "visible": true,
-        "fullscreen": false,
-        "hiddenTitle": true,
-        "tabbingIdentifier": null,
-        "dragDropEnabled": false,
-        "url": "index.html"
-      }
-    ],
+    "windows": [],
     "trayIcon": {
       "iconPath": "icons/tray.png",
       "iconAsTemplate": true,

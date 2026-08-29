@@ -216,10 +216,16 @@ pub fn run() {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
-            } else if let Some(main_win) = app.get_webview_window("main") {
-                let _ = main_win.show();
-                let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
-                let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+            } else {
+                // Only wake the main window if we are NOT in the middle of setup
+                let setup_active = app.get_webview_window("setup").is_some();
+                if !setup_active {
+                    if let Some(main_win) = app.get_webview_window("main") {
+                        let _ = main_win.show();
+                        let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
+                        let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+                    }
+                }
             }
         }))
         .plugin(tauri_plugin_shell::init())
@@ -235,6 +241,11 @@ pub fn run() {
             // macOS: hide from the Dock and Cmd+Tab switcher (accessory/background app).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Create the main window on-demand (only in the primary instance).
+            // Removing it from tauri.conf.json prevents the single-instance
+            // secondary launch from flashing a blank window before exiting.
+            let _ = crate::dyn_windows::get_or_create_window(app, crate::dyn_windows::WindowConfig::main());
 
             // WebView2 profile cleanup is done BEFORE tauri::Builder::default()
             // in run() — see cleanup_webview2_profile() above. Doing it here

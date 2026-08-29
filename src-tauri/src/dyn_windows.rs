@@ -32,6 +32,16 @@ pub struct WindowConfig {
 }
 
 impl WindowConfig {
+    pub fn main() -> Self {
+        Self {
+            label: "main", title: "NEXUS", url: "index.html",
+            width: 200., height: 200., min_width: Some(200.), min_height: Some(200.),
+            resizable: false, decorations: false, transparent: true,
+            always_on_top: true, skip_taskbar: true, shadow: false,
+            focus: false, center: true, hidden_title: true,
+        }
+    }
+
     pub fn setup() -> Self {
         Self {
             label: "setup", title: "NEXUS Setup", url: "setup.html",
