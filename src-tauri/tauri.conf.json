@@ -1,0 +1,112 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Ultron",
+  "version": "0.1.0",
+  "identifier": "com.ultron.assistant",
+  "build": {
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --dir ../frontend dev",
+    "beforeBuildCommand": "pnpm --dir ../frontend build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Ultron",
+        "width": 420,
+        "height": 600,
+        "minWidth": 420,
+        "minHeight": 200,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "visible": false,
+        "fullscreen": false,
+        "hiddenTitle": true,
+        "tabbingIdentifier": null,
+        "dragDropEnabled": false,
+        "url": "index.html"
+      },
+      {
+        "label": "setup",
+        "title": "Ultron Setup",
+        "width": 520,
+        "height": 680,
+        "resizable": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "focus": true,
+        "visible": false,
+        "fullscreen": false,
+        "center": true,
+        "url": "setup.html"
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/tray.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false,
+      "id": "ultron-tray"
+    },
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' wss: https: ipc: http://ipc.localhost; media-src 'self' blob: data:; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "capabilities": ["main-cap"],
+      "assetProtocol": { "enable": false }
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "resources/porcupine/*"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"]
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "macOS": {
+      "signingIdentity": "Developer ID Application: YOUR_TEAM",
+      "providerShortName": "Ultron",
+      "entitlements": "entitlements.plist",
+      "infoPlist": "Info.plist"
+    },
+    "linux": {
+      "appimage": { "bundleMediaFramework": true }
+    },
+    "copyright": "© 2026 Ultron",
+    "category": "Productivity",
+    "shortDescription": "Floating desktop AI assistant (thin client)",
+    "longDescription": "A cross-platform floating AI assistant that bridges to a remote n8n/Ollama backend."
+  },
+  "plugins": {
+    "global-shortcut": { "shortcuts": ["CommandOrControl+Shift+Space"] },
+    "autostart": { "macosExtra": { "application": false, "service": true } },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["ultron"]
+      }
+    }
+  }
+}
