@@ -903,8 +903,10 @@ mod engine {
 
         // 3. Feed 1280-sample chunks to KWS engine
         //    Check meeting/privacy state — if suppressed, drain audio but
-        //    don't run detection (prevents wake during meetings and TTS self-trigger)
+        //    don't run detection (prevents wake during meetings and TTS self-trigger).
+        //    Also enforces Dual-Phase 300ms Post-TTS Mute Gate.
         {
+            let mut last_tts_active = std::time::Instant::now() - std::time::Duration::from_secs(10);
             let mut buf = out_buf.lock();
             buf.extend(produced);
             while buf.len() >= chunk_size {
@@ -919,7 +921,13 @@ mod engine {
                     .unwrap_or(false);
 
                 if suppressed {
-                    // Still consume the audio (keep buffer drained) but skip detection
+                    last_tts_active = std::time::Instant::now();
+                    continue;
+                }
+
+                // Dual-Phase Mute Gate: drop audio chunks for 300ms after TTS finishes
+                // to allow room acoustics and DAC output buffers to settle completely
+                if last_tts_active.elapsed() < std::time::Duration::from_millis(300) {
                     continue;
                 }
 
