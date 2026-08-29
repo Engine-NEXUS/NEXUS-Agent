@@ -129,9 +129,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window_manager::set_click_through,
             network::open_session,
-            network::send_audio_chunk,
             network::send_transcript,
-            network::end_audio,
             network::cancel_session,
             network::close_session,
             commands::open_setup_window,

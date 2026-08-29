@@ -1,18 +1,20 @@
-//! WSS network bridge.
+//! WSS network bridge (TEXT-ONLY protocol).
 //!
 //! Holds a single WebSocket session to the server. The frontend drives it via IPC:
-//!   - `open_session`  → connect, send the "start" control frame, start reader task that
-//!                        forwards server events to the frontend.
-//!   - `send_audio_chunk` → push an Opus/PCM chunk upstream.
-//!   - `end_audio`     → send {type:"end_audio"} so the sidecar flushes to STT + n8n.
-//!   - `cancel_session`→ send {type:"cancel"} then tear down.
-//!   - `close_session` → graceful close.
+//!   - `open_session`     → connect, send the "start" control frame, start reader task.
+//!   - `send_transcript`  → send {type:"transcript", data:"..."} text frame.
+//!   - `cancel_session`   → send {type:"cancel"} then tear down.
+//!   - `close_session`    → graceful close.
 //!
-//! Server events are JSON frames like `{ "type": "state", "state": "thinking" }`,
-//! `{ "type": "tts_chunk", "seq": 1, "data": "<base64>" }`, `{ "type": "done" }`.
+//! Server events are JSON text frames like:
+//!   `{ "type": "state", "state": "thinking" }`,
+//!   `{ "type": "ack", "data": "On it, sir." }`,
+//!   `{ "type": "result", "data": "PR #76 is approved" }`,
+//!   `{ "type": "done" }`.
 //!
-//! The sessionId is generated client-side (UUID v4) so the server can key the response
-//! stream back to this socket via the sidecar's session map.
+//! No binary frames are sent or received — audio stays on the device.
+//! The sessionId is generated client-side (UUID v4) so the server can key
+//! the response stream back to this socket via the sidecar's session map.
 
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
@@ -26,11 +28,9 @@ use futures_util::{SinkExt, StreamExt};
 
 #[derive(serde::Serialize, Clone)]
 pub struct ServerEvent {
-    pub kind: String,        // "state" | "tts_chunk" | "transcript" | "done" | "error"
+    pub kind: String,        // "state" | "ack" | "result" | "done" | "error"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub seq: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,8 +107,7 @@ pub async fn open_session<R: Runtime>(
 
     let session_id = uuid_v4();
 
-    // Send the "start" control frame immediately so the sidecar registers the session
-    // before any audio chunks arrive.
+    // Send the "start" control frame immediately so the sidecar registers the session.
     let start_frame = serde_json::json!({
         "type": "start",
         "sessionId": session_id,
@@ -133,19 +132,24 @@ pub async fn open_session<R: Runtime>(
     });
 
     // Reader: forward server frames to the frontend as `assistant:server` events.
+    // Only text frames are expected — binary frames are ignored (text-only protocol).
     let app2 = app.clone();
     tokio::spawn(async move {
         use futures_util::StreamExt;
         while let Some(frame) = read.next().await {
             let event = match frame {
                 Ok(Message::Text(t)) => parse_server_json(&t),
-                Ok(Message::Binary(b)) => ServerEvent {
-                    kind: "tts_chunk".into(),
-                    data: Some(base64_encode(&b)),
-                    seq: None, state: None, message: None,
-                },
+                Ok(Message::Binary(_)) => {
+                    // Binary frames should never be received in text-only mode.
+                    // Log and ignore — do not play as audio.
+                    tracing::warn!("received unexpected binary frame from server (text-only protocol)");
+                    continue;
+                }
                 Ok(Message::Close(_)) => {
-                    let _ = app2.emit("assistant:server", ServerEvent { kind: "done".into(), state: None, seq: None, data: None, message: None });
+                    let _ = app2.emit("assistant:server", ServerEvent {
+                        kind: "done".into(),
+                        state: None, data: None, message: None,
+                    });
                     break;
                 }
                 _ => continue,
@@ -158,27 +162,7 @@ pub async fn open_session<R: Runtime>(
     Ok(session_id)
 }
 
-/// IPC: push an audio chunk (base64 Opus/PCM) upstream.
-#[tauri::command]
-pub async fn send_audio_chunk(payload: String) -> Result<(), String> {
-    let bytes = base64_decode(&payload).map_err(|e| format!("b64: {e}"))?;
-    if let Some(s) = SESSION.lock().as_ref() {
-        let _ = s.tx.send(Message::Binary(bytes));
-    }
-    Ok(())
-}
-
-/// IPC: signal end-of-audio (VAD silence) so the sidecar flushes to STT + n8n.
-#[tauri::command]
-pub async fn end_audio() -> Result<(), String> {
-    if let Some(s) = SESSION.lock().as_ref() {
-        let frame = serde_json::json!({ "type": "end_audio" }).to_string();
-        let _ = s.tx.send(Message::Text(frame));
-    }
-    Ok(())
-}
-
-/// IPC: send transcribed text to the server (replaces audio streaming).
+/// IPC: send transcribed text to the server.
 /// The client does STT locally and sends only text over the WebSocket.
 #[tauri::command]
 pub async fn send_transcript(text: String) -> Result<(), String> {
@@ -224,20 +208,10 @@ fn parse_server_json(text: &str) -> ServerEvent {
         ServerEvent {
             kind: v["type"].as_str().unwrap_or("unknown").to_string(),
             state: v["state"].as_str().map(String::from),
-            seq: v["seq"].as_u64().map(|n| n as u32),
             data: v["data"].as_str().map(String::from),
             message: v["message"].as_str().map(String::from),
         }
     } else {
-        ServerEvent { kind: "raw".into(), data: Some(text.into()), state: None, seq: None, message: None }
+        ServerEvent { kind: "raw".into(), data: Some(text.into()), state: None, message: None }
     }
-}
-
-fn base64_encode(b: &[u8]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    STANDARD.encode(b)
-}
-fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    STANDARD.decode(s).map_err(|e| e.to_string())
 }

@@ -49,8 +49,8 @@ export const useAssistant = create<AssistantStore>((set) => ({
 /**
  * Canonical state-machine transitions. Enforced everywhere we call setState.
  *   idle  -> listening   (wake / hotkey)
- *   listening -> thinking (VAD silence + session open)
- *   thinking -> speaking (first tts_chunk)
+ *   listening -> thinking (VAD silence + local STT + transcript sent)
+ *   thinking -> speaking (ack or result event — local TTS speaks)
  *   speaking -> idle      (done event)
  */
 export function transition(from: AssistantState, to: AssistantState): boolean {
