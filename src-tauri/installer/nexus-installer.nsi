@@ -673,7 +673,7 @@ Function InstallPythonAndDeps
   Pop $1
   ${If} $0 == 0
     ${If} $1 != ""
-    ${AndNot} $1 == "$LOCALAPPDATA\Microsoft\WindowsApps\python.exe"
+    ${AndIf} $1 != "$LOCALAPPDATA\Microsoft\WindowsApps\python.exe"
       DetailPrint "Python already installed: $1"
       StrCpy $PythonExe "python"
       Goto install_pip_deps

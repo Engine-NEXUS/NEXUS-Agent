@@ -27,6 +27,7 @@ pub struct WindowConfig {
     pub shadow: bool,
     pub focus: bool,
     pub center: bool,
+    #[allow(dead_code)]
     pub hidden_title: bool,
 }
 

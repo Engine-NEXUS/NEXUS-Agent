@@ -250,6 +250,7 @@ pub fn mark_stt_request() {
 
 /// Check if the STT server has been idle for too long and kill it.
 /// Called periodically from a background thread.
+#[allow(dead_code)]
 pub fn check_stt_idle() {
     if !STT_RUNNING.load(Ordering::Relaxed) {
         return;
@@ -276,6 +277,7 @@ pub fn check_stt_idle() {
 }
 
 /// Start a background thread that periodically checks if STT should be killed.
+#[allow(dead_code)]
 pub fn start_idle_monitor() {
     std::thread::spawn(move || {
         loop {
