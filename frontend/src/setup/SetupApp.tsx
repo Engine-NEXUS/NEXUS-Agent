@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { motion, AnimatePresence } from "framer-motion";
+
 import {
   setSidecarBaseUrl,
   connectOAuth,
@@ -132,16 +132,8 @@ export function SetupApp() {
     <div className="setup-root">
       {error && <div className="setup-error">{error}</div>}
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={step}
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -20 }}
-          transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-          style={{ flex: 1 }}
-        >
-          {/* ── Step 0: Voice & Persona ── */}
+      <div style={{ flex: 1 }}>
+        {/* ── Step 0: Voice & Persona ── */}
           {step === 0 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: "var(--nx-space-5)" }}>
@@ -310,8 +302,7 @@ export function SetupApp() {
               </section>
             </>
           )}
-        </motion.div>
-      </AnimatePresence>
+        </div>
 
       {/* ── Footer navigation ── */}
       <div className="setup-footer">

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { motion, AnimatePresence } from "framer-motion";
+
 import { CURATED_VOICES, previewVoice, stopTts } from "../audio/ttsPlayer";
 
 /**
@@ -141,36 +141,27 @@ export function SettingsApp() {
           {saved && <span className="nx-badge nx-badge--ok">Saved</span>}
         </div>
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={tab}
-            initial={{ opacity: 0, x: 12 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -12 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            style={{ display: "flex", flexDirection: "column", gap: "var(--nx-space-5)" }}
-          >
-            {tab === "general" && (
-              <GeneralTab settings={settings} update={update} />
-            )}
-            {tab === "audio" && (
-              <AudioTab settings={settings} update={update} />
-            )}
-            {tab === "wake" && (
-              <WakeTab settings={settings} update={update} />
-            )}
-            {tab === "privacy" && (
-              <PrivacyTab settings={settings} update={update} />
-            )}
-            {tab === "backend" && (
-              <BackendTab
-                settings={settings}
-                update={update}
-                connected={serverConnected}
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--nx-space-5)" }}>
+          {tab === "general" && (
+            <GeneralTab settings={settings} update={update} />
+          )}
+          {tab === "audio" && (
+            <AudioTab settings={settings} update={update} />
+          )}
+          {tab === "wake" && (
+            <WakeTab settings={settings} update={update} />
+          )}
+          {tab === "privacy" && (
+            <PrivacyTab settings={settings} update={update} />
+          )}
+          {tab === "backend" && (
+            <BackendTab
+              settings={settings}
+              update={update}
+              connected={serverConnected}
+            />
+          )}
+        </div>
       </main>
 
       {/* Footer */}
