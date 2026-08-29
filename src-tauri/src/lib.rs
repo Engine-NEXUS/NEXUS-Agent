@@ -31,6 +31,7 @@ mod voice_profile;
 mod meeting_detect;
 mod mic_permissions;
 mod mpris;
+mod architect;
 
 use tauri::{Emitter, Listener, Manager};
 #[cfg(not(target_os = "windows"))]
@@ -553,6 +554,11 @@ pub fn run() {
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,
+            architect::get_active_repo_url,
+            architect::open_architect_window,
+            architect::analyze_repo_phase1,
+            architect::analyze_repo_deep,
+            architect::query_impact,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS application");

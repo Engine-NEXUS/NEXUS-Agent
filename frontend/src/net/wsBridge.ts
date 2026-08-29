@@ -252,9 +252,14 @@ function handle(ev: ServerEvent): void {
       //     auto-close the orb. No sidebar.
       if (ev.data) {
         store.addAssistantMessage(ev.data);
-        const showSidebar = shouldShowSidebar(pendingQuery, ev.data);
-        console.log("[NEXUS] result: len=", ev.data.length, "query=", pendingQuery.slice(0, 60), "showSidebar=", showSidebar);
+        const isArchitectQuery = /\b(analy[sz]e|map|understand|explore|architecture|what breaks|blast radius)\b/i.test(pendingQuery)
+          && /\b(repo|repository|codebase|project|architecture|code)\b/i.test(pendingQuery);
 
+        if (isArchitectQuery && isTauri()) {
+          void tauriInvoke("open_architect_window");
+        }
+
+        const showSidebar = shouldShowSidebar(pendingQuery, ev.data);
         if (showSidebar) {
           // Show the sidebar with the full response text
           void emitSidebarShow(pendingQuery, ev.data);
