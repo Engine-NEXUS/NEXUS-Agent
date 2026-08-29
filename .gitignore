@@ -75,3 +75,23 @@ experiment/
 
 # Duplicate model file at root (real one is in src-tauri/resources/oww/)
 /nexus.onnx
+
+# Kaggle CLI metadata
+kernel-metadata.json
+kaggle_output*
+kaggle_log/
+kaggle_minimal/
+kaggle_pt_*
+kaggle_pytorch_test/
+kaggle_test*/
+kaggle_train_log/
+kaggle_v*_log/
+kaggle_v*_quick/
+get_log*.py
+check_*.py
+check_nb*.py
+test-metadata.json
+kernel-metadata-test.json
+test_kaggle.ipynb
+test_pytorch_fix.ipynb
+psg_check/
