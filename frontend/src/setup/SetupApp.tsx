@@ -133,6 +133,20 @@ export function SetupApp() {
     }
   }, []);
 
+  // Use a ref to hold runMicCheck so startMicPoll can call it without
+  // creating a circular dependency.
+  const runMicCheckRef = useRef<(isAutoRetry?: boolean) => Promise<void>>(async () => {});
+
+  const startMicPoll = useCallback(() => {
+    if (micPollRef.current) return; // already polling
+    setMicRetryCount(0);
+    micPollRef.current = setInterval(async () => {
+      setMicRetryCount((c) => c + 1);
+      console.log("[NEXUS] setup: auto-retrying mic permission check...");
+      await runMicCheckRef.current(true);
+    }, 3000);
+  }, []);
+
   const runMicCheck = async (isAutoRetry = false) => {
     if (!isAutoRetry) {
       setMicStatus("checking");
@@ -193,18 +207,10 @@ export function SetupApp() {
     }
   };
 
-  // Auto-retry poll: re-check mic permission every 3 seconds when denied.
-  // This detects when the user has fixed Windows Settings without requiring
-  // them to manually click "Check Again".
-  const startMicPoll = useCallback(() => {
-    if (micPollRef.current) return; // already polling
-    setMicRetryCount(0);
-    micPollRef.current = setInterval(async () => {
-      setMicRetryCount((c) => c + 1);
-      console.log("[NEXUS] setup: auto-retrying mic permission check...");
-      await runMicCheck(true);
-    }, 3000);
-  }, []);
+  // Keep the ref in sync with the latest runMicCheck closure
+  useEffect(() => {
+    runMicCheckRef.current = runMicCheck;
+  });
 
   // Stop polling when leaving the Permissions step or on unmount
   useEffect(() => {
@@ -352,7 +358,7 @@ export function SetupApp() {
                     {micStatus === "granted" && "✓"}
                     {micStatus === "denied" && "✕"}
                     {micStatus === "no_device" && "!"}
-                    {(micStatus === "checking" || micTesting) && (
+                    {(micStatus === "checking" || micTesting || (micStatus === "denied" && micRetryCount > 0)) && (
                       <div style={{
                         width: "28px",
                         height: "28px",
@@ -391,10 +397,15 @@ export function SetupApp() {
                         <p style={{ fontSize: "var(--nx-text-sm)", fontWeight: 600, color: "#ef4444" }}>
                           Microphone Access Denied
                         </p>
-                        <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px", maxWidth: "320px" }}>
+                        <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px", maxWidth: "340px" }}>
                           NEXUS needs microphone access to function. Enable it in Windows Settings →
-                          Privacy → Microphone, then click "Check Again".
+                          Privacy → Microphone. NEXUS will auto-detect when you've enabled it.
                         </p>
+                        {micRetryCount > 0 && (
+                          <p style={{ fontSize: "var(--nx-text-xs)", color: "rgba(59,130,246,0.8)", marginTop: "8px" }}>
+                            Auto-checking every 3s... (attempt {micRetryCount})
+                          </p>
+                        )}
                       </>
                     )}
                     {micStatus === "no_device" && (
@@ -403,22 +414,24 @@ export function SetupApp() {
                           No Microphone Found
                         </p>
                         <p style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)", marginTop: "4px" }}>
-                          No input devices detected. Connect a microphone and click "Check Again".
+                          No input devices detected. Connect a microphone and click "Try Again".
                         </p>
                       </>
                     )}
                   </div>
 
                   {/* Action buttons */}
-                  <div style={{ display: "flex", gap: "var(--nx-space-3)" }}>
+                  <div style={{ display: "flex", gap: "var(--nx-space-3)", flexWrap: "wrap", justifyContent: "center" }}>
+                    {/* Manual retry button — always available when not granted */}
                     {micStatus !== "granted" && micStatus !== "checking" && !micTesting && (
                       <button
                         className="setup-btn setup-btn--primary"
-                        onClick={runMicCheck}
+                        onClick={() => runMicCheck(false)}
                       >
-                        Check Again
+                        Try Again
                       </button>
                     )}
+                    {/* Open Windows mic settings — shown when denied */}
                     {micStatus === "denied" && (
                       <button
                         className="setup-btn"
@@ -428,6 +441,33 @@ export function SetupApp() {
                       </button>
                     )}
                   </div>
+
+                  {/* Skip option — allows proceeding without mic, with warning */}
+                  {micStatus !== "granted" && micStatus !== "checking" && !micTesting && !micSkipped && (
+                    <button
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "var(--nx-text-secondary)",
+                        fontSize: "var(--nx-text-xs)",
+                        cursor: "pointer",
+                        textDecoration: "underline",
+                        marginTop: "var(--nx-space-2)",
+                      }}
+                      onClick={() => {
+                        stopMicPoll();
+                        setMicSkipped(true);
+                      }}
+                    >
+                      Skip for now (NEXUS won't hear you until mic is enabled)
+                    </button>
+                  )}
+                  {micSkipped && micStatus !== "granted" && (
+                    <p style={{ fontSize: "var(--nx-text-xs)", color: "#eab308", marginTop: "var(--nx-space-2)" }}>
+                      ⚠ Skipped — NEXUS will start but voice commands won't work.
+                      You can enable the mic later in Settings.
+                    </p>
+                  )}
                 </div>
 
                 {/* Privacy note */}
