@@ -126,7 +126,7 @@ $nexusErr = "$LogDir\nexus_unified_err.log"
 $cdpLog = "$LogDir\cdp_unified.log"
 $cdpErr = "$LogDir\cdp_unified_err.log"
 foreach ($f in @($sttLog, $sttErr, $nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
-  if (Test-Path $f) { Clear-Content $f -Force }
+  if (Test-Path $f) { Clear-Content $f -Force -ErrorAction SilentlyContinue }
 }
 
 # ─── STT Server ────────────────────────────────────────────────────────────
