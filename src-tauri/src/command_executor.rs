@@ -1138,8 +1138,7 @@ fn find_desktop_entry(name: &str) -> Option<String> {
                 if fname.contains(&name_lower) || fname.contains(&name_no_spaces) {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         for line in content.lines() {
-                            if line.starts_with("Exec=") {
-                                let exec = &line[5..];
+                            if let Some(exec) = line.strip_prefix("Exec=") {
                                 let clean = exec
                                     .split_whitespace()
                                     .filter(|w| !w.starts_with('%'))

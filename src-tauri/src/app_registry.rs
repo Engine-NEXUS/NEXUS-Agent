@@ -1618,12 +1618,12 @@ fn parse_pwa_desktop_file(path: &std::path::Path) -> Option<AppEntry> {
     let mut icon = String::new();
 
     for line in content.lines() {
-        if line.starts_with("Name=") {
-            name = line[5..].to_string();
-        } else if line.starts_with("Exec=") {
-            exec = line[5..].to_string();
-        } else if line.starts_with("Icon=") {
-            icon = line[5..].to_string();
+        if let Some(val) = line.strip_prefix("Name=") {
+            name = val.to_string();
+        } else if let Some(val) = line.strip_prefix("Exec=") {
+            exec = val.to_string();
+        } else if let Some(val) = line.strip_prefix("Icon=") {
+            icon = val.to_string();
         } else if line.starts_with("Type=Application") {
             // Check for WebApp indicator
         } else if line.contains("WebApp=true") || line.contains("StartupWMClass=") {

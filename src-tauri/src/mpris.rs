@@ -63,6 +63,7 @@ pub async fn send_mpris_command(command: &str) -> Result<String, String> {
     }
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub async fn send_mpris_command(_command: &str) -> Result<String, String> {
     Err("MPRIS D-Bus is only available on Linux".to_string())
@@ -95,12 +96,13 @@ pub async fn send_native_notification(title: &str, body: &str) -> Result<(), Str
                 actions,
                 hints,
                 3000i32,
-            ),
+                ),
         )
         .await;
     Ok(())
 }
 
+#[allow(dead_code)]
 #[cfg(not(target_os = "linux"))]
 pub async fn send_native_notification(_title: &str, _body: &str) -> Result<(), String> {
     Ok(())
