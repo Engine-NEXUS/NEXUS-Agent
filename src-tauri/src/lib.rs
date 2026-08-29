@@ -245,7 +245,7 @@ pub fn run() {
             // Create the main window on-demand (only in the primary instance).
             // Removing it from tauri.conf.json prevents the single-instance
             // secondary launch from flashing a blank window before exiting.
-            let _ = crate::dyn_windows::get_or_create_window(app, crate::dyn_windows::WindowConfig::main());
+            let _ = crate::dyn_windows::get_or_create_window(app.handle(), crate::dyn_windows::WindowConfig::main());
 
             // WebView2 profile cleanup is done BEFORE tauri::Builder::default()
             // in run() — see cleanup_webview2_profile() above. Doing it here

@@ -7,7 +7,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, Runtime};
-use tauri_plugin_autostart::ManagerExt;
+
 #[cfg(feature = "wakeword-sherpa")]
 use crate::voice_profile;
 use crate::app_registry;
