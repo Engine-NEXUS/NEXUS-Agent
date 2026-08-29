@@ -217,9 +217,6 @@ pub fn ensure_stt_running() {
             return;
         }
     };
-            return;
-        }
-    };
 
     let child = Command::new(&python_cmd)
         .arg(&script)

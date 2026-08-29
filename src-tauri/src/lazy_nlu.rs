@@ -171,9 +171,6 @@ pub fn ensure_nlu_running() {
             return;
         }
     };
-            return;
-        }
-    };
 
     // Spawn: python nlu_server.py
     let child = Command::new(&python_cmd)
