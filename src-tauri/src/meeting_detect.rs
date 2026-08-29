@@ -498,6 +498,7 @@ fn get_process_name(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 fn get_process_name(_pid: u32) -> Option<String> {
     None
 }
