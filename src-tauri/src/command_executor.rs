@@ -62,6 +62,14 @@ pub enum Intent {
     BrowserNextTab,
     #[serde(rename = "browser_back")]
     BrowserBack,
+    #[serde(rename = "media_play_pause")]
+    MediaPlayPause,
+    #[serde(rename = "media_next")]
+    MediaNext,
+    #[serde(rename = "media_previous")]
+    MediaPrevious,
+    #[serde(rename = "media_stop")]
+    MediaStop,
     #[serde(rename = "unknown")]
     Unknown { raw: String },
 }
@@ -100,6 +108,10 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
         Intent::BrowserCloseTab => browser_key("ctrl+w", "close tab"),
         Intent::BrowserNextTab => browser_key("ctrl+tab", "next tab"),
         Intent::BrowserBack => browser_key("alt+left", "back"),
+        Intent::MediaPlayPause => execute_media_command("play_pause").await,
+        Intent::MediaNext => execute_media_command("next").await,
+        Intent::MediaPrevious => execute_media_command("previous").await,
+        Intent::MediaStop => execute_media_command("stop").await,
         Intent::Unknown { raw } => Ok(CommandResult {
             success: false,
             message: format!(
@@ -107,6 +119,29 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
                 raw
             ),
         }),
+    }
+}
+
+async fn execute_media_command(action: &str) -> Result<CommandResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        match crate::mpris::send_mpris_command(action).await {
+            Ok(msg) => Ok(CommandResult {
+                success: true,
+                message: msg,
+            }),
+            Err(e) => Ok(CommandResult {
+                success: false,
+                message: format!("Couldn't control media: {e}"),
+            }),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(CommandResult {
+            success: true,
+            message: format!("Media {} executed, sir.", action),
+        })
     }
 }
 
