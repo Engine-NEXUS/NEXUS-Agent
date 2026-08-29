@@ -72,6 +72,15 @@ let micVad: any = null;           // MicVAD instance (Silero) — kept alive bet
 let micVadStream: MediaStream | null = null;  // Stream associated with the pre-init VAD
 let active = false;
 
+// ---- No-speech watchdog ----
+// Callback fired when VAD detects real speech start.
+// Used by startListening() to cancel the no-speech timeout.
+let onSpeechStartedCb: (() => void) | null = null;
+
+export function setSpeechStartCallback(cb: (() => void) | null): void {
+  onSpeechStartedCb = cb;
+}
+
 // ---- Speculative transcription state ----
 let specFrames: Float32Array[] = [];
 let specSamples = 0;
@@ -267,6 +276,7 @@ export async function preloadMicVad(stream: MediaStream): Promise<void> {
       },
       onSpeechStart: () => {
         console.log("[NEXUS] VAD: Silero speech start detected");
+        if (onSpeechStartedCb) onSpeechStartedCb();
       },
       onSpeechRealStart: () => {
         console.log("[NEXUS] VAD: Silero speech real start (min frames met)");
@@ -413,6 +423,7 @@ async function startSileroVad(stream: MediaStream): Promise<void> {
     // Callbacks
     onSpeechStart: () => {
       console.log("[NEXUS] VAD: Silero speech start detected");
+      if (onSpeechStartedCb) onSpeechStartedCb();
     },
     onSpeechRealStart: () => {
       console.log("[NEXUS] VAD: Silero speech real start (min frames met)");
@@ -495,6 +506,7 @@ function startRmsVad(stream: MediaStream) {
       silenceSince = 0;
       if (!speechOccurred) {
         console.log(`[NEXUS] VAD: speech detected (rms=${rms.toFixed(4)})`);
+        if (onSpeechStartedCb) onSpeechStartedCb();
       }
       speechOccurred = true;
     } else if (silenceSince === 0) {

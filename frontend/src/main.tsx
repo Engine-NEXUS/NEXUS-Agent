@@ -17,12 +17,40 @@ import "./styles.css";
 // audio is only captured when recording is active. VAD runs only during
 // listening state. No audio leaves the device.
 
-import { preloadSileroVad, preloadMicVad, startVad, stopVad } from "./audio/vad";
+import { preloadSileroVad, preloadMicVad, startVad, stopVad, setSpeechStartCallback } from "./audio/vad";
 import { captureUntilSilence, abortCapture } from "./audio/recorder";
 import { stopTts } from "./audio/ttsPlayer";
 import { useAssistant } from "./store/assistant";
 
 let micStream: MediaStream | null = null;
+
+// ─── No-speech watchdog ───────────────────────────────────────────────────
+// If the user wakes NEXUS but never says anything, the orb would stay in
+// "listening" state forever (Silero VAD has no built-in timeout for "no
+// speech detected"). This watchdog cancels listening after 8 seconds of
+// silence so the orb hides cleanly instead of spinning indefinitely.
+const NO_SPEECH_TIMEOUT_MS = 8000;
+let noSpeechTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearNoSpeechTimer(): void {
+  if (noSpeechTimer !== null) {
+    clearTimeout(noSpeechTimer);
+    noSpeechTimer = null;
+  }
+}
+
+function startNoSpeechWatchdog(): void {
+  clearNoSpeechTimer();
+  noSpeechTimer = setTimeout(() => {
+    console.log("[NEXUS] no-speech timeout — cancelling listening");
+    noSpeechTimer = null;
+    stopVad();
+    void abortCapture().catch(() => {});
+    setSpeechStartCallback(null);
+    useAssistant.getState().setVisible(false);
+    setTimeout(() => useAssistant.getState().reset(), 550);
+  }, NO_SPEECH_TIMEOUT_MS);
+}
 
 /**
  * Acquire the mic stream at startup and keep it warm.
@@ -132,6 +160,14 @@ async function startListening() {
   // ─── Approach C: Parallel recording + VAD start ────────────────────
   // Start recording and VAD simultaneously instead of sequentially.
   // This overlaps the two init operations, saving ~60-250ms.
+  // Also start the no-speech watchdog — if the user doesn't say anything
+  // within 8 seconds, cancel listening and hide the orb.
+  setSpeechStartCallback(() => {
+    console.log("[NEXUS] speech detected — cancelling no-speech watchdog");
+    clearNoSpeechTimer();
+  });
+  startNoSpeechWatchdog();
+
   try {
     await Promise.all([
       captureUntilSilence(micStream),
@@ -139,6 +175,8 @@ async function startListening() {
     ]);
   } catch (err) {
     console.error("[NEXUS] recording/VAD failed:", err);
+    clearNoSpeechTimer();
+    setSpeechStartCallback(null);
     stopVad();
     await abortCapture().catch(() => {});
     useAssistant.getState().reset();
