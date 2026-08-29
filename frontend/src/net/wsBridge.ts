@@ -99,6 +99,72 @@ let unlisten: (() => void) | null = null;
 /** Tracks whether a backend session is actually open. */
 let sessionOpen = false;
 
+/**
+ * Long-running query tracking — dedup + queue.
+ *
+ * When a long-running query (PR analysis, repo review) is sent to the Worker,
+ * we set `longRunningInFlight = true` and record `lastSentTranscript`.
+ *
+ * If the user says the SAME command while it's processing:
+ *   → say "on it sir" + hide orb, do NOT send again (dedup)
+ *
+ * If the user says a DIFFERENT long-running command while it's processing:
+ *   → say "on it sir" + hide orb, add to `pendingLongRunningQueue`
+ *   → when the current result arrives, process the next queued command
+ */
+type LongRunningResultCallback = () => void;
+let longRunningResultCb: LongRunningResultCallback | null = null;
+
+/** Called by recorder.ts before sending a long-running query. */
+export function setLongRunningInFlight(transcript: string, onResult: LongRunningResultCallback): void {
+  longRunningInFlight = true;
+  lastSentTranscript = normalizeTranscript(transcript);
+  longRunningResultCb = onResult;
+  // Safety timeout: auto-clear after 60s in case the Worker never responds
+  if (longRunningTimeout) clearTimeout(longRunningTimeout);
+  longRunningTimeout = setTimeout(() => {
+    console.warn("[NEXUS] long-running query timeout — auto-clearing in-flight flag");
+    longRunningInFlight = false;
+    lastSentTranscript = "";
+    longRunningResultCb = null;
+  }, 60_000);
+}
+
+/** Called by recorder.ts to check if a long-running query is in flight. */
+export function isLongRunningInFlight(): boolean {
+  return longRunningInFlight;
+}
+
+/** Called by recorder.ts to check if a transcript matches the in-flight one. */
+export function isDuplicateLongRunning(transcript: string): boolean {
+  return longRunningInFlight && lastSentTranscript === normalizeTranscript(transcript);
+}
+
+/** Normalize transcript for dedup comparison. */
+function normalizeTranscript(t: string): string {
+  return t.toLowerCase().trim().replace(/[.,!?;:'"]/g, "").replace(/\s+/g, " ");
+}
+
+let longRunningInFlight = false;
+let lastSentTranscript = "";
+let longRunningTimeout: ReturnType<typeof setTimeout> | null = null;
+
+/** Called by wsBridge when a result arrives — clears in-flight + fires callback. */
+function clearLongRunningInFlight(): void {
+  if (longRunningTimeout) {
+    clearTimeout(longRunningTimeout);
+    longRunningTimeout = null;
+  }
+  const wasInFlight = longRunningInFlight;
+  longRunningInFlight = false;
+  lastSentTranscript = "";
+  const cb = longRunningResultCb;
+  longRunningResultCb = null;
+  if (wasInFlight && cb) {
+    try { cb(); } catch (e) { console.warn("[NEXUS] long-running result callback error:", e); }
+  }
+}
+
 /** Cached server config — loaded once from Rust at first use, then reused. */
 let cachedConfig: { url: string; token: string; userId: string; deviceId: string } | null = null;
 
@@ -250,6 +316,8 @@ function handle(ev: ServerEvent): void {
       //     the entire long response aloud. Auto-close orb after TTS.
       //   - Short responses / commands: Speak the response aloud and
       //     auto-close the orb. No sidebar.
+      //   - Clear long-running in-flight flag so queued commands can proceed.
+      clearLongRunningInFlight();
       if (ev.data) {
         store.addAssistantMessage(ev.data);
         const showSidebar = shouldShowSidebar(pendingQuery, ev.data);
@@ -284,10 +352,12 @@ function handle(ev: ServerEvent): void {
     case "done":
       // "done" from Rust is now only emitted on error/cancel paths.
       // Normal flow: the "result" handler above emits done after TTS.
+      clearLongRunningInFlight();
       sessionOpen = false;
       store.reset();
       break;
     case "error":
+      clearLongRunningInFlight();
       sessionOpen = false;
       console.error("server error:", ev.message);
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
