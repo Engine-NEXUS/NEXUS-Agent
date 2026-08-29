@@ -27,9 +27,7 @@ pub fn close_setup_window<R: Runtime>(
     }
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.show();
-        let _ = crate::window_manager::position_orb(&main_win);
-        let _ = main_win.set_focus();
-        let _ = main_win.set_always_on_top(true);
+        let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
         let _ = main_win.set_ignore_cursor_events(false);
         let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
     }

@@ -1004,9 +1004,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 );
                 if let Some(win) = app_for_commands.get_webview_window("main") {
                     let _ = win.show();
-                    let _ = crate::window_manager::position_orb(&win);
-                    let _ = win.set_focus();
-                    let _ = win.set_always_on_top(true);
+                    let _ = crate::window_manager::configure_non_activating_overlay(&win);
                     let _ = win.set_ignore_cursor_events(false);
                     let _ = app_for_commands.emit("command-detected", &intent);
                 }
@@ -1020,9 +1018,7 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
-            let _ = crate::window_manager::position_orb(&win);
-            let _ = win.set_focus();
-            let _ = win.set_always_on_top(true);
+            let _ = crate::window_manager::configure_non_activating_overlay(&win);
             let _ = win.set_ignore_cursor_events(false);
             let _ = win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
         }

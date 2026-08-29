@@ -34,13 +34,20 @@ pub fn position_orb<R: Runtime>(win: &WebviewWindow<R>) -> Result<(), String> {
     Ok(())
 }
 
+/// Configure window as a non-activating floating overlay (does not steal keyboard focus from active apps)
+pub fn configure_non_activating_overlay<R: Runtime>(win: &WebviewWindow<R>) -> Result<(), String> {
+    let _ = position_orb(win);
+    win.set_always_on_top(true).map_err(|e| e.to_string())?;
+    let _ = win.set_focusable(false);
+    Ok(())
+}
+
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let win = app
         .get_webview_window(WIN)
         .ok_or_else(|| "main window not found".to_string())?;
 
-    let _ = position_orb(&win);
-    win.set_always_on_top(true).map_err(|e| e.to_string())?;
+    configure_non_activating_overlay(&win)?;
     // Start with click-through OFF so the user can interact with the window.
     win.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
     Ok(())
@@ -81,8 +88,7 @@ pub fn show_overlay<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         .get_webview_window(WIN)
         .ok_or_else(|| "main window not found".to_string())?;
     win.show().map_err(|e| e.to_string())?;
-    let _ = position_orb(&win);
-    win.set_always_on_top(true).map_err(|e| e.to_string())?;
+    configure_non_activating_overlay(&win)?;
     win.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
     Ok(())
 }
