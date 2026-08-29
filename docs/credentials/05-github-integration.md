@@ -95,7 +95,7 @@ With the `repo read:org workflow` scopes, n8n sub-canvas workflows can:
 ## Environment Variables
 
 ```env
-GITHUB_CLIENT_ID=Iv1.xxxxxxxx
+GITHUB_CLIENT_ID=Ov2.xxxxxxxx
 GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
