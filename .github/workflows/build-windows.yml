@@ -2,7 +2,8 @@ name: Build Windows Executable Installer
 
 on:
   push:
-    branches: [ prem22k, main ]
+    branches: ["**"]
+  pull_request:
   workflow_dispatch:
 
 jobs:

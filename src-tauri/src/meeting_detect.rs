@@ -84,6 +84,7 @@ impl MeetingState {
     /// All reads use `Ordering::Relaxed` (no cross-thread synchronization needed
     /// for a simple boolean flag that is allowed to be slightly stale).
     #[inline]
+    #[allow(dead_code)]
     pub fn should_suppress_wake(&self) -> bool {
         self.manual_pause.load(Ordering::Relaxed)
             || self.tts_playing.load(Ordering::Relaxed)
