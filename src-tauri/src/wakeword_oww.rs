@@ -336,6 +336,9 @@ mod engine {
         pub confirmation_buffer: Vec<f32>,
         pub confirmation_active: bool,
         pub pending_probability: f32,
+        /// Engine start time — used to ignore false triggers during the
+        /// first few seconds while the audio stream stabilizes.
+        pub engine_start_time: std::time::Instant,
     }
 
     /// Load Tier 3 command classifiers from `resources/oww/commands/`.
@@ -508,6 +511,7 @@ mod engine {
                 confirmation_buffer: Vec::with_capacity(16000), // 500ms @ 16kHz
                 confirmation_active: false,
                 pending_probability: 0.0,
+                engine_start_time: std::time::Instant::now(),
             })
         }
 
@@ -517,6 +521,16 @@ mod engine {
             &mut self,
             chunk: Vec<f32>,
         ) -> (bool, f32, Option<CommandIntent>) {
+            // ─── Startup grace period ───────────────────────────────────
+            // Ignore all detections during the first 3 seconds after the
+            // engine starts. The audio stream produces transient noise
+            // during initialization that false-triggers the model
+            // (probability 0.9+ on startup). Push 0.0 to flush the buffer.
+            if self.engine_start_time.elapsed().as_secs() < 3 {
+                self.detections_buffer.push_back(0.0);
+                return (false, 0.0, None);
+            }
+
             // ─── Energy gate + Automatic Gain Control (AGC) ────────────
             // The nexus.onnx model produces false positives (0.6-0.9 probability)
             // when fed pure digital silence (all zeros). This is because the model
