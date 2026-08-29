@@ -1,13 +1,16 @@
 """
 n8n supervisor client.
 
-Calls the n8n master supervisor webhook with the transcript + user credentials,
-reads the streamed response, and returns the final result text.
+Calls the n8n master supervisor webhook with the transcript + structured
+identity metadata. Does NOT send raw credentials — n8n calls back to the
+sidecar's /auth/{provider} endpoint to get access tokens when needed.
 
 The supervisor webhook is expected to:
   1. Classify intent (via Ollama).
   2. Route to the appropriate sub-canvas (Execute Sub-workflow).
-  3. Return a structured result or streamed text.
+  3. The sub-canvas calls http://localhost:8443/auth/{provider} to get
+     a short-lived access token for the user.
+  4. Return a structured result or streamed text.
 
 If n8n is configured with responseMode=streaming + AI Agent node, we read
 SSE-style chunks and accumulate the response.
@@ -28,6 +31,9 @@ N8N_SUPERVISOR_URL = os.getenv("N8N_SUPERVISOR_URL", "http://localhost:5678/webh
 N8N_STREAM_URL = os.getenv("N8N_STREAM_URL", "http://localhost:5678/webhook-stream/supervisor")
 # n8n API token for authenticating webhook calls (if the supervisor uses Auth Check).
 N8N_API_TOKEN = os.getenv("N8N_API_TOKEN", "")
+# The sidecar's own URL — n8n uses this to call back for credentials.
+# In Docker, this is http://sidecar:8443. On bare metal, http://localhost:8443.
+SIDECAR_SELF_URL = os.getenv("SIDECAR_SELF_URL", "http://localhost:8443")
 
 
 async def call_supervisor(
@@ -41,23 +47,45 @@ async def call_supervisor(
     """
     Call the n8n supervisor and return the final result text.
 
+    Sends structured identity + task metadata. Does NOT send raw credentials.
+    n8n calls back to the sidecar's /auth/{provider} endpoint when it needs
+    an access token for a specific provider.
+
     Args:
         session_id: The NEXUS session ID for correlation.
-        user_id: The user's ID (for credential lookup).
+        user_id: The user's ID (for credential lookup by n8n).
         device_id: The device ID.
         transcript: The transcribed user speech.
-        credentials: The user's OAuth tokens + API keys (from oauth.get_valid_credentials).
+        credentials: Kept for backward compat — NOT sent to n8n anymore.
         use_streaming: If True, use the streaming webhook endpoint.
 
     Returns:
         The final response text from n8n.
     """
+    # Determine which providers the user has connected (for n8n to know
+    # which credential endpoints to call).
+    connected_providers = []
+    for provider in ("google", "github"):
+        if credentials.get(provider, {}).get("access_token"):
+            connected_providers.append(provider)
+
     payload = {
-        "transcript": transcript,
-        "sessionId": session_id,
-        "userId": user_id,
-        "deviceId": device_id,
-        "credentials": credentials,
+        "request_id": session_id,
+        "requester": {
+            "id": user_id,
+            "device_id": device_id,
+        },
+        "task": {
+            "type": "general",  # n8n classifies this via Ollama
+            "request": transcript,
+        },
+        "authorization": {
+            "providers": connected_providers,
+            "credential_endpoint": f"{SIDECAR_SELF_URL}/auth",
+            # n8n calls: POST {credential_endpoint}/{provider}
+            # Body: { "user_id": "...", "request_id": "..." }
+            # Returns: { "access_token": "...", "scopes": "..." }
+        },
     }
     headers = {
         "Content-Type": "application/json",
