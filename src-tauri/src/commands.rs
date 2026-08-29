@@ -1,7 +1,7 @@
 //! IPC commands for setup window management and configuration.
 
 use std::path::{Path, PathBuf};
-use tauri::{Manager, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 #[cfg(feature = "wakeword-sherpa")]
 use crate::voice_profile;
 use crate::app_registry;
@@ -502,10 +502,9 @@ pub fn show_sidebar<R: Runtime>(
     Ok(())
 }
 
-/// IPC: Show the sidebar AND set its content directly via JS evaluation.
-/// Bypasses the Tauri event system entirely — directly manipulates the
-/// sidebar window's DOM. This is the most reliable approach since it
-/// doesn't depend on listen() working in the sidebar window's JS context.
+/// IPC: Show the sidebar AND set its content.
+/// Emits the "sidebar:show" event to Tauri listeners and invokes the React hook
+/// via JS eval with full JSON encoding (preserving Markdown, images, tables, code blocks).
 #[tauri::command]
 pub fn show_sidebar_with_content<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -516,90 +515,34 @@ pub fn show_sidebar_with_content<R: Runtime>(
         .ok_or_else(|| "sidebar window not found".to_string())?;
     show_sidebar_inner(&app, &win)?;
 
-    // Directly set the sidebar content via JS evaluation.
-    // This bypasses the event system and React state — we set the DOM
-    // directly and toggle the CSS class for visibility.
-    //
-    // TEXT ANIMATION: Words are split into <span class="word"> elements
-    // with staggered animation-delay, creating a ChatGPT/Gemini-style
-    // fade-in-from-top streaming effect. Newlines are preserved as <br>.
-    let escaped_query = query.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
-    let escaped_text = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+    // 1. Emit event to all Tauri listeners
+    let payload = serde_json::json!({
+        "query": query,
+        "text": text,
+    });
+    let _ = app.emit("sidebar:show", payload);
 
+    // 2. Direct JS evaluation as a guaranteed fallback for the React application
+    let query_json = serde_json::to_string(&query).unwrap_or_else(|_| "\"\"".to_string());
+    let text_json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
     let js = format!(
         r#"
         (function() {{
-            var app = document.getElementById('sidebar-app');
-            if (!app) return;
-            app.className = 'sidebar--visible';
-
-            // Set query text
-            var q = app.querySelector('.sidebar-query');
-            if (q) {{ q.textContent = '{q}'; }}
-            else {{
-                var card = app.querySelector('.sidebar-card');
-                if (card) {{
-                    var qd = document.createElement('div');
-                    qd.className = 'sidebar-query';
-                    qd.textContent = '{q}';
-                    card.insertBefore(qd, card.firstChild);
-                }}
+            if (window.__NEXUS_SET_SIDEBAR_CONTENT__) {{
+                window.__NEXUS_SET_SIDEBAR_CONTENT__({q}, {t});
             }}
-
-            // Build word-by-word streaming text
-            var r = app.querySelector('.sidebar-response-text');
-            if (!r) return;
-            r.innerHTML = '';
-
-            var fullText = '{t}';
-            // Split by newlines first, then words within each line
-            var lines = fullText.split('\\n');
-            var wordIndex = 0;
-            // ~28ms per word — fast enough for long responses, slow enough
-            // to see the streaming effect. Capped at 2000ms total.
-            var delayPerWord = 28;
-            var maxDelay = 2000;
-
-            lines.forEach(function(line, lineIdx) {{
-                if (lineIdx > 0) {{
-                    r.appendChild(document.createElement('br'));
-                }}
-                // Filter out empty strings from double spaces
-                var words = line.split(' ').filter(function(w) {{ return w.length > 0; }});
-                words.forEach(function(word, wIdx) {{
-                    var span = document.createElement('span');
-                    span.className = 'word';
-                    // Include the trailing space INSIDE the span so it
-                    // animates with the word and doesn't get collapsed.
-                    // Last word in the last line gets no trailing space.
-                    var isLast = (lineIdx === lines.length - 1) && (wIdx === words.length - 1);
-                    span.textContent = isLast ? word : word + ' ';
-                    var delay = Math.min(wordIndex * delayPerWord, maxDelay);
-                    span.style.animationDelay = delay + 'ms';
-                    r.appendChild(span);
-                    wordIndex++;
-                }});
-            }});
-
-            // Auto-scroll: keep the view following the streaming text
-            var scrollContainer = app.querySelector('.sidebar-response');
-            if (scrollContainer) {{
-                var scrollTimer = setInterval(function() {{
-                    scrollContainer.scrollTop = scrollContainer.scrollHeight;
-                }}, 50);
-                // Stop auto-scrolling after all words have appeared
-                setTimeout(function() {{
-                    clearInterval(scrollTimer);
-                }}, maxDelay + 500);
+            var app = document.getElementById('sidebar-app');
+            if (app) {{
+                app.className = 'sidebar--visible';
             }}
         }})();
         "#,
-        q = escaped_query,
-        t = escaped_text,
+        q = query_json,
+        t = text_json,
     );
 
-    win.eval(&js).map_err(|e| e.to_string())?;
-    tracing::info!("sidebar: shown with content via JS eval (query={} chars, text={} chars)", query.len(), text.len());
+    let _ = win.eval(&js);
+    tracing::info!("sidebar: shown with content (query={} chars, text={} chars)", query.len(), text.len());
     Ok(())
 }
 
