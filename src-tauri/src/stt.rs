@@ -1,7 +1,7 @@
 //! Local Speech-to-Text via a local faster-whisper HTTP server.
 //!
 //! Audio is captured by the AudioWorklet (16-bit mono PCM at 16 kHz) and sent
-//! to a LOCAL STT endpoint (default: http://127.0.0.1:18765/transcribe).
+//! to a LOCAL STT endpoint (default: http://127.0.0.1:39217/transcribe).
 //! The audio NEVER leaves the device — it goes to localhost, not the remote
 //! NEXUS server. Only the resulting transcript text is sent to the remote
 //! server.
@@ -11,14 +11,14 @@
 //!
 //! Environment variables:
 //!   - `NEXUS_LOCAL_STT_URL` — override the local STT endpoint (default:
-//!     http://127.0.0.1:18765/transcribe)
+//!     http://127.0.0.1:39217/transcribe)
 
 use tauri::Runtime;
 
 /// Default local STT endpoint. Audio goes here (127.0.0.1), not the remote server.
 /// Use 127.0.0.1 instead of "localhost" — Rust's hyper/tokio tries IPv6 (::1)
 /// first when resolving "localhost", and uvicorn binds to IPv4 only by default.
-const DEFAULT_LOCAL_STT_URL: &str = "http://127.0.0.1:18765/transcribe";
+const DEFAULT_LOCAL_STT_URL: &str = "http://127.0.0.1:39217/transcribe";
 
 fn local_stt_url() -> String {
     std::env::var("NEXUS_LOCAL_STT_URL").unwrap_or_else(|_| DEFAULT_LOCAL_STT_URL.to_string())
@@ -67,7 +67,7 @@ pub async fn transcribe_audio<R: Runtime>(
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("local STT request failed: {e}. Is stt_server.py running on 127.0.0.1:18765?"))?;
+        .map_err(|e| format!("local STT request failed: {e}. Is stt_server.py running on 127.0.0.1:39217?"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();

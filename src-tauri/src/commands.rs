@@ -86,7 +86,7 @@ pub fn get_server_config<R: Runtime>(
     let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
     Ok(ServerConfig {
         server_url: json["serverUrl"].as_str()
-            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("ws://127.0.0.1:49152/ws"))
+            .unwrap_or(option_env!("NEXUS_SERVER_URL").unwrap_or("ws://127.0.0.1:41098/ws"))
             .to_string(),
         user_id: json["userId"].as_str().unwrap_or("").to_string(),
         device_id: json["deviceId"].as_str().unwrap_or("").to_string(),
@@ -487,7 +487,7 @@ pub fn show_sidebar<R: Runtime>(
         let scale = monitor.scale_factor();
         let screen = monitor.size();
         let sidebar_w = 600i32;
-        let sidebar_h = 1200i32;
+        let sidebar_h = 1000i32;
         let phys_w = (sidebar_w as f64 * scale) as i32;
         let phys_h = (sidebar_h as f64 * scale) as i32;
 
@@ -504,35 +504,28 @@ pub fn show_sidebar<R: Runtime>(
     }
 
     // ─── Native OS blur (cross-platform) ───────────────────────────
-    // CSS backdrop-filter doesn't work on Tauri transparent windows
-    // (WebView2/WKWebView can't blur the desktop behind the window).
-    // window-vibrancy applies blur at the OS level so the desktop
-    // wallpaper actually gets blurred behind the sidebar.
+    // Primary acrylic registration happens in lib.rs setup hook (correct
+    // timing). This is a safety re-apply in case the effect was lost
+    // (e.g. window was hidden/shown by the OS). Called AFTER win.show()
+    // so the window has participated in at least one DWM composition pass.
     //
-    // Windows: acrylic = frosted glass with no dark tint
-    // macOS:   vibrancy = native NSVisualEffectView (like Finder sidebar)
-    // Linux:   no native API — CSS backdrop-filter is the fallback
-    #[cfg(target_os = "windows")]
-    {
-        use window_vibrancy::apply_acrylic;
-        // Very light tint (alpha=5) — almost transparent, just enough
-        // to give the blur a surface to work with
-        let _ = apply_acrylic(&win, Some((255, 255, 255, 5)));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-        let _ = apply_vibrancy(
-            &win,
-            NSVisualEffectMaterial::Sidebar,
-            None,
-            Some(20.0), // corner radius
-        );
-    }
+    // Windows: DWM acrylic = blurs what's behind the window (other apps,
+    //          desktop wallpaper). Tint (0,0,0,0) = no color overlay —
+    //          the glass look is provided entirely by the CSS card.
+    // macOS:   Applied in setup hook (NSVisualEffectView persists).
+    // Linux:   No native API — CSS backdrop-filter is the fallback.
 
     win.show().map_err(|e| e.to_string())?;
-    // Don't steal focus from the main window
-    let _ = win.set_focus();
+
+    #[cfg(target_os = "windows")]
+    {
+        use window_vibrancy::apply_blur;
+        // Re-apply after show. White 35% alpha.
+        if let Err(e) = apply_blur(&win, Some((255, 255, 255, 90))) {
+            tracing::warn!("sidebar: re-apply blur failed: {e:?}");
+        }
+    }
+
     Ok(())
 }
 

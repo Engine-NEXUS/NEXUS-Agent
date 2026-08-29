@@ -43,8 +43,8 @@ Client setup page → "Connect Google"
 
 ```bash
 pip install -r requirements.txt
-uvicorn sidecar:app --host 0.0.0.0 --port 8443
-# Production: behind Caddy (TLS) proxying to localhost:8443
+uvicorn sidecar:app --host 0.0.0.0 --port 41098
+# Production: behind Caddy (TLS) proxying to localhost:41098
 ```
 
 ### Environment variables
@@ -66,7 +66,7 @@ uvicorn sidecar:app --host 0.0.0.0 --port 8443
 | `NEXUS_SIDECAR_TOKEN` | (empty = no gate) | optional bearer gate on /ws |
 | `NEXUS_DB_PATH` | `NEXUS_credentials.db` | SQLite database path |
 | `NEXUS_ENCRYPTION_KEY` | (empty = ephemeral) | Fernet key for encrypting API keys at rest |
-| `SIDECAR_HOST` / `SIDECAR_PORT` | `0.0.0.0` / `8443` | bind address |
+| `SIDECAR_HOST` / `SIDECAR_PORT` | `0.0.0.0` / `41098` | bind address |
 
 ## Protocol (client ↔ sidecar)
 

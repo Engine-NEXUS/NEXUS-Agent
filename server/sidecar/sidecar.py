@@ -25,8 +25,8 @@ OAuth endpoints (/oauth/*, /apikeys/*) let the client exchange authorization
 codes for tokens, which are stored per-user and injected into Worker calls.
 
 Run:
-  uvicorn sidecar:app --host 0.0.0.0 --port 8443
-  # Production: behind Caddy (TLS) proxying to localhost:8443
+  uvicorn sidecar:app --host 0.0.0.0 --port 41098
+  # Production: behind Caddy (TLS) proxying to localhost:41098
 """
 
 from __future__ import annotations
@@ -128,8 +128,8 @@ async def register_user(request: Request) -> JSONResponse:
       "user_id": "user_a1b2c3d4...",
       "device_id": "device_f6e5d4c3...",
       "server_config": {
-        "ws_url": "ws://100.71.60.31:8443/ws",
-        "sidecar_url": "http://100.71.60.31:8443",
+        "ws_url": "ws://100.71.60.31:41098/ws",
+        "sidecar_url": "http://100.71.60.31:41098",
         "n8n_url": "http://100.71.60.31:5678"
       },
       "providers": {
@@ -166,11 +166,11 @@ async def register_user(request: Request) -> JSONResponse:
     host = os.getenv("NEXUS_PUBLIC_HOST", "")
     if not host:
         # Fall back to the request's host header
-        host = request.headers.get("host", "localhost:8443")
+        host = request.headers.get("host", "localhost:41098")
         # Strip the port for the hostname, we'll add our own
         host = host.split(":")[0]
 
-    port = os.getenv("SIDECAR_PORT", "8443")
+    port = os.getenv("SIDECAR_PORT", "41098")
     ws_url = f"ws://{host}:{port}/ws"
     sidecar_url = f"http://{host}:{port}"
 
@@ -393,6 +393,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "sidecar:app",
         host=os.getenv("SIDECAR_HOST", "0.0.0.0"),
-        port=int(os.getenv("SIDECAR_PORT", "49152")),
+        port=int(os.getenv("SIDECAR_PORT", "41098")),
         log_level="info",
     )

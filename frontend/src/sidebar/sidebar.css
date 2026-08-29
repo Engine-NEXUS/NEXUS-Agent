@@ -1,15 +1,32 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS Response Sidebar — Right-edge pure transparent blur panel
-   Shows server responses (n8n/Ollama/Hermes) only.
-   Slides in from the right edge.
-   Dismissed via Ctrl+Shift+Space (the same global hotkey).
+   NEXUS Response Sidebar — True Frosted Glass Panel
+   ═══════════════════════════════════════════════════════════════
 
-   Cross-platform blur strategy:
-   - Windows: OS-level acrylic blur via window-vibrancy (apply_acrylic)
-   - macOS:   OS-level vibrancy via NSVisualEffectMaterial::Sidebar
-   - Linux:   CSS backdrop-filter fallback (works if compositor supports it)
-   CSS background is transparent so the OS blur shows through.
-   Text uses mix-blend-mode: difference for automatic contrast adaptation.
+   HOW THE BLUR WORKS (layers bottom→top):
+   ┌──────────────────────────────────────────────┐
+   │  Layer 0: Desktop / other windows            │  (behind window)
+   │  Layer 1: DWM acrylic — blurs Layer 0        │  (OS-level, whole window)
+   │  Layer 2: WebView2 transparent html/body     │  (shows Layer 1 through)
+   │  Layer 3: .sidebar-card rgba(15,20,40,0.12)  │  (12% dark tint = glass colour)
+   │  Layer 4: text with text-shadow              │  (always white, always readable)
+   └──────────────────────────────────────────────┘
+
+   WHY CARD IS 12% NOT 35%:
+   The OS blur IS the visual effect. A heavy CSS overlay covers it up.
+   12% dark-blue tint on top of the pure blur = frosted glass look.
+   35% (previous value) made it look like a solid dark panel.
+
+   CROSS-PLATFORM:
+   - Windows: apply_acrylic(Some((0,0,0,0))) in lib.rs setup hook.
+              Pure blur, no DWM tint. Tint comes from CSS card only.
+   - macOS:   apply_vibrancy(HudWindow) in lib.rs setup hook.
+   - Linux:   No OS blur. CSS backdrop-filter(blur 30px) + rgba(15,20,40,0.55)
+              gives a synthetic frosted glass. Darker here because there's
+              no real blur — the tint provides the visual separation.
+
+   TEXT:
+   - Always #ffffff. No mix-blend-mode (removed: caused white→black on light bgs).
+   - Dual text-shadow: tight dark shadow + soft glow = readable on ANY backdrop.
    ═══════════════════════════════════════════════════════════════ */
 
 @import "../theme/tokens.css";
@@ -31,16 +48,16 @@ html, body, #root {
   user-select: none;
 }
 
-/* ── App container: transparent, slides from right ────────────── */
+/* ── App container ─────────────────────────────────────────────── */
 #sidebar-app {
   width: 100vw;
   height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  justify-content: flex-end;
+  justify-content: flex-start; /* Align glass card to the top of the window */
   background: transparent !important;
-  padding: 0 0 8px 0;
+  padding: 12px 0 12px 0; /* Gaps at top and bottom of screen */
   transform: translateX(100vw);
   opacity: 0;
   overflow: visible;
@@ -49,77 +66,117 @@ html, body, #root {
 #sidebar-app.sidebar--visible {
   transform: translateX(0);
   opacity: 1;
-  transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+  transition:
+    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.25s ease;
 }
 
 #sidebar-app.sidebar--hidden {
   transform: translateX(100vw);
   opacity: 0;
   pointer-events: none;
-  transition: transform 0.4s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.15s ease 0.25s;
+  transition:
+    transform 0.4s cubic-bezier(0.4, 0, 0.7, 1),
+    opacity 0.15s ease 0.25s;
 }
 
-/* ── Card: pure transparent — OS blur shows through ───────────── */
+/* ── Card: glass panel — white frosted glass, full height ──────── */
 .sidebar-card {
   width: 580px;
-  /* Pure transparent — the OS-level acrylic/vibrancy blur shows through.
-     On Linux (no native blur), the CSS backdrop-filter below provides
-     a fallback blur. */
-  background: transparent;
-  /* CSS backdrop-filter: works on Linux compositor + as a subtle
-     enhancement on Win/Mac (the OS blur is the primary effect). */
-  backdrop-filter: blur(30px) saturate(140%);
-  -webkit-backdrop-filter: blur(30px) saturate(140%);
-  /* Very subtle white border for the glass edge */
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 20px;
-  /* Outer depth shadow + inset top highlight */
+  height: calc(100vh - 24px); /* Stretch card to full height minus gaps */
+
+  /* White frosted glass tint. Works with the white DWM blur to create
+     the React Native-like BlurView frosted look. */
+  background: rgba(255, 255, 255, 0.15);
+
+  /* CSS backdrop-filter for extra depth/Linux fallback */
+  backdrop-filter: blur(30px) saturate(180%) brightness(0.95);
+  -webkit-backdrop-filter: blur(30px) saturate(180%) brightness(0.95);
+
+  /* Glass edge */
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.35); /* Top border highlight */
+  border-radius: 24px; /* Blunt/rounded corners */
+
+  /* Outer shadow for depth and separation from desktop */
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 12px 48px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+
   padding: var(--nx-space-4);
   display: flex;
   flex-direction: column;
   gap: var(--nx-space-3);
-  margin-right: 8px;
-  /* Isolation creates a clean stacking context for mix-blend-mode */
+  margin-right: 12px;
   isolation: isolate;
 }
 
-/* ── Query line (what the user asked) ─────────────────────────── */
-.sidebar-query {
-  font-size: var(--nx-text-sm);
-  font-weight: var(--nx-weight-medium);
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  /* Adaptive text: white text + difference blend = auto-contrast.
-     On white backgrounds → text becomes black.
-     On dark backgrounds  → text stays white. */
-  color: white;
-  mix-blend-mode: difference;
+/*
+ * Linux fallback: without OS-level blur, the 12% tint is invisible.
+ * If backdrop-filter is supported (compositor on), slightly darken
+ * the card so it's still distinguishable. This only fires on Linux
+ * because Win/Mac always have DWM/NSVisualEffectView.
+ */
+@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .sidebar-card {
+    background: rgba(15, 20, 40, 0.70);
+  }
 }
 
-/* ── Response area ────────────────────────────────────────────── */
+/* ── Query (what the user asked) ───────────────────────────────── */
+.sidebar-query {
+  font-size: var(--nx-text-sm);
+  font-weight: var(--nx-weight-semibold);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  letter-spacing: 0.01em;
+
+  /* Always white — no mix-blend-mode.
+     Layer 1: 1px tight dark shadow = hard edge contrast on any bg.
+     Layer 2: 0 0 20px soft glow = readable even on blurred white bg. */
+  color: #ffffff;
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.95),
+    0 2px 10px rgba(0, 0, 0, 0.75),
+    0 0 24px rgba(0, 0, 0, 0.50);
+}
+
+/* ── Separator ─────────────────────────────────────────────────── */
+.sidebar-query + .sidebar-response {
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: var(--nx-space-3);
+  margin-top: calc(-1 * var(--nx-space-1));
+}
+
+/* ── Response area ─────────────────────────────────────────────── */
 .sidebar-response {
   flex: 1;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 
 .sidebar-response::-webkit-scrollbar { width: 4px; }
 .sidebar-response::-webkit-scrollbar-track { background: transparent; }
 .sidebar-response::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: rgba(255, 255, 255, 0.18);
   border-radius: 2px;
 }
 
 .sidebar-response-text {
   font-size: var(--nx-text-sm);
-  line-height: 1.6;
-  /* Adaptive text: white + difference = auto black/white based on backdrop */
-  color: white;
-  mix-blend-mode: difference;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-wrap: break-word;
+
+  /* Same always-white + shadow strategy as .sidebar-query */
+  color: #ffffff;
+  text-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.90),
+    0 2px 10px rgba(0, 0, 0, 0.65),
+    0 0 20px rgba(0, 0, 0, 0.40);
+
+  /* mix-blend-mode: difference REMOVED — it inverted white text to black
+     on any light/white desktop background behind the window. */
 }
+

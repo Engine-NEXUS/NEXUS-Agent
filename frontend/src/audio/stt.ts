@@ -2,7 +2,7 @@
  * Local Speech-to-Text interface.
  *
  * Calls the Rust `transcribe_audio` command, which sends raw 16-bit PCM
- * to a LOCAL faster-whisper server (127.0.0.1:18765). Audio never leaves
+ * to a LOCAL faster-whisper server (127.0.0.1:39217). Audio never leaves
  * the device — only the resulting transcript text is sent to the remote
  * NEXUS server.
  */

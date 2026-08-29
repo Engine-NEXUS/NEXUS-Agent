@@ -399,7 +399,7 @@ function BackendTab({ settings, update, connected }: { settings: Settings; updat
           <input
             type="url"
             className="nx-input"
-            placeholder="https://your-server.com:8443"
+            placeholder="https://your-server.com:41098"
             value={settings.serverUrl}
             onChange={(e) => update("serverUrl", e.target.value)}
           />

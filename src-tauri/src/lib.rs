@@ -365,6 +365,41 @@ pub fn run() {
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
 
+            // ─── Sidebar vibrancy — applied at STARTUP in setup hook ──────
+            //
+            // CRITICAL: window-vibrancy MUST be applied here (setup hook),
+            // NOT inside the show_sidebar IPC command. The DWM acrylic/Mica
+            // effect is registered against the window's HWND at creation time.
+            // If applied later (to a hidden then re-shown window), DWM may
+            // silently discard the attribute change because the window hasn't
+            // participated in a composition pass yet.
+            //
+            // The sidebar window is created at startup with visible:false —
+            // the HWND exists immediately, so we can register the effect now.
+            // It will be active the first time the window is shown.
+            #[cfg(target_os = "windows")]
+            if let Some(sidebar) = app.get_webview_window("sidebar") {
+                use window_vibrancy::apply_blur;
+                // Use white color with 35% alpha (90/255) to tell DWM to composition
+                // the blur correctly, avoiding the solid pitch black background bug
+                // that occurs with 0 alpha.
+                if let Err(e) = apply_blur(&sidebar, Some((255, 255, 255, 90))) {
+                    tracing::warn!("sidebar: apply_blur failed: {e:?}");
+                } else {
+                    tracing::info!("sidebar: DWM blur registered on HWND at startup");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(sidebar) = app.get_webview_window("sidebar") {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                let _ = apply_vibrancy(
+                    &sidebar,
+                    NSVisualEffectMaterial::HudWindow,
+                    None,
+                    Some(20.0),
+                );
+            }
+
             // WebView2 permission handler — auto-approves mic/camera for our
             // own app origins so the permission dialog never re-appears.
             mic_permissions::init(app);
@@ -424,7 +459,7 @@ pub fn run() {
             // No sidecar, no server, no WebSocket — fully serverless.
             // The Worker URL is baked into the installer via NEXUS_SERVER_URL.
 
-            // STT server (faster-whisper on port 18765) transcribes audio locally.
+            // STT server (faster-whisper on port 39217) transcribes audio locally.
             // Without it, no commands can be executed — every transcript is empty.
             // Auto-spawn it in a BACKGROUND THREAD — model loading takes 10-20s on CPU
             // and must not block app startup. The first transcription will wait for it.
@@ -454,7 +489,7 @@ pub fn run() {
             // manually enter these — they're system-generated.
             //
             // The server URL is determined at build time:
-            //   - Default: ws://127.0.0.1:49152/ws (local dev / same-machine sidecar)
+            //   - Default: ws://127.0.0.1:41098/ws (local dev / same-machine sidecar)
             //   - Installer override: set NEXUS_SERVER_URL env var before building
             //     the installer to bake in the user's remote server URL.
             let store_path = app.path().app_data_dir().ok();
