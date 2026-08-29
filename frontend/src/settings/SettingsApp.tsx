@@ -250,6 +250,7 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
       provider: "system" as const,
       accent: "Default",
       description: "Default voice",
+      locale: "en-US",
       gender: "male" as const,
       sampleText: "Hello sir, NEXUS is ready to assist you.",
     };

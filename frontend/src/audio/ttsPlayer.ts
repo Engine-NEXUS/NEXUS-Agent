@@ -8,6 +8,7 @@ export interface VoiceOption {
   description: string;
   elevenVoiceId?: string;
   fishModelId?: string;
+  locale: string;
   gender: "male" | "female";
   sampleText: string;
 }
@@ -20,6 +21,7 @@ export const CURATED_VOICES: VoiceOption[] = [
     accent: "British (UK)",
     description: "Crisp, articulate, calm executive assistant.",
     elevenVoiceId: "pNInz6obpgDQGcFmaJgB", // Adam
+    locale: "en-GB",
     gender: "male",
     sampleText: "At your service sir. All systems are operational.",
   },
@@ -30,6 +32,7 @@ export const CURATED_VOICES: VoiceOption[] = [
     accent: "American (US)",
     description: "Warm, natural, intelligent conversationalist.",
     elevenVoiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel
+    locale: "en-US",
     gender: "female",
     sampleText: "Hello! I'm ready to help you with your workflow today.",
   },
@@ -37,9 +40,10 @@ export const CURATED_VOICES: VoiceOption[] = [
     id: "echo",
     name: "Echo",
     provider: "neural",
-    accent: "American (US)",
+    accent: "Australian (AU)",
     description: "Fast, energetic, high-clarity tech companion.",
     elevenVoiceId: "TxGEqnHWrfWFTfGW9XjX", // Josh
+    locale: "en-AU",
     gender: "male",
     sampleText: "Ready to build. What repository are we analyzing?",
   },
@@ -47,39 +51,24 @@ export const CURATED_VOICES: VoiceOption[] = [
     id: "onyx",
     name: "Onyx",
     provider: "neural",
-    accent: "Deep Tech",
+    accent: "Deep Tech (CA)",
     description: "Deep, commanding, grounded baritone.",
     elevenVoiceId: "VR6AewLTigWG4xSOukaG", // Arnold
+    locale: "en-CA",
     gender: "male",
     sampleText: "NEXUS online. Awaiting your commands.",
   },
 ];
 
-let voicesLoaded = false;
 let activeAudio: HTMLAudioElement | null = null;
 
-function ensureVoices(): Promise<void> {
-  return new Promise((resolve) => {
-    if (voicesLoaded || typeof speechSynthesis === "undefined") {
-      voicesLoaded = true;
-      resolve();
-      return;
-    }
-    const voices = speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      voicesLoaded = true;
-      resolve();
-      return;
-    }
-    speechSynthesis.addEventListener(
-      "voiceschanged",
-      () => {
-        voicesLoaded = true;
-        resolve();
-      },
-      { once: true },
-    );
-  });
+async function emitTtsEvent(event: string): Promise<void> {
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(event);
+  } catch {
+    // Ignore
+  }
 }
 
 async function isMeetingActive(): Promise<boolean> {
@@ -88,15 +77,6 @@ async function isMeetingActive(): Promise<boolean> {
     return await invoke<boolean>("meeting_active");
   } catch {
     return false;
-  }
-}
-
-async function emitTtsEvent(event: string): Promise<void> {
-  try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(event);
-  } catch {
-    // Ignore
   }
 }
 
@@ -110,7 +90,51 @@ async function getSavedSettings(): Promise<any> {
 }
 
 /**
- * Play synthesized speech audio from ElevenLabs REST streaming API.
+ * Play audio stream using HTML5 Audio element.
+ */
+function playAudioUrl(url: string, onEnd?: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    stopTts();
+    void emitTtsEvent("tts-started");
+
+    const audio = new Audio();
+    audio.crossOrigin = "anonymous";
+    audio.src = url;
+    activeAudio = audio;
+
+    const cleanup = () => {
+      if (activeAudio === audio) {
+        activeAudio = null;
+      }
+      void emitTtsEvent("tts-ended");
+      onEnd?.();
+      resolve();
+    };
+
+    audio.onended = cleanup;
+    audio.onerror = (e) => {
+      console.warn("Audio playback error on url:", url, e);
+      cleanup();
+    };
+
+    audio.play().catch((err) => {
+      console.warn("Audio play() rejected:", err);
+      cleanup();
+    });
+  });
+}
+
+/**
+ * Stream speech audio from Google TTS endpoint with locale.
+ */
+function playStreamTts(text: string, locale: string, onEnd?: () => void): Promise<void> {
+  const encoded = encodeURIComponent(text);
+  const streamUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${locale}&client=tw-ob&q=${encoded}`;
+  return playAudioUrl(streamUrl, onEnd);
+}
+
+/**
+ * Stream speech from ElevenLabs API.
  */
 async function playElevenLabs(
   text: string,
@@ -142,111 +166,19 @@ async function playElevenLabs(
     );
 
     if (!response.ok) {
-      throw new Error(`ElevenLabs error: ${response.status} ${response.statusText}`);
+      throw new Error(`ElevenLabs error: ${response.status}`);
     }
 
     const blob = await response.blob();
-    const audioUrl = URL.createObjectURL(blob);
-    const audio = new Audio(audioUrl);
-    activeAudio = audio;
-
-    audio.onended = () => {
-      URL.revokeObjectURL(audioUrl);
-      activeAudio = null;
-      void emitTtsEvent("tts-ended");
+    const blobUrl = URL.createObjectURL(blob);
+    return playAudioUrl(blobUrl, () => {
+      URL.revokeObjectURL(blobUrl);
       onEnd?.();
-    };
-
-    audio.onerror = (e) => {
-      console.warn("ElevenLabs audio playback error:", e);
-      URL.revokeObjectURL(audioUrl);
-      activeAudio = null;
-      void emitTtsEvent("tts-ended");
-      onEnd?.();
-    };
-
-    await audio.play();
+    });
   } catch (err) {
-    console.warn("ElevenLabs TTS failed, falling back to Web Speech:", err);
-    void emitTtsEvent("tts-ended");
-    return playWebSpeech(text, "jarvis", onEnd);
+    console.warn("ElevenLabs failed, falling back to neural stream:", err);
+    return playStreamTts(text, "en-GB", onEnd);
   }
-}
-
-/**
- * Play synthesized speech using Web Speech API with the best neural voice match.
- */
-async function playWebSpeech(
-  text: string,
-  voiceId: string,
-  onEnd?: () => void,
-  rate = 1.0,
-): Promise<void> {
-  if (typeof speechSynthesis === "undefined") {
-    onEnd?.();
-    return;
-  }
-
-  await ensureVoices();
-  const utterance = new SpeechSynthesisUtterance(text);
-  const voices = speechSynthesis.getVoices();
-
-  // Find best matching voice according to selected persona
-  let selectedVoice: SpeechSynthesisVoice | undefined;
-
-  if (voiceId === "jarvis") {
-    selectedVoice =
-      voices.find((v) => v.lang === "en-GB" && (v.name.includes("Natural") || v.name.includes("Ryan") || v.name.includes("George"))) ||
-      voices.find((v) => v.lang.startsWith("en-GB")) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    utterance.pitch = 0.95;
-    utterance.rate = 1.0 * rate;
-  } else if (voiceId === "nova") {
-    selectedVoice =
-      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Jenny") || v.name.includes("Samantha") || v.name.includes("Natural"))) ||
-      voices.find((v) => v.lang.startsWith("en-US")) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    utterance.pitch = 1.05;
-    utterance.rate = 1.02 * rate;
-  } else if (voiceId === "echo") {
-    selectedVoice =
-      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Guy") || v.name.includes("Josh"))) ||
-      voices.find((v) => v.lang.startsWith("en-US")) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    utterance.pitch = 1.0;
-    utterance.rate = 1.1 * rate;
-  } else if (voiceId === "onyx") {
-    selectedVoice =
-      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Christopher") || v.name.includes("Daniel") || v.name.includes("David"))) ||
-      voices.find((v) => v.lang.startsWith("en"));
-    utterance.pitch = 0.85;
-    utterance.rate = 0.95 * rate;
-  } else {
-    selectedVoice = voices.find((v) => v.name === voiceId) || voices.find((v) => v.lang.startsWith("en"));
-    utterance.pitch = 1.0;
-    utterance.rate = rate;
-  }
-
-  if (selectedVoice) {
-    utterance.voice = selectedVoice;
-  }
-
-  utterance.volume = 1.0;
-
-  void emitTtsEvent("tts-started");
-
-  utterance.onend = () => {
-    void emitTtsEvent("tts-ended");
-    onEnd?.();
-  };
-
-  utterance.onerror = (e) => {
-    console.warn("Web Speech TTS error:", e);
-    void emitTtsEvent("tts-ended");
-    onEnd?.();
-  };
-
-  speechSynthesis.speak(utterance);
 }
 
 /**
@@ -259,14 +191,11 @@ export async function previewVoice(
 ): Promise<void> {
   stopTts();
 
-  if (voice.provider === "elevenlabs" && (customApiKey || voice.elevenVoiceId)) {
-    const key = customApiKey;
-    if (key && voice.elevenVoiceId) {
-      return playElevenLabs(voice.sampleText, voice.elevenVoiceId, key, onEnd);
-    }
+  if (customApiKey && voice.elevenVoiceId) {
+    return playElevenLabs(voice.sampleText, voice.elevenVoiceId, customApiKey, onEnd);
   }
 
-  return playWebSpeech(voice.sampleText, voice.id, onEnd);
+  return playStreamTts(voice.sampleText, voice.locale || "en-US", onEnd);
 }
 
 /**
@@ -282,16 +211,15 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
 
   const settings = await getSavedSettings();
   const voiceId = settings?.ttsVoice || "jarvis";
-  const rate = settings?.speechRate || 1.0;
   const elevenKey = settings?.elevenlabsApiKey;
 
-  const curated = CURATED_VOICES.find((v) => v.id === voiceId);
+  const curated = CURATED_VOICES.find((v) => v.id === voiceId) || CURATED_VOICES[0];
 
   if (elevenKey && curated?.elevenVoiceId) {
     return playElevenLabs(text, curated.elevenVoiceId, elevenKey, onEnd);
   }
 
-  return playWebSpeech(text, voiceId, onEnd, rate);
+  return playStreamTts(text, curated?.locale || "en-US", onEnd);
 }
 
 /**
@@ -299,17 +227,21 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
  */
 export function stopTts(): void {
   if (activeAudio) {
-    activeAudio.pause();
-    activeAudio.currentTime = 0;
+    try {
+      activeAudio.pause();
+      activeAudio.currentTime = 0;
+    } catch {}
     activeAudio = null;
   }
   if (typeof speechSynthesis !== "undefined") {
-    speechSynthesis.cancel();
+    try {
+      speechSynthesis.cancel();
+    } catch {}
   }
   void emitTtsEvent("tts-ended");
   useAssistant.getState().setSpeakSeq(null);
 }
 
 export function ttsAvailable(): boolean {
-  return typeof speechSynthesis !== "undefined";
+  return true;
 }
