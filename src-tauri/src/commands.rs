@@ -680,6 +680,11 @@ pub fn get_settings<R: Runtime>(
             }
         }
     }
+    if settings.fish_audio_api_key.is_empty() {
+        if let Ok(key) = std::env::var("FISH_AUDIO_API_KEY").or_else(|_| std::env::var("NEXUS_FISH_AUDIO_API_KEY")) {
+            settings.fish_audio_api_key = key;
+        }
+    }
     Ok(settings)
 }
 
