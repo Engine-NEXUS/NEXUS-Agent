@@ -120,14 +120,19 @@ pub fn run() {
                 meeting_detect::run_detection_loop(state_for_loop).await;
             });
 
-            // Sleep/wake greeting via time-jump detection.
+            // Sleep/wake detection via time-jump monitoring.
             // thread::sleep uses the monotonic clock (stops while the system is
             // asleep); SystemTime is the wall clock (jumps forward across sleep).
             // A gap much larger than the sleep interval means the machine just
-            // resumed from sleep/hibernate → greet (unless meeting/paused).
+            // resumed from sleep/hibernate.
+            //
+            // Note: This no longer triggers a greeting. Greeting is now
+            // "first interaction of the day" — handled when the user wakes
+            // NEXUS via `should_greet_today` / `mark_greeted_today` IPC.
+            // The sleep-wake watcher remains for future use (e.g. re-init
+            // audio device after sleep, refresh app registry, etc.).
             {
-                let handle = app.handle().clone();
-                let state = meeting_state.clone();
+                let _state = meeting_state.clone();
                 std::thread::Builder::new()
                     .name("sleep-wake-watch".into())
                     .spawn(move || loop {
@@ -137,12 +142,7 @@ pub fn run() {
                             .duration_since(before)
                             .unwrap_or_default();
                         if gap > std::time::Duration::from_secs(60) {
-                            if state.is_meeting_active() || state.is_paused() {
-                                tracing::info!("wake greeting skipped (meeting active or paused)");
-                                continue;
-                            }
-                            tracing::info!("system resumed from sleep (gap {gap:?}) — greeting");
-                            let _ = handle.emit("app:greeting", ());
+                            tracing::info!("system resumed from sleep (gap {gap:?})");
                         }
                     })
                     .ok();
@@ -297,7 +297,8 @@ pub fn run() {
             commands::is_nexus_paused,
             commands::meeting_status,
             commands::set_meeting_detection,
-            commands::frontend_ready,
+            commands::should_greet_today,
+            commands::mark_greeted_today,
             stt::transcribe_audio,
             stt::stt_status,
             command_executor::execute_command,
