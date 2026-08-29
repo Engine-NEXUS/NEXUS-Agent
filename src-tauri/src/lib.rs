@@ -375,12 +375,14 @@ pub fn run() {
             app.manage(tts_state);
             tauri::async_runtime::spawn(async move {
                 tracing::info!("tts: initializing Kokoro engine in background...");
+                let start_time = std::time::Instant::now();
 
                 // Set espeak-ng data path for kokoro-micro's espeak-rs dependency.
                 // espeak-rs bakes the build-time OUT_DIR path into the binary; on a
                 // different machine that path doesn't exist. We override it via env var
                 // to point at the bundled espeak-ng-data in the resources directory.
                 // Must be set BEFORE the first text_to_phonemes call (lazy init).
+                let mut custom_model_path: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
                 if let Ok(exe) = std::env::current_exe() {
                     if let Some(exe_dir) = exe.parent() {
                         let espeak_parent = exe_dir.join("resources");
@@ -388,13 +390,30 @@ pub fn run() {
                             std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
                             tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
                         }
+
+                        let res_model = exe_dir.join("resources").join("kokoro").join("0.onnx");
+                        let res_voices = exe_dir.join("resources").join("kokoro").join("0.bin");
+                        if res_model.exists() && res_voices.exists() {
+                            custom_model_path = Some((res_model, res_voices));
+                        }
                     }
                 }
 
-                match kokoro_micro::TtsEngine::new().await {
+                let engine_result = match custom_model_path {
+                    Some((m, v)) => {
+                        tracing::info!("tts: loading Kokoro models from resources: {}", m.display());
+                        kokoro_micro::TtsEngine::with_paths(
+                            m.to_str().unwrap_or("0.onnx"),
+                            v.to_str().unwrap_or("0.bin"),
+                        ).await
+                    }
+                    None => kokoro_micro::TtsEngine::new().await,
+                };
+
+                match engine_result {
                     Ok(engine) => {
                         *tts_engine_arc.lock().await = Some(engine);
-                        tracing::info!("tts: Kokoro engine ready.");
+                        tracing::info!("tts: Kokoro engine ready in {:.2}s.", start_time.elapsed().as_secs_f32());
                     }
                     Err(e) => tracing::error!("tts: failed to init Kokoro: {}", e),
                 }

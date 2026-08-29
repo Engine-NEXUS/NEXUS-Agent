@@ -71,16 +71,16 @@ async function getSavedSettings(): Promise<any> {
   }
 }
 
-export async function playKokoro(text: string, voiceId: string, onEnd?: () => void): Promise<void> {
+export async function playKokoro(text: string, voiceId: string, speed?: number, onEnd?: () => void): Promise<void> {
   void emitTtsEvent("tts-started");
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     // speak_text handles its own thread for rodio playback
-    await invoke("speak_text", { text, voice: voiceId });
+    await invoke("speak_text", { text, voice: voiceId, speed: speed ?? 1.15 });
   } catch (err) {
     console.error("[TTS] Kokoro failed, falling back to Web Speech:", err);
     // Fallback to Web Speech API if Kokoro/rodio fails
-    await speakWebSpeech(text);
+    await speakWebSpeech(text, speed ?? 1.15);
   } finally {
     void emitTtsEvent("tts-ended");
     onEnd?.();
@@ -88,7 +88,7 @@ export async function playKokoro(text: string, voiceId: string, onEnd?: () => vo
 }
 
 /** Web Speech API fallback — uses the browser's built-in speech synthesis. */
-async function speakWebSpeech(text: string): Promise<void> {
+async function speakWebSpeech(text: string, speed: number = 1.15): Promise<void> {
   return new Promise((resolve) => {
     if (!("speechSynthesis" in window)) {
       console.warn("[TTS] Web Speech API not available");
@@ -97,7 +97,7 @@ async function speakWebSpeech(text: string): Promise<void> {
     }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.0;
+    utterance.rate = speed;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
     // Try to use a male voice for "sir" persona
@@ -115,10 +115,11 @@ export async function previewVoice(
   voice: VoiceOption,
   _customApiKey?: string,
   onEnd?: () => void,
+  speed?: number,
 ): Promise<void> {
   stopTts();
   if (voice.provider === "kokoro") {
-    return playKokoro(voice.sampleText, voice.id, onEnd);
+    return playKokoro(voice.sampleText, voice.id, speed ?? 1.15, onEnd);
   }
 }
 
@@ -132,8 +133,9 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
 
   const settings = await getSavedSettings();
   const voiceId = settings?.ttsVoice || "af_sky";
+  const speed = settings?.speechRate ?? 1.15;
   
-  return playKokoro(text, voiceId, onEnd);
+  return playKokoro(text, voiceId, speed, onEnd);
 }
 
 export function stopTts(): void {

@@ -107,13 +107,9 @@ fn is_stt_responsive() -> bool {
 ///
 /// Search order:
 /// 1. `python`, `python3`, `py` on PATH (fast, works if PATH is updated)
-/// 2. Windows registry: HKCU/HKLM PythonCore\3.12\InstallPath, 3.11, 3.10
-/// 3. Common per-user install: %LOCALAPPDATA%\Programs\Python\Python3XX\python.exe
-///
-/// This is needed because the NSIS installer installs Python with
-/// PrependPath=1, but the PATH update doesn't reach processes spawned
-/// from the installer process (the app is launched immediately after).
-fn find_python() -> Option<String> {
+/// 2. Windows registry: HKCU/HKLM PythonCore\3.13, 3.12, 3.11, 3.10
+/// 3. Common per-user and system install locations
+pub fn find_python() -> Option<String> {
     // 1. Try PATH-based commands — verify each actually works
     for cmd in &["python", "python3", "py"] {
         if let Ok(output) = std::process::Command::new(cmd).arg("--version").output() {
@@ -145,19 +141,38 @@ fn find_python() -> Option<String> {
         }
     }
 
-    // 3. Check common per-user install location
+    // 3. Check common per-user and system install locations
     #[cfg(windows)]
     {
+        let mut candidates = Vec::new();
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             for ver in &["Python313", "Python312", "Python311", "Python310"] {
-                let exe = std::path::Path::new(&local_appdata)
-                    .join("Programs")
-                    .join("Python")
-                    .join(ver)
-                    .join("python.exe");
-                if exe.exists() {
-                    tracing::info!("lazy_stt: found Python at {}", exe.display());
-                    return Some(exe.to_string_lossy().to_string());
+                candidates.push(std::path::Path::new(&local_appdata).join("Programs").join("Python").join(ver).join("python.exe"));
+            }
+        }
+        if let Ok(prog_files) = std::env::var("ProgramFiles") {
+            for ver in &["Python313", "Python312", "Python311", "Python310"] {
+                candidates.push(std::path::Path::new(&prog_files).join("Python").join(ver).join("python.exe"));
+            }
+        }
+        for ver in &["Python313", "Python312", "Python311", "Python310"] {
+            candidates.push(std::path::PathBuf::from(format!(r"C:\{}\python.exe", ver)));
+        }
+
+        for path in candidates {
+            if path.exists() {
+                if let Ok(output) = std::process::Command::new(&path).arg("--version").output() {
+                    if output.status.success() {
+                        tracing::info!("lazy_stt: found Python at {}", path.display());
+                        return Some(path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
                 }
             }
         }
@@ -185,26 +200,23 @@ pub fn ensure_stt_running() {
     let script = match stt_script_path() {
         Some(p) => p,
         None => {
-            tracing::warn!("lazy_stt: stt_server.py not found ΓÇö skipping (external server may be used)");
+            tracing::warn!("lazy_stt: stt_server.py not found — skipping (external server may be used)");
             return;
         }
     };
 
     tracing::info!("lazy_stt: starting STT server ({})", script.display());
 
-    // Find a working Python interpreter.
-    // On Windows, the NSIS installer installs Python 3.12 with PrependPath=1,
-    // but the PATH update doesn't propagate to processes spawned from the
-    // installer (the app is launched right after Python installation).
-    // So we also check the registry and common install locations.
-    let python_path = find_python();
-    let python_cmd = match python_path {
-        Some(p) => p,
+    let python_cmd = match find_python() {
+        Some(cmd) => cmd,
         None => {
             tracing::error!(
                 "lazy_stt: no Python interpreter found. Install Python 3.12+ and run: \
                  pip install faster-whisper fastapi uvicorn python-multipart"
             );
+            return;
+        }
+    };
             return;
         }
     };

@@ -53,7 +53,7 @@ const DEFAULT_SETTINGS: Settings = {
   userId: "local-user",
   deviceId: "local-device",
   ttsVoice: "af_sky",
-  speechRate: 1.0,
+  speechRate: 1.15,
   ttsProvider: "kokoro",
 };
 
@@ -253,7 +253,7 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
     setPlayingVoice(voiceId);
     await previewVoice(voice, undefined, () => {
       setPlayingVoice(null);
-    });
+    }, settings.speechRate);
   };
 
   return (

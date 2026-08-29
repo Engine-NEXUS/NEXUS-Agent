@@ -161,11 +161,6 @@ pub fn ensure_nlu_running() {
 
     tracing::info!("[lazy_nlu] starting NLU server: {:?}", script);
 
-    // Find a working Python interpreter.
-    // On Windows, the NSIS installer installs Python 3.12 with PrependPath=1,
-    // but the PATH update doesn't propagate to processes spawned from the
-    // installer (the app is launched right after Python installation).
-    // So we also check the registry and common install locations.
     let python_cmd = match find_python() {
         Some(p) => p,
         None => {
@@ -173,6 +168,9 @@ pub fn ensure_nlu_running() {
                 "[lazy_nlu] no Python interpreter found. Install Python 3.12+ and run: \
                  pip install numpy onnxruntime fastapi uvicorn pydantic transformers"
             );
+            return;
+        }
+    };
             return;
         }
     };

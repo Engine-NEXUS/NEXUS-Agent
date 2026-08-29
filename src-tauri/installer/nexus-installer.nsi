@@ -664,7 +664,7 @@ Var PythonExe
 Function InstallPythonAndDeps
   StrCpy $PythonExe ""
 
-  ; Check if python.exe is already on PATH via 'where' command.
+  ; 1. Check if python.exe is already on PATH via 'where' command.
   ; NOTE: 'where python.exe' on Windows 10/11 can return the Windows Store
   ; stub at %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe — that's NOT a
   ; real Python, it just opens the Store. We filter it out.
@@ -680,7 +680,7 @@ Function InstallPythonAndDeps
     ${EndIf}
   ${EndIf}
 
-  ; Check common install locations via registry
+  ; 2. Check common install locations via registry
   ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
   ${If} $0 != ""
     DetailPrint "Python 3.12 found at: $0"
@@ -693,6 +693,12 @@ Function InstallPythonAndDeps
     StrCpy $PythonExe "$0python.exe"
     Goto install_pip_deps
   ${EndIf}
+  ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.13\InstallPath" ""
+  ${If} $0 != ""
+    DetailPrint "Python 3.13 found at: $0"
+    StrCpy $PythonExe "$0python.exe"
+    Goto install_pip_deps
+  ${EndIf}
   ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.11\InstallPath" ""
   ${If} $0 != ""
     DetailPrint "Python 3.11 found at: $0"
@@ -700,18 +706,41 @@ Function InstallPythonAndDeps
     Goto install_pip_deps
   ${EndIf}
 
-  ; Download Python 3.12 installer
+  ; 3. Check common file paths
+  ${If} ${FileExists} "$LOCALAPPDATA\Programs\Python\Python312\python.exe"
+    DetailPrint "Python 3.12 found at: $LOCALAPPDATA\Programs\Python\Python312\python.exe"
+    StrCpy $PythonExe "$LOCALAPPDATA\Programs\Python\Python312\python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+  ${If} ${FileExists} "$LOCALAPPDATA\Programs\Python\Python313\python.exe"
+    DetailPrint "Python 3.13 found at: $LOCALAPPDATA\Programs\Python\Python313\python.exe"
+    StrCpy $PythonExe "$LOCALAPPDATA\Programs\Python\Python313\python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+  ${If} ${FileExists} "$LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    DetailPrint "Python 3.11 found at: $LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    StrCpy $PythonExe "$LOCALAPPDATA\Programs\Python\Python311\python.exe"
+    Goto install_pip_deps
+  ${EndIf}
+
+  ; 4. Download Python 3.12 installer via curl or PowerShell
   DetailPrint "Downloading Python 3.12 installer..."
   Delete "$TEMP\python-3.12-installer.exe"
-  NSISdl::download "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe" "$TEMP\python-3.12-installer.exe"
+  nsExec::ExecToLog 'curl.exe -L -o "$TEMP\python-3.12-installer.exe" "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"'
   Pop $0
-  ${If} $0 == "success"
+  ${If} $0 != 0
+    ; Fallback to powershell if curl failed
+    nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile(\"https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe\", \"$TEMP\python-3.12-installer.exe\")"'
+    Pop $0
+  ${EndIf}
+
+  ${If} ${FileExists} "$TEMP\python-3.12-installer.exe"
     DetailPrint "Python installer downloaded, installing silently..."
     ; Install Python silently: InstallAllUsers=0 (per-user), PrependPath=1, Quiet=1
     ExecWait '"$TEMP\python-3.12-installer.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1' $1
+    Delete "$TEMP\python-3.12-installer.exe"
     ${If} $1 == 0
       DetailPrint "Python 3.12 installed successfully"
-      Delete "$TEMP\python-3.12-installer.exe"
       ; Don't rely on PATH (the installer process env won't have the update).
       ; Resolve python.exe from the registry instead.
       ReadRegStr $0 HKCU "SOFTWARE\Python\PythonCore\3.12\InstallPath" ""
@@ -731,7 +760,7 @@ Function InstallPythonAndDeps
             DetailPrint "Python 3.12 resolved from LOCALAPPDATA: $PythonExe"
           ${Else}
             StrCpy $PythonExe "python"
-            DetailPrint "Python 3.12 path not found in registry or LOCALAPPDATA — using 'python' (may fail)"
+            DetailPrint "Python 3.12 path not found in registry or LOCALAPPDATA — using 'python'"
           ${EndIf}
         ${EndIf}
       ${EndIf}
@@ -753,7 +782,10 @@ Function InstallPythonAndDeps
   ${EndIf}
 
   ; Install pip packages for STT and NLU servers
-  DetailPrint "Installing Python packages for STT/NLU..."
+  DetailPrint "Installing Python packages for STT/NLU using: $PythonExe..."
+
+  ; Upgrade pip first to ensure wheel installation succeeds
+  ExecWait '"$PythonExe" -m pip install --upgrade pip --quiet' $1
 
   ; Install STT dependencies
   DetailPrint "  Installing faster-whisper, fastapi, uvicorn, python-multipart..."
@@ -774,6 +806,48 @@ Function InstallPythonAndDeps
   ${EndIf}
 
   DetailPrint "Python setup complete"
+FunctionEnd
+
+; ─── NEXUS: Pre-cache Kokoro TTS voice model files ────────────────────────
+Function InstallKokoroModel
+  ${If} ${FileExists} "$PROFILE\.cache\k\0.onnx"
+  ${AndIf} ${FileExists} "$PROFILE\.cache\k\0.bin"
+    DetailPrint "Kokoro TTS models already cached in $PROFILE\.cache\k"
+    Return
+  ${EndIf}
+
+  DetailPrint "Setting up Kokoro TTS voice model..."
+  CreateDirectory "$PROFILE\.cache\k"
+
+  ${IfNot} ${FileExists} "$PROFILE\.cache\k\0.bin"
+    DetailPrint "Downloading Kokoro voice embeddings (27 MB)..."
+    nsExec::ExecToLog 'curl.exe -L -s -o "$PROFILE\.cache\k\0.bin" "https://github.com/8b-is/kokoro-tiny/raw/main/models/0.bin"'
+    Pop $0
+    ${If} $0 != 0
+      nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile(\"https://github.com/8b-is/kokoro-tiny/raw/main/models/0.bin\", \"$PROFILE\.cache\k\0.bin\")"'
+      Pop $0
+    ${EndIf}
+    ${If} ${FileExists} "$PROFILE\.cache\k\0.bin"
+      DetailPrint "Kokoro voice embeddings downloaded successfully"
+    ${Else}
+      DetailPrint "Kokoro voices will download automatically on first launch"
+    ${EndIf}
+  ${EndIf}
+
+  ${IfNot} ${FileExists} "$PROFILE\.cache\k\0.onnx"
+    DetailPrint "Downloading Kokoro ONNX model (310 MB)..."
+    nsExec::ExecToLog 'curl.exe -L -s -o "$PROFILE\.cache\k\0.onnx" "https://github.com/8b-is/kokoro-tiny/raw/main/models/0.onnx"'
+    Pop $0
+    ${If} $0 != 0
+      nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile(\"https://github.com/8b-is/kokoro-tiny/raw/main/models/0.onnx\", \"$PROFILE\.cache\k\0.onnx\")"'
+      Pop $0
+    ${EndIf}
+    ${If} ${FileExists} "$PROFILE\.cache\k\0.onnx"
+      DetailPrint "Kokoro ONNX model downloaded successfully"
+    ${Else}
+      DetailPrint "Kokoro model will download automatically on first launch"
+    ${EndIf}
+  ${EndIf}
 FunctionEnd
 
 Section Install
@@ -805,6 +879,9 @@ Section Install
   ; Checks if Python is available; if not, downloads and installs Python 3.12
   ; silently, then installs faster-whisper and NLU dependencies.
   Call InstallPythonAndDeps
+
+  ; ─── NEXUS: Pre-cache Kokoro TTS voice model ────────────────────────────
+  Call InstallKokoroModel
 
   ; Create file associations
   {{#each file_associations as |association| ~}}

@@ -343,7 +343,7 @@ async function getValidGithubToken(env: Env, userId: string): Promise<string | n
       await env.DB.prepare(
         "UPDATE oauth_tokens SET access_token = ?, refresh_token = ?, expires_at = ? WHERE user_id = ? AND provider = 'github'"
       ).bind(refreshed.access_token, refreshed.refresh_token, newExpiresAt, userId).run();
-      tracing.log(`GitHub token refreshed for user ${userId}`);
+      console.log(`GitHub token refreshed for user ${userId}`);
       return refreshed.access_token;
     } catch (err) {
       // Refresh failed — return old token (might still work briefly)
@@ -1573,43 +1573,117 @@ async function handleAuthUrl(
   env: Env,
   json: (d: unknown, s?: number) => Response,
 ): Promise<Response> {
-  const provider = url.searchParams.get("provider") || "";
+  const provider = (url.searchParams.get("provider") || "").toLowerCase();
   const userId = url.searchParams.get("user_id") || "";
   const codeChallenge = url.searchParams.get("code_challenge") || "";
+  const workerOrigin = url.origin;
+  const callbackUrl = `${workerOrigin}/oauth/callback`;
+
+  // State format: provider:userId
+  const state = `${provider}:${userId}`;
 
   if (provider === "google") {
     if (!env.GOOGLE_CLIENT_ID) return json({ error: "Google OAuth not configured" }, 500);
     const authUrl = (
       `https://accounts.google.com/o/oauth2/v2/auth`
-      + `?client_id=${env.GOOGLE_CLIENT_ID}`
-      + `&redirect_uri=${OAUTH_REDIRECT_URI}`
+      + `?client_id=${encodeURIComponent(env.GOOGLE_CLIENT_ID)}`
+      + `&redirect_uri=${encodeURIComponent(callbackUrl)}`
       + `&response_type=code`
       + `&scope=${encodeURIComponent(GOOGLE_SCOPES)}`
-      + `&code_challenge=${codeChallenge}`
-      + `&code_challenge_method=S256`
-      + `&state=${userId}`
+      + (codeChallenge ? `&code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=S256` : "")
+      + `&state=${encodeURIComponent(state)}`
       + `&access_type=offline`
       + `&prompt=consent`
     );
-    return json({ url: authUrl, redirect_uri: OAUTH_REDIRECT_URI });
+    return json({ url: authUrl, redirect_uri: callbackUrl });
   }
 
   if (provider === "github") {
     if (!env.GITHUB_CLIENT_ID) return json({ error: "GitHub OAuth not configured" }, 500);
     const authUrl = (
       `https://github.com/login/oauth/authorize`
-      + `?client_id=${env.GITHUB_CLIENT_ID}`
-      + `&redirect_uri=${OAUTH_REDIRECT_URI}`
+      + `?client_id=${encodeURIComponent(env.GITHUB_CLIENT_ID)}`
+      + `&redirect_uri=${encodeURIComponent(callbackUrl)}`
       + `&scope=${encodeURIComponent(GITHUB_SCOPES)}`
-      + `&state=${userId}`
+      + `&state=${encodeURIComponent(state)}`
     );
-    return json({ url: authUrl, redirect_uri: OAUTH_REDIRECT_URI });
+    return json({ url: authUrl, redirect_uri: callbackUrl });
   }
 
   return json({ error: `unsupported provider: ${provider}` }, 400);
 }
 
-// ---- OAuth browser callback handler (for testing/manual flow) ----
+function renderOAuthHtml(
+  provider: string,
+  success: boolean,
+  errorMsg: string,
+  userId: string,
+  accountId = "",
+): string {
+  const providerDisplay = provider.toLowerCase() === "google" ? "Google" : provider.toLowerCase() === "github" ? "GitHub" : provider;
+  const deepLink = `nexus://oauth/callback?provider=${encodeURIComponent(provider.toLowerCase())}&user_id=${encodeURIComponent(userId)}&status=${success ? "success" : "error"}`;
+
+  if (!success) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXUS - Connection Failed</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #1e293b; border: 1px solid #ef4444; border-radius: 16px; padding: 40px; text-align: center; max-width: 440px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    .icon { width: 64px; height: 64px; background: rgba(239,68,68,0.2); color: #ef4444; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 20px; }
+    h1 { font-size: 20px; margin: 0 0 10px; font-weight: 600; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.5; margin: 0 0 24px; word-break: break-word; }
+    .btn { display: inline-block; background: #3b82f6; color: white; padding: 10px 24px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✕</div>
+    <h1>${providerDisplay} Connection Failed</h1>
+    <p>${errorMsg || "Unable to complete authorization."}</p>
+    <a href="${deepLink}" class="btn">Return to NEXUS</a>
+  </div>
+</body>
+</html>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEXUS - ${providerDisplay} Connected</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 40px; text-align: center; max-width: 440px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    .icon { width: 64px; height: 64px; background: rgba(34,197,94,0.2); color: #22c55e; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 20px; }
+    h1 { font-size: 22px; margin: 0 0 10px; font-weight: 600; }
+    p { color: #94a3b8; font-size: 14px; line-height: 1.5; margin: 0 0 24px; }
+    .account { color: #60a5fa; font-weight: 600; }
+    .btn { display: inline-block; background: #3b82f6; color: white; padding: 10px 24px; border-radius: 8px; text-decoration: none; font-size: 14px; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">✓</div>
+    <h1>${providerDisplay} Connected!</h1>
+    <p>Your ${providerDisplay} account ${accountId ? `(<span class="account">${accountId}</span>)` : ""} is now connected to NEXUS. You can close this tab and return to the assistant.</p>
+    <a href="${deepLink}" class="btn">Return to NEXUS</a>
+  </div>
+  <script>
+    try {
+      window.location.href = "${deepLink}";
+    } catch(e) {}
+    setTimeout(() => { try { window.close(); } catch(e) {} }, 3000);
+  </script>
+</body>
+</html>`;
+}
+
+// ---- OAuth browser callback handler ----
 
 async function handleOAuthBrowserCallback(
   url: URL,
@@ -1617,77 +1691,140 @@ async function handleOAuthBrowserCallback(
   json: (d: unknown, s?: number) => Response,
 ): Promise<Response> {
   const code = url.searchParams.get("code") || "";
-  const state = url.searchParams.get("state") || "test_user";
+  const state = url.searchParams.get("state") || "";
   const error = url.searchParams.get("error");
+  const workerOrigin = url.origin;
+  const callbackUrl = `${workerOrigin}/oauth/callback`;
+
+  // Parse state: "provider:userId" or legacy "userId"
+  let provider = "";
+  let userId = state;
+  if (state.includes(":")) {
+    const parts = state.split(":");
+    provider = parts[0].toLowerCase();
+    userId = parts.slice(1).join(":");
+  } else {
+    provider = (url.searchParams.get("scope")?.includes("google") || url.searchParams.get("scope")?.includes("calendar")) ? "google" : "github";
+  }
 
   if (error) {
-    return new Response(`<html><body><h2>OAuth Error</h2><p>${error}</p></body></html>`, {
-      headers: { "Content-Type": "text/html" },
+    return new Response(renderOAuthHtml(provider || "Service", false, `Authorization error: ${error}`, userId), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
 
   if (!code) {
-    return new Response("<html><body><h2>Missing code</h2></body></html>", {
-      headers: { "Content-Type": "text/html" },
+    return new Response(renderOAuthHtml(provider || "Service", false, "Missing authorization code from provider.", userId), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
 
-  // Exchange the code for tokens using the GitHub OAuth app
-  // Note: redirect_uri must match what was used in the auth URL
   try {
-    const resp = await fetch(GITHUB_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({
-        client_id: env.GITHUB_CLIENT_ID,
-        client_secret: env.GITHUB_CLIENT_SECRET,
-        code,
-        redirect_uri: "https://nexus-worker.chitkullakshya.workers.dev/oauth/callback",
-      }),
-    });
+    let accessToken = "";
+    let refreshToken: string | null = null;
+    let expiresIn = 0;
+    let accountId = userId;
 
-    if (!resp.ok) {
-      return new Response(`<html><body><h2>Exchange failed</h2><p>${resp.status}</p></body></html>`, {
-        headers: { "Content-Type": "text/html" },
+    if (provider === "google") {
+      const resp = await fetch(GOOGLE_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: env.GOOGLE_CLIENT_ID,
+          client_secret: env.GOOGLE_CLIENT_SECRET,
+          code,
+          redirect_uri: callbackUrl,
+          grant_type: "authorization_code",
+        }),
       });
-    }
 
-    const tokens = await resp.json() as any;
-    if (!tokens.access_token) {
-      return new Response(`<html><body><h2>No token</h2><p>${JSON.stringify(tokens)}</p></body></html>`, {
-        headers: { "Content-Type": "text/html" },
-      });
-    }
-
-    // Get GitHub username
-    let accountId = state;
-    try {
-      const ghResp = await fetch("https://api.github.com/user", {
-        headers: { "Authorization": `Bearer ${tokens.access_token}` },
-      });
-      if (ghResp.ok) {
-        const ghUser = await ghResp.json() as any;
-        accountId = ghUser.login || state;
+      if (!resp.ok) {
+        const errText = await resp.text();
+        return new Response(renderOAuthHtml("Google", false, `Google token exchange failed: ${resp.status} ${errText}`, userId), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
       }
-    } catch { /* ignore */ }
 
-    // Store in D1
+      const tokens = await resp.json() as any;
+      accessToken = tokens.access_token;
+      refreshToken = tokens.refresh_token || null;
+      expiresIn = tokens.expires_in || 3600;
+
+      // Fetch Google email
+      try {
+        const userInfoResp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: { "Authorization": `Bearer ${accessToken}` },
+        });
+        if (userInfoResp.ok) {
+          const uInfo = await userInfoResp.json() as any;
+          accountId = uInfo.email || userId;
+        }
+      } catch { /* ignore */ }
+
+    } else if (provider === "github") {
+      const resp = await fetch(GITHUB_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          client_id: env.GITHUB_CLIENT_ID,
+          client_secret: env.GITHUB_CLIENT_SECRET,
+          code,
+          redirect_uri: callbackUrl,
+        }),
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text();
+        return new Response(renderOAuthHtml("GitHub", false, `GitHub token exchange failed: ${resp.status} ${errText}`, userId), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
+      const tokens = await resp.json() as any;
+      if (!tokens.access_token) {
+        return new Response(renderOAuthHtml("GitHub", false, `GitHub exchange error: ${tokens.error_description || tokens.error || "No access token"}`, userId), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
+      accessToken = tokens.access_token;
+      refreshToken = tokens.refresh_token || null;
+      expiresIn = tokens.expires_in || 0;
+
+      // Fetch GitHub login
+      try {
+        const ghResp = await fetch("https://api.github.com/user", {
+          headers: { "Authorization": `Bearer ${accessToken}`, "User-Agent": "NEXUS-Worker" },
+        });
+        if (ghResp.ok) {
+          const ghUser = await ghResp.json() as any;
+          accountId = ghUser.login || userId;
+        }
+      } catch { /* ignore */ }
+    } else {
+      return new Response(renderOAuthHtml(provider || "Unknown", false, `Unsupported provider: ${provider}`, userId), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // Save in Cloudflare D1
     const now = Date.now() / 1000;
-    const expiresAt = tokens.expires_in ? now + tokens.expires_in : 0;
+    const expiresAt = expiresIn ? now + expiresIn : 0;
+    const scopes = provider === "google" ? GOOGLE_SCOPES : GITHUB_SCOPES;
+
     await env.DB.prepare(
       "INSERT OR REPLACE INTO oauth_tokens (user_id, provider, access_token, refresh_token, expires_at, scopes, account_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(
-      state, "github", tokens.access_token,
-      tokens.refresh_token || null, expiresAt, GITHUB_SCOPES, accountId, now
+      userId, provider, accessToken,
+      refreshToken, expiresAt, scopes, accountId, now
     ).run();
 
-    return new Response(
-      `<html><body><h2>GitHub connected!</h2><p>User: ${state}</p><p>Account: ${accountId}</p><p>You can close this tab.</p></body></html>`,
-      { headers: { "Content-Type": "text/html" } },
-    );
+    return new Response(renderOAuthHtml(provider === "google" ? "Google" : "GitHub", true, "", userId, accountId), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   } catch (err) {
-    return new Response(`<html><body><h2>Error</h2><p>${(err as Error).message}</p></body></html>`, {
-      headers: { "Content-Type": "text/html" },
+    return new Response(renderOAuthHtml(provider || "Service", false, `OAuth Error: ${(err as Error).message}`, userId), {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
 }
@@ -1702,16 +1839,19 @@ async function handleOAuthExchange(
   let body: any;
   try { body = await request.json(); } catch { return json({ error: "invalid JSON" }, 400); }
 
-  const provider = body.provider || "";
+  const provider = (body.provider || "").toLowerCase();
   const code = body.code || "";
   const codeVerifier = body.code_verifier || "";
   const userId = body.user_id || "";
-  const redirectUri = body.redirect_uri || OAUTH_REDIRECT_URI;
+  const workerOrigin = new URL(request.url).origin;
+  const redirectUri = body.redirect_uri || `${workerOrigin}/oauth/callback`;
 
   if (!provider || !code || !userId) return json({ error: "missing required fields" }, 400);
 
   try {
     let tokens: any;
+    let accountId = userId;
+
     if (provider === "google") {
       const resp = await fetch(GOOGLE_TOKEN_URL, {
         method: "POST",
@@ -1725,8 +1865,18 @@ async function handleOAuthExchange(
           grant_type: "authorization_code",
         }),
       });
-      if (!resp.ok) return json({ error: "Google exchange failed" }, 502);
+      if (!resp.ok) return json({ error: `Google exchange failed (${resp.status})` }, 502);
       tokens = await resp.json();
+
+      try {
+        const userInfoResp = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: { "Authorization": `Bearer ${tokens.access_token}` },
+        });
+        if (userInfoResp.ok) {
+          const uInfo = await userInfoResp.json() as any;
+          accountId = uInfo.email || userId;
+        }
+      } catch { /* ignore */ }
     } else if (provider === "github") {
       const resp = await fetch(GITHUB_TOKEN_URL, {
         method: "POST",
@@ -1739,9 +1889,19 @@ async function handleOAuthExchange(
           redirect_uri: redirectUri,
         }),
       });
-      if (!resp.ok) return json({ error: "GitHub exchange failed" }, 502);
+      if (!resp.ok) return json({ error: `GitHub exchange failed (${resp.status})` }, 502);
       tokens = await resp.json();
-      if (!tokens.access_token) return json({ error: tokens.error || "exchange failed" }, 400);
+      if (!tokens.access_token) return json({ error: tokens.error_description || tokens.error || "exchange failed" }, 400);
+
+      try {
+        const ghResp = await fetch("https://api.github.com/user", {
+          headers: { "Authorization": `Bearer ${tokens.access_token}`, "User-Agent": "NEXUS-Worker" },
+        });
+        if (ghResp.ok) {
+          const ghUser = await ghResp.json() as any;
+          accountId = ghUser.login || userId;
+        }
+      } catch { /* ignore */ }
     } else {
       return json({ error: `unsupported provider: ${provider}` }, 400);
     }
@@ -1749,20 +1909,6 @@ async function handleOAuthExchange(
     // Store in D1
     const now = Date.now() / 1000;
     const expiresAt = tokens.expires_in ? now + tokens.expires_in : 0;
-
-    // Get account_id (GitHub login or Google email)
-    let accountId = userId;
-    if (provider === "github") {
-      try {
-        const ghResp = await fetch("https://api.github.com/user", {
-          headers: { "Authorization": `Bearer ${tokens.access_token}` },
-        });
-        if (ghResp.ok) {
-          const ghUser = await ghResp.json() as any;
-          accountId = ghUser.login || userId;
-        }
-      } catch { /* ignore */ }
-    }
 
     await env.DB.prepare(
       "INSERT OR REPLACE INTO oauth_tokens (user_id, provider, access_token, refresh_token, expires_at, scopes, account_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -1773,7 +1919,7 @@ async function handleOAuthExchange(
       accountId, now
     ).run();
 
-    return json({ ok: true, provider, connected: true });
+    return json({ ok: true, provider, connected: true, account_id: accountId });
   } catch (err) {
     return json({ error: `exchange error: ${(err as Error).message}` }, 500);
   }
@@ -2206,9 +2352,10 @@ async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Pr
           if (deps.typescript) frameworks.push({ name: "TypeScript", category: "language" });
           // Databases
           for (const [dbName, patterns] of Object.entries(dbPatterns)) {
-            if (patterns.some(p => deps[p] || deps[`@${p}`])) {
+            const matchedPattern = patterns.find(pat => deps[pat] || deps[`@${pat}`]);
+            if (matchedPattern) {
               if (!databases.find(d => d.name === dbName)) {
-                databases.push({ name: dbName, evidence: `${p} in package.json` });
+                databases.push({ name: dbName, evidence: `${matchedPattern} in package.json` });
               }
             }
           }
@@ -2224,9 +2371,10 @@ async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Pr
         buildTool = "cargo";
         // Databases
         for (const [dbName, patterns] of Object.entries(dbPatterns)) {
-          if (patterns.some(p => kf.content.includes(p))) {
+          const matchedPattern = patterns.find(pat => kf.content.includes(pat));
+          if (matchedPattern) {
             if (!databases.find(d => d.name === dbName)) {
-              databases.push({ name: dbName, evidence: `${p} in Cargo.toml` });
+              databases.push({ name: dbName, evidence: `${matchedPattern} in Cargo.toml` });
             }
           }
         }
@@ -2238,9 +2386,10 @@ async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Pr
         if (kf.content.includes("pytest")) frameworks.push({ name: "pytest", category: "testing" });
         buildTool = kf.path === "pyproject.toml" ? "poetry" : "pip";
         for (const [dbName, patterns] of Object.entries(dbPatterns)) {
-          if (patterns.some(p => kf.content.includes(p))) {
+          const matchedPattern = patterns.find(pat => kf.content.includes(pat));
+          if (matchedPattern) {
             if (!databases.find(d => d.name === dbName)) {
-              databases.push({ name: dbName, evidence: `${p} in ${kf.path}` });
+              databases.push({ name: dbName, evidence: `${matchedPattern} in ${kf.path}` });
             }
           }
         }
@@ -2251,9 +2400,10 @@ async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Pr
         if (kf.content.includes("echo")) frameworks.push({ name: "Echo", category: "backend" });
         buildTool = "go";
         for (const [dbName, patterns] of Object.entries(dbPatterns)) {
-          if (patterns.some(p => kf.content.includes(p))) {
+          const matchedPattern = patterns.find(pat => kf.content.includes(pat));
+          if (matchedPattern) {
             if (!databases.find(d => d.name === dbName)) {
-              databases.push({ name: dbName, evidence: `${p} in go.mod` });
+              databases.push({ name: dbName, evidence: `${matchedPattern} in go.mod` });
             }
           }
         }

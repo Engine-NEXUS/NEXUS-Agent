@@ -15,7 +15,6 @@
  * we POST it to Worker /apikeys/add.
  */
 
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-shell";
 
@@ -86,11 +85,11 @@ export async function connectOAuth(
     throw new Error("Server URL not configured. Enter your server URL first.");
   }
 
-  // GitHub OAuth apps don't support PKCE, but we still use state for CSRF.
+  // Generate PKCE challenge for providers that support it
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = await generateCodeChallenge(codeVerifier);
 
-  // 1. Ask sidecar for the authorization URL.
+  // 1. Ask Worker for the authorization URL.
   const authUrlResp = await fetch(
     `${workerBaseUrl}/oauth/auth-url?provider=${provider}&user_id=${encodeURIComponent(userId)}&code_challenge=${codeChallenge}`,
   );
@@ -103,86 +102,130 @@ export async function connectOAuth(
   // 2. Open the system browser for the user to log in.
   await open(url);
 
-  // 3. Set up the deep-link listener BEFORE the redirect comes back.
+  // 3. Set up dual-channel completion: deep-link listener + active status polling
   const result = await new Promise<boolean>((resolve, reject) => {
-    pending = { provider, codeVerifier, userId, resolve, reject };
+    let finished = false;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Listen for the nexus://oauth/callback redirect.
+    const cleanup = () => {
+      finished = true;
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      pending = null;
+    };
+
+    const onComplete = (success: boolean) => {
+      if (finished) return;
+      cleanup();
+      resolve(success);
+    };
+
+    const onFail = (err: Error) => {
+      if (finished) return;
+      cleanup();
+      reject(err);
+    };
+
+    pending = {
+      provider,
+      codeVerifier,
+      userId,
+      resolve: () => onComplete(true),
+      reject: (e) => onFail(e),
+    };
+
+    // Deep link event listener
     if (!unlistenDeepLink) {
       listen<string>("deep-link://oauth-callback", (event) => {
-        handleOAuthRedirect(event.payload).catch((err) => {
-          console.error("OAuth redirect handling failed:", err);
+        handleOAuthRedirect(event.payload).then(() => onComplete(true)).catch((err) => {
+          console.warn("[OAuth] Deep link error:", err);
         });
       }).then((fn) => {
         unlistenDeepLink = fn;
       });
     }
 
-    // Also check if the app was started via a deep link (Windows/Linux single-instance).
-    invoke<string | null>("deep_link_get_current").then((url) => {
-      if (url && url.startsWith("nexus://oauth/")) {
-        handleOAuthRedirect(url).catch(console.error);
+    // Active status polling: automatically catches completion when user approves in browser
+    pollInterval = setInterval(async () => {
+      if (finished) return;
+      try {
+        const status = await getOAuthStatus(userId);
+        if (status[provider]?.connected) {
+          console.log(`[OAuth] ${provider} connected successfully via status check`);
+          onComplete(true);
+        }
+      } catch {
+        // network retry
       }
-    }).catch(() => {/* not available on this platform */});
+    }, 1500);
 
-    // Timeout after 5 minutes.
-    setTimeout(() => {
-      if (pending) {
-        pending.reject(new Error("OAuth timed out — no redirect received within 5 minutes"));
-        pending = null;
-      }
+    // Timeout after 5 minutes
+    timeoutTimer = setTimeout(() => {
+      onFail(new Error("OAuth timed out — authorization was not completed within 5 minutes"));
     }, 5 * 60 * 1000);
   });
 
   return result;
 }
 
-/** Handle the OAuth redirect URL (nexus://oauth/callback?code=XXX&state=YYY). */
+/** Handle the OAuth redirect URL (nexus://oauth/callback?provider=...&user_id=...&status=success or ?code=XXX). */
 async function handleOAuthRedirect(rawUrl: string): Promise<void> {
   if (!pending) return;
 
-  const url = new URL(rawUrl);
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  const error = url.searchParams.get("error");
-
-  if (error) {
-    pending.reject(new Error(`OAuth error: ${error}`));
-    pending = null;
-    return;
-  }
-
-  if (!code) {
-    pending.reject(new Error("OAuth redirect missing code parameter"));
-    pending = null;
-    return;
-  }
-
-  // Exchange the code for tokens via the sidecar.
   try {
-    const resp = await fetch(`${workerBaseUrl}/oauth/exchange`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        provider: pending.provider,
-        code,
-        code_verifier: pending.codeVerifier,
-        redirect_uri: "nexus://oauth/callback",
-        user_id: pending.userId,
-        state,
-      }),
-    });
+    const url = new URL(rawUrl);
+    const status = url.searchParams.get("status");
+    const error = url.searchParams.get("error");
+    const code = url.searchParams.get("code");
 
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.error || `Exchange failed (${resp.status})`);
+    if (status === "success") {
+      pending.resolve(true);
+      pending = null;
+      return;
     }
 
-    pending.resolve(true);
+    if (error) {
+      const err = new Error(`OAuth error: ${error}`);
+      pending.reject(err);
+      pending = null;
+      return;
+    }
+
+    if (code) {
+      // Exchange code if direct redirect was used
+      const resp = await fetch(`${workerBaseUrl}/oauth/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: pending.provider,
+          code,
+          code_verifier: pending.codeVerifier,
+          redirect_uri: `${workerBaseUrl}/oauth/callback`,
+          user_id: pending.userId,
+          state: url.searchParams.get("state"),
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `Exchange failed (${resp.status})`);
+      }
+
+      pending.resolve(true);
+      pending = null;
+    }
   } catch (err) {
-    pending.reject(err instanceof Error ? err : new Error(String(err)));
-  } finally {
-    pending = null;
+    if (pending) {
+      pending.reject(err instanceof Error ? err : new Error(String(err)));
+      pending = null;
+    }
   }
 }
 
