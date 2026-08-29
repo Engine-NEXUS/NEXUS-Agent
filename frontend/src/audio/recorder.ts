@@ -75,7 +75,9 @@ function isLongRunningQuery(transcript: string): boolean {
   const hasRepo = /\b(repo|repository)\b/.test(t);
   // Also catch "PR <number>" patterns even without "analyse" (STT may mishear)
   const hasPRNumber = /\bpr\s*#?\s*\d+\b/.test(t);
-  return (hasAnalyse && (hasPR || hasRepo)) || hasPRNumber;
+  // Branch analysis: "analyse branch X", "analyse the branch X"
+  const hasBranch = /\bbranch\b/.test(t);
+  return (hasAnalyse && (hasPR || hasRepo || hasBranch)) || hasPRNumber;
 }
 
 /**

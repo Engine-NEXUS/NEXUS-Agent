@@ -387,6 +387,33 @@ function parsePRRequest(transcript: string): { prNumber: number | null; repoName
 }
 
 /**
+ * Parse a branch name and repo from the transcript.
+ * Patterns:
+ *   "analyse branch sidebar-markdown-rich-rendering in zync"
+ *   "analyse the branch feature-auth in servx"
+ *   "analyse branch main in ledger-ai"
+ */
+function parseBranchRequest(transcript: string): { branchName: string | null; repoName: string | null } {
+  const tLower = transcript.toLowerCase();
+
+  // Extract branch name: "branch <name>" or "the branch <name>"
+  // Branch names can contain hyphens, underscores, slashes, and dots
+  const branchMatch = tLower.match(/(?:branch|ranch|bench)\s+(?:the\s+)?([\w\-./]+)/);
+  const branchName = branchMatch ? branchMatch[1] : null;
+
+  // Extract repo name (same logic as parsePRRequest)
+  const repoMatch = tLower.match(/(?:in|of|from)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b|branch\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
+  if (!repoMatch || !repoMatch[1]) {
+    return { branchName, repoName: null };
+  }
+  const repoLower = repoMatch[1].trim();
+  const idx = tLower.indexOf(repoLower);
+  const repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
+
+  return { branchName, repoName };
+}
+
+/**
  * Resolve a repo name to a full owner/repo string by searching the user's repos.
  * If the name already contains "/", use it as-is.
  * Otherwise, search the user's repos for a case-insensitive match.
@@ -635,6 +662,13 @@ function isReEvaluationRequest(transcript: string, userId: string, repo: string,
 }
 
 async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): Promise<string> {
+  const tLower = req.task.request.toLowerCase();
+
+  // Branch analysis: "analyse branch X in repo" → delegate to branch handler
+  if (/\bbranch\b/.test(tLower) && !/\bpr\b|\bpull\s*request\b/.test(tLower)) {
+    return handleBranchAnalyse(req, env, token);
+  }
+
   const { prNumber, repoName } = parsePRRequest(req.task.request);
   const userId = req.requester.id;
 
@@ -747,6 +781,139 @@ ${context}
     return `${understoodPrefix}${analysis}`;
   } catch (err) {
     return `I had trouble analysing the PR. Error: ${(err as Error).message}`;
+  }
+}
+
+/**
+ * Deep branch analysis using GLM.
+ * Fetches the branch's commits and diff against the default branch (main/master),
+ * sends to GLM for analysis.
+ */
+async function handleBranchAnalyse(req: NexusRequest, env: Env, token: string): Promise<string> {
+  const { branchName, repoName } = parseBranchRequest(req.task.request);
+  const userId = req.requester.id;
+
+  if (!branchName) {
+    return `I couldn't identify which branch you want to analyse. Try saying "analyse branch feature-name in repo-name".`;
+  }
+
+  try {
+    // Resolve the repo name
+    const repo = await resolveRepo(token, repoName);
+    if (!repo) {
+      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse branch ${branchName} in owner/repo".`;
+    }
+
+    const headers: Record<string, string> = {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "NEXUS-Worker",
+    };
+
+    // 1. Verify the branch exists
+    const branchResp = await fetch(`https://api.github.com/repos/${repo}/branches/${encodeURIComponent(branchName)}`, { headers });
+    if (!branchResp.ok) {
+      return `I couldn't find a branch named "${branchName}" in ${repo}. Error: ${branchResp.status}. Check the branch name and try again.`;
+    }
+
+    // 2. Get the default branch (main or master) for comparison
+    const repoInfoResp = await fetch(`https://api.github.com/repos/${repo}`, { headers });
+    const repoInfo = await repoInfoResp.json() as Record<string, unknown>;
+    const defaultBranch = (repoInfo["default_branch"] as string) || "main";
+
+    // 3. Compare the branch against the default branch
+    const compareResp = await fetch(
+      `https://api.github.com/repos/${repo}/compare/${defaultBranch}...${encodeURIComponent(branchName)}`,
+      { headers },
+    );
+    if (!compareResp.ok) {
+      return `I couldn't compare branch "${branchName}" against ${defaultBranch} in ${repo}. Error: ${compareResp.status}.`;
+    }
+    const compareData = await compareResp.json() as Record<string, unknown>;
+
+    const aheadBy = compareData["ahead_by"] as number;
+    const behindBy = compareData["behind_by"] as number;
+    const totalCommits = compareData["total_commits"] as number;
+    const files = compareData["files"] as Array<Record<string, unknown>>;
+    const commits = compareData["commits"] as Array<Record<string, unknown>>;
+
+    if (!files || files.length === 0) {
+      return `Branch "${branchName}" in ${repo} has no changes compared to ${defaultBranch}. It's already up to date.`;
+    }
+
+    // 4. Build context for GLM analysis
+    const fileList = files.slice(0, 30).map((f) => {
+      const status = f["status"] as string;
+      const filename = f["filename"] as string;
+      const additions = f["additions"] as number;
+      const deletions = f["deletions"] as number;
+      const patch = (f["patch"] as string || "").slice(0, 500);
+      return `--- ${status}: ${filename} (+${additions} -${deletions}) ---\n${patch}`;
+    }).join("\n\n");
+
+    const commitList = commits.slice(0, 20).map((c) => {
+      const msg = (c["commit"] as Record<string, unknown>)?.["message"] as string || "";
+      const author = ((c["commit"] as Record<string, unknown>)?.["author"] as Record<string, unknown>)?.["name"] as string || "unknown";
+      return `- ${msg.split("\n")[0]} (${author})`;
+    }).join("\n");
+
+    const context = `=== BRANCH ANALYSIS ===
+Repository: ${repo}
+Branch: ${branchName}
+Base: ${defaultBranch}
+Ahead by: ${aheadBy} commits, Behind by: ${behindBy} commits
+Total commits: ${totalCommits}
+Changed files: ${files.length}
+
+=== COMMITS (${commits.length}) ===
+${commitList || "(none)"}
+
+=== FILE CHANGES (top ${Math.min(files.length, 30)} of ${files.length}) ===
+${fileList}`;
+
+    // 5. Determine which model to use
+    const contextTooLarge = context.length > FLASH_CONTEXT_LIMIT_CHARS;
+    const model = contextTooLarge ? DEEP_ANALYSIS_MODEL : ANALYSIS_MODEL;
+    const maxTokens = contextTooLarge ? 2500 : 3000;
+
+    // 6. Send to GLM for analysis
+    const analysisPrompt = `You are a senior software engineer performing a thorough branch analysis. Analyse this branch and provide a detailed review.
+
+Cover these areas:
+1. **Summary**: What does this branch do? (1-2 sentences)
+2. **Risk Assessment**: Are there bugs, security issues, or breaking changes?
+3. **Code Quality**: Is the code clean, well-structured, and maintainable?
+4. **Suggestions**: What would you improve before merging?
+5. **Verdict**: Is this safe to merge? (approve / request changes / block)
+
+Be specific — reference file names when pointing out issues.
+If the branch is small or straightforward, keep the review concise.
+
+=== BRANCH CONTEXT ===
+${context}
+
+=== YOUR ANALYSIS ===`;
+
+    const response = await env.AI.run(model as any, {
+      messages: [
+        { role: "system", content: "You are a senior software engineer with expertise in code review, security, and software architecture. You provide thorough, actionable code reviews." },
+        { role: "user", content: analysisPrompt },
+      ],
+      max_tokens: maxTokens,
+    });
+
+    const analysis = extractText(response);
+    if (!analysis) {
+      return `I fetched branch "${branchName}" in ${repo} but couldn't generate an analysis. The branch has ${files.length} changed files. Try asking a more specific question about it.`;
+    }
+
+    const repoShort = repo.includes("/") ? repo.split("/")[1] : repo;
+    const understoodPrefix = `Branch ${branchName} in ${repoShort}\n\n`;
+
+    return `${understoodPrefix}${analysis}`;
+  } catch (err) {
+    return `I had trouble analysing the branch. Error: ${(err as Error).message}`;
   }
 }
 
