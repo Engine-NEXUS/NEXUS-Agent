@@ -38,5 +38,12 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
             }
         })
         .map_err(|e| format!("on_shortcut: {e}"))?;
+
+    if let Err(e) = app.global_shortcut().register(sc) {
+        tracing::warn!("Failed to register global hotkey '{}': {e}", HOTKEY);
+    } else {
+        tracing::info!("Registered global hotkey: {}", HOTKEY);
+    }
+
     Ok(())
 }

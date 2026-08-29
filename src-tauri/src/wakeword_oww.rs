@@ -109,7 +109,7 @@ mod engine {
     /// Minimum positive detections before triggering
     /// (2 frames = 160ms of consistent detection — filters transient spikes
     /// but is lenient enough for the 78.6% accuracy model)
-    const MIN_POSITIVE_DETECTIONS: f32 = 2.0;
+    const MIN_POSITIVE_DETECTIONS: f32 = 1.0;
 
     /// Refractory period after a detection (ms)
     const NO_DETECTION_MS: u64 = 2000;
