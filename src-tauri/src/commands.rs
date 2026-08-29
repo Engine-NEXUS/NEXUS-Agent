@@ -17,14 +17,22 @@ pub fn open_setup_window<R: Runtime>(
     Ok(())
 }
 
-/// IPC: close/hide the setup window.
+/// IPC: close/hide the setup window and activate the main assistant orb.
 #[tauri::command]
 pub fn close_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("setup")
-        .ok_or_else(|| "setup window not found".to_string())?;
-    win.hide().map_err(|e| e.to_string())?;
+    if let Some(win) = app.get_webview_window("setup") {
+        let _ = win.hide();
+    }
+    if let Some(main_win) = app.get_webview_window("main") {
+        let _ = main_win.show();
+        let _ = crate::window_manager::position_orb(&main_win);
+        let _ = main_win.set_focus();
+        let _ = main_win.set_always_on_top(true);
+        let _ = main_win.set_ignore_cursor_events(false);
+        let _ = main_win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+    }
     Ok(())
 }
 
