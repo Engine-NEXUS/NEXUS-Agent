@@ -26,6 +26,7 @@ mod app_registry;
 mod intent_parser;
 mod nlu_client;
 mod lazy_nlu;
+mod lazy_stt;
 mod stt;
 mod tts;
 // voice_profile: speaker embedding via sherpa-onnx — only needed with wakeword-sherpa.
@@ -366,7 +367,7 @@ pub fn run() {
             app.manage(meeting_state.clone());
 
             // ─── STT / TTS Local Engine State ──────────────────────────
-            let stt_state = stt::SttState { transcriber: std::sync::Arc::new(tokio::sync::Mutex::new(None)) };
+            let stt_state = stt::SttState { _placeholder: std::sync::Arc::new(tokio::sync::Mutex::new(())) };
             app.manage(stt_state);
 
             let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));

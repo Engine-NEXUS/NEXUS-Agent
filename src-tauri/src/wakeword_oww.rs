@@ -1397,6 +1397,9 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
+        // Ensure the STT server is running before the frontend starts recording
+        crate::lazy_stt::ensure_stt_running();
+
         // Only use the direct eval — the frontend's __NEXUS_WAKE__ handler
         // calls wakeWithGreeting(). Do NOT also emit Tauri events, as the
         // frontend listens to those too and would call wakeWithGreeting()

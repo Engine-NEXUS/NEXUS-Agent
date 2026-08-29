@@ -55,7 +55,7 @@ circular-buffer = "1.2"
 opus = { version = "0.3", optional = true }
 
 # HTTP client for diagnostics
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
 # STT & TTS Upgrade (August 2026)

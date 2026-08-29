@@ -36,20 +36,32 @@ pub async fn speak_text(
 
     // 3. Play audio on a blocking thread (rodio needs the OutputStream to stay alive)
     let play_result = std::thread::spawn(move || {
-        if let Ok((_stream, handle)) = OutputStream::try_default() {
-            if let Ok(sink) = Sink::try_new(&handle) {
-                // Kokoro output is standard 24kHz mono PCM (f32)
-                let source = SamplesBuffer::new(1, 24000, audio);
-                sink.append(source);
-                sink.sleep_until_end();
-                Ok(())
-            } else {
-                Err("Failed to create audio sink".to_string())
+        match OutputStream::try_default() {
+            Ok((_stream, handle)) => {
+                match Sink::try_new(&handle) {
+                    Ok(sink) => {
+                        // Kokoro output is standard 24kHz mono PCM (f32)
+                        let source = SamplesBuffer::new(1, 24000, audio);
+                        sink.append(source);
+                        sink.sleep_until_end();
+                        tracing::info!("tts: audio playback completed");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        tracing::error!("tts: failed to create audio sink: {}", e);
+                        Err(format!("Failed to create audio sink: {}", e))
+                    }
+                }
             }
-        } else {
-            Err("Failed to get audio output stream".to_string())
+            Err(e) => {
+                tracing::error!("tts: failed to open default audio output: {}", e);
+                Err(format!("Failed to get audio output stream: {}", e))
+            }
         }
-    }).join().unwrap_or_else(|_| Err("Audio thread panicked".to_string()));
+    }).join().unwrap_or_else(|_| {
+        tracing::error!("tts: audio thread panicked");
+        Err("Audio thread panicked".to_string())
+    });
 
     // 4. Grace period for acoustic settling before resuming wake word detection
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;

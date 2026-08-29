@@ -78,11 +78,37 @@ export async function playKokoro(text: string, voiceId: string, onEnd?: () => vo
     // speak_text handles its own thread for rodio playback
     await invoke("speak_text", { text, voice: voiceId });
   } catch (err) {
-    console.error("[TTS] Kokoro failed:", err);
+    console.error("[TTS] Kokoro failed, falling back to Web Speech:", err);
+    // Fallback to Web Speech API if Kokoro/rodio fails
+    await speakWebSpeech(text);
   } finally {
     void emitTtsEvent("tts-ended");
     onEnd?.();
   }
+}
+
+/** Web Speech API fallback — uses the browser's built-in speech synthesis. */
+async function speakWebSpeech(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (!("speechSynthesis" in window)) {
+      console.warn("[TTS] Web Speech API not available");
+      resolve();
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    // Try to use a male voice for "sir" persona
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => v.name.includes("David") || v.name.includes("Mark") || v.name.includes("George"))
+      || voices.find(v => v.lang.startsWith("en"));
+    if (preferred) utterance.voice = preferred;
+    utterance.onend = () => resolve();
+    utterance.onerror = () => resolve();
+    window.speechSynthesis.speak(utterance);
+  });
 }
 
 export async function previewVoice(
