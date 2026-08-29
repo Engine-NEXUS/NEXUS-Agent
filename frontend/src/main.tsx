@@ -189,10 +189,23 @@ async function startListening() {
   }
 }
 
-/** Called from Rust on wake (hotkey or spoken "NEXUS"). */
+/** Called from Rust on wake (hotkey, spoken "NEXUS", or tray click). */
 (window as any).__NEXUS_WAKE__ = () => {
+  console.log("[NEXUS] __NEXUS_WAKE__ invoked");
   void wakeWithGreeting();
 };
+
+// Also listen for native Tauri IPC wake events
+import("@tauri-apps/api/event").then(({ listen }) => {
+  void listen("assistant:wake", () => {
+    console.log("[NEXUS] assistant:wake event received");
+    void wakeWithGreeting();
+  });
+  void listen("nexus://wake", () => {
+    console.log("[NEXUS] nexus://wake event received");
+    void wakeWithGreeting();
+  });
+}).catch((e) => console.warn("[NEXUS] Failed to attach Tauri wake listeners:", e));
 
 /**
  * Wake handler with first-of-day greeting.

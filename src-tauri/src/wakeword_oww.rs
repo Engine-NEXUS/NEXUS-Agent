@@ -1024,6 +1024,9 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
+        let _ = app.emit("assistant:wake", ());
+        let _ = app.emit("nexus://wake", ());
+
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.show();
             let _ = crate::window_manager::configure_non_activating_overlay(&win);
