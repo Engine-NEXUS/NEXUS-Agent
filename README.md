@@ -78,6 +78,7 @@ If running locally without building an installer, you **must** pass the `custom-
 
 ```powershell
 cd src-tauri
+$env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
 cargo run --release --features custom-protocol
 ```
 
@@ -92,6 +93,21 @@ npx wrangler secret put NEXUS_ENCRYPTION_KEY
 npx wrangler deploy
 ```
 Update `$env:NEXUS_SERVER_URL` in your build environment before compiling the desktop app to point to your new worker.
+
+## Production Build (Installer)
+
+Always build the desktop app installer with the Tauri CLI via the build script:
+
+```powershell
+$env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
+pwsh ./scripts/build.ps1 -Release
+```
+Set signing env vars (see `scripts/build.ps1` and `.github/workflows/release.yml`).
+
+## Configuration Points
+- **Worker URL:** Baked into the binary at compile time via the `NEXUS_SERVER_URL` environment variable.
+- **Wake Word (openWakeWord):** The wake word engine uses openWakeWord (`wakeword-oww` feature by default) and its assets are bundled in `src-tauri/resources/oww/`.
+- **Serverless Backend:** NEXUS is fully serverless. The backend logic runs on Cloudflare Workers (intent classification, summarization via Workers AI, and D1 for storage). No local sidecar or n8n is needed.
 
 ## Platforms
 | OS | Notes |

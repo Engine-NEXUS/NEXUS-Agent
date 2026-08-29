@@ -220,10 +220,23 @@ async function startListening() {
 };
 
 // Tauri IPC wake events are NOT listened to here anymore.
-// The Rust side calls window.__NEXUS_WAKE__() directly via eval(),
+// The Rust side calls window.__NEXUS_TOGGLE__() directly via eval(),
 // which is more reliable than the event system for repeated rapid events.
-// Listening to both caused wakeWithGreeting() to fire 2-3x, resulting in
-// "on it sir" being spoken twice.
+// Listening to both caused wakeWithGreeting() to fire 2-3x.
+
+/** Called from Rust on hotkey press to toggle the assistant. */
+(window as any).__NEXUS_TOGGLE__ = () => {
+  console.log("[NEXUS] __NEXUS_TOGGLE__ invoked");
+  const s = useAssistant.getState();
+  if (s.state === "idle" && !s.visible) {
+    void wakeWithGreeting();
+  } else {
+    // If it's active (listening, speaking, thinking) or visible, cancel it.
+    if ((window as any).__NEXUS_CANCEL__) {
+      (window as any).__NEXUS_CANCEL__();
+    }
+  }
+};
 
 /**
  * Wake handler with first-of-day greeting.
@@ -357,10 +370,14 @@ async function setupCommandDetectionListener() {
               console.log(`[NEXUS] Tier 3 parameter: "${param}"`);
               s.addUserMessage(param);
               // Execute with the parameter as the query
+              // Execute with the correct parameter name (target for open_app, query otherwise)
               const { invoke } = await import("@tauri-apps/api/core");
+              const payload = (intent.action === "open_app" || intent.action === "close_app")
+                ? { action: intent.action, target: param }
+                : { action: intent.action, query: param };
               const result = await invoke<{ success: boolean; message: string }>(
                 "execute_command",
-                { intent: { action: intent.action, query: param } }
+                { intent: payload }
               );
               console.log(`[NEXUS] Tier 3 execute result:`, result);
               if (result.message) {

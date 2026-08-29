@@ -28,6 +28,8 @@ export type Intent =
   | { action: "open_app"; target: string }
   | { action: "open_url"; target: string; url: string }
   | { action: "search"; query: string }
+  | { action: "youtube_search"; query: string }
+  | { action: "spotify_play"; query: string }
   | { action: "media_play_pause" }
   | { action: "media_next" }
   | { action: "media_previous" }
@@ -534,6 +536,18 @@ export function parseIntent(transcript: string): Intent {
     return { action: "media_stop" };
   }
 
+  // --- "open youtube and search for <query>" ---
+  const ytSearchMatch = text.match(
+    /^(?:open\s+(?:youtube|yt|you\s+tube)\s*,?\s*and\s+(?:search\s*(?:for)?|play)|search\s+(?:youtube|yt|you\s+tube)\s*(?:for)?)\s+(.+)$/i,
+  );
+  if (ytSearchMatch) {
+    const query = ytSearchMatch[1].trim();
+    return {
+      action: "youtube_search",
+      query,
+    };
+  }
+
   // --- "open <something>" / "launch <something>" / etc. ---
   // Matches: "open gmail", "open notepad", "open calculator", "open youtube"
   //          "launch spotify", "start calculator", "run powershell"
@@ -593,31 +607,44 @@ export function parseIntent(transcript: string): Intent {
     return { action: "open_app", target: corrected };
   }
 
-  // --- "search for <query>" ---
+  // --- "search for <query>" / "play <query>" ---
   // Matches: "search for cats", "google cats", "look up cats", "find cats"
-  //          "search cats on youtube", "youtube cats", "spotify play <song>"
+  //          "search cats on youtube", "youtube cats", "play <song>"
   const searchMatch = text.match(
-    /^(?:search\s+for|search|google|look\s+up|find\s+me|find|look\s+for)\s+(.+)$/i,
+    /^(?:search\s+for|search|google|look\s+up|find\s+me|find|look\s+for|play|put\s+on)\s+(.+)$/i,
   );
   if (searchMatch) {
-    const query = searchMatch[1].trim();
+    let query = searchMatch[1].trim();
+    
+    // Check if the user said "on youtube" or "on yt" at the end of the query
+    const onYoutubeMatch = query.match(/^(.*?)\s+on\s+(?:youtube|yt|you\s+tube)$/i);
+    if (onYoutubeMatch) {
+      return {
+        action: "youtube_search",
+        query: onYoutubeMatch[1].trim(),
+      };
+    }
+
+    // Check if the user said "on spotify" at the end of the query
+    const onSpotifyMatch = query.match(/^(.*?)\s+on\s+spotify$/i);
+    if (onSpotifyMatch) {
+      return {
+        action: "spotify_play",
+        query: onSpotifyMatch[1].trim(),
+      };
+    }
+
+    // If they explicitly said "play" but didn't specify a platform, default to Spotify
+    if (text.startsWith("play") || text.startsWith("put on")) {
+      return {
+        action: "spotify_play",
+        query: query,
+      };
+    }
+
     return {
       action: "search",
       query,
-    };
-  }
-
-  // --- "play <song> on spotify" / "play <song>" ---
-  const spotifyMatch = text.match(
-    /^(?:play|put\s+on)\s+(.+?)(?:\s+on\s+spotify)?$/i,
-  );
-  if (spotifyMatch) {
-    const query = spotifyMatch[1].trim();
-    // If they said "on spotify" or just "play <song>", search on YouTube
-    // (most universal) — the Rust executor can handle spotify_play too
-    return {
-      action: "search",
-      query: `${query} on spotify`,
     };
   }
 
