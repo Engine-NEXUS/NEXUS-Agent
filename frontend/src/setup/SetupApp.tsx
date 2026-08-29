@@ -4,45 +4,35 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   setSidecarBaseUrl,
   connectOAuth,
-  addApiKey,
-  removeApiKey,
-  listApiKeys,
   getOAuthStatus,
-  disconnectOAuth,
   type OAuthStatus,
 } from "./oauth";
 import { VoiceEnrollment } from "./VoiceEnrollment";
-
-/**
- * NEXUS Setup — 3-step onboarding wizard (white theme).
- *
- * Step 0: Welcome
- * Step 1: Voice Enrollment (optional, can skip)
- * Step 2: Connect Accounts (Google, GitHub, API keys)
- *
- * The server URL, user ID, and device ID are auto-generated on first
- * launch (see lib.rs) — the user never has to enter them manually.
- * The server URL is baked into the installer at build time.
- */
+import { CURATED_VOICES, previewVoice, stopTts, type VoiceOption } from "../audio/ttsPlayer";
 
 type Step = 0 | 1 | 2;
-const STEP_LABELS = ["Welcome", "Voice", "Accounts"];
+const STEP_LABELS = ["Persona & Voice", "Preferences", "Accounts"];
 
 export function SetupApp() {
   const [step, setStep] = useState<Step>(0);
   const [serverUrl, setServerUrl] = useState("");
   const [userId, setUserId] = useState("");
+  const [selectedVoice, setSelectedVoice] = useState<string>("jarvis");
+  const [elevenlabsKey, setElevenlabsKey] = useState<string>("");
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+
+  // Settings
+  const [hotkey, setHotkey] = useState("Ctrl+Shift+Space");
+  const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
+  const [autostart, setAutostart] = useState(true);
+
+  // Accounts
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
-  const [apiKeys, setApiKeys] = useState<string[]>([]);
-  const [configCheck, setConfigCheck] = useState<Record<string, { configured: boolean; scopes: string }>>({});
   const [connecting, setConnecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const [newApiKeyProvider, setNewApiKeyProvider] = useState("");
-  const [newApiKeyValue, setNewApiKeyValue] = useState("");
-  const [serverReachable, setServerReachable] = useState<boolean | null>(null);
 
-  // Load the auto-generated config from Rust (server URL + user ID + device ID)
+  // Load current settings and server config
   useEffect(() => {
     invoke<{ serverUrl: string; userId: string; deviceId: string }>("get_server_config")
       .then((cfg) => {
@@ -50,25 +40,42 @@ export function SetupApp() {
         setUserId(cfg.userId);
       })
       .catch(() => {});
+
+    invoke<any>("get_settings")
+      .then((s) => {
+        if (s) {
+          if (s.ttsVoice) setSelectedVoice(s.ttsVoice);
+          if (s.hotkey) setHotkey(s.hotkey);
+          if (s.elevenlabsApiKey) setElevenlabsKey(s.elevenlabsApiKey);
+          if (typeof s.wakeWordEnabled === "boolean") setWakeWordEnabled(s.wakeWordEnabled);
+          if (typeof s.autostart === "boolean") setAutostart(s.autostart);
+        }
+      })
+      .catch(() => {});
   }, []);
 
-  // Check server connection (auto, using the baked-in config)
+  const handlePreview = async (voice: VoiceOption, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (playingVoice === voice.id) {
+      stopTts();
+      setPlayingVoice(null);
+      return;
+    }
+    setPlayingVoice(voice.id);
+    await previewVoice(voice, elevenlabsKey, () => {
+      setPlayingVoice(null);
+    });
+  };
+
   const checkServer = useCallback(async () => {
     if (!serverUrl || !userId) return;
     setSidecarBaseUrl(serverUrl);
     try {
-      const [status, keys, config] = await Promise.all([
-        getOAuthStatus(userId),
-        listApiKeys(userId),
-        fetch(`${serverUrl.replace(/\/+$/, "").replace(/^ws/, "http")}/config/check`).then((r) => r.json()),
-      ]);
+      const status = await getOAuthStatus(userId);
       setOauthStatus(status);
-      setApiKeys(keys);
-      setConfigCheck(config);
-      setServerReachable(true);
       setError(null);
     } catch {
-      setServerReachable(false);
+      // Server unreachable
     }
   }, [serverUrl, userId]);
 
@@ -94,38 +101,26 @@ export function SetupApp() {
     }
   };
 
-  const handleDisconnect = async (provider: string) => {
+  const saveAllSettings = async () => {
     try {
-      await disconnectOAuth(userId, provider);
-      await checkServer();
-    } catch (err) {
-      setError(`Disconnect failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleAddApiKey = async () => {
-    if (!newApiKeyProvider.trim() || !newApiKeyValue.trim()) return;
-    try {
-      await addApiKey(userId, newApiKeyProvider.trim().toLowerCase(), newApiKeyValue.trim());
-      setNewApiKeyProvider("");
-      setNewApiKeyValue("");
-      await checkServer();
-    } catch (err) {
-      setError(`Failed to save API key: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleRemoveApiKey = async (provider: string) => {
-    try {
-      await removeApiKey(userId, provider);
-      await checkServer();
-    } catch (err) {
-      setError(`Failed to remove API key: ${err instanceof Error ? err.message : String(err)}`);
+      const current = (await invoke<any>("get_settings").catch(() => ({}))) || {};
+      const updated = {
+        ...current,
+        ttsVoice: selectedVoice,
+        elevenlabsApiKey: elevenlabsKey,
+        hotkey,
+        wakeWordEnabled,
+        autostart,
+      };
+      await invoke("save_settings", { settings: updated });
+    } catch (e) {
+      console.warn("Failed to persist settings:", e);
     }
   };
 
   const handleFinish = async () => {
     try {
+      await saveAllSettings();
       await invoke("close_setup_window");
       setSaved(true);
     } catch (err) {
@@ -146,34 +141,116 @@ export function SetupApp() {
           transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
           style={{ flex: 1 }}
         >
-          {/* ── Step 0: Welcome ── */}
+          {/* ── Step 0: Voice & Persona ── */}
           {step === 0 && (
-            <div className="setup-welcome">
-              <div className="setup-welcome-orb" />
-              <div>
-                <h1>Welcome to NEXUS</h1>
-                <p style={{ marginTop: "var(--nx-space-3)" }}>
-                  Your private AI assistant. Voice-controlled, runs locally,
-                  and connects to your server for powerful workflows.
+            <div>
+              <div style={{ textAlign: "center", marginBottom: "var(--nx-space-5)" }}>
+                <h1 style={{ fontSize: "var(--nx-text-xl)", fontWeight: "bold", color: "var(--nx-text-primary)" }}>
+                  Choose Your Assistant Persona
+                </h1>
+                <p style={{ color: "var(--nx-text-secondary)", fontSize: "var(--nx-text-sm)", marginTop: "4px" }}>
+                  Select the voice & tone for NEXUS. You can change this anytime.
                 </p>
               </div>
-              <button className="setup-btn setup-btn--primary" style={{ padding: "12px 32px", fontSize: "var(--nx-text-md)" }} onClick={() => setStep(1)}>
-                Get Started →
-              </button>
+
+              <div className="setup-voice-grid">
+                {CURATED_VOICES.map((voice) => {
+                  const isSelected = selectedVoice === voice.id;
+                  const isPlaying = playingVoice === voice.id;
+                  return (
+                    <div
+                      key={voice.id}
+                      className={`setup-voice-card ${isSelected ? "setup-voice-card--active" : ""}`}
+                      onClick={() => setSelectedVoice(voice.id)}
+                    >
+                      <div className="setup-voice-card-header">
+                        <span className="setup-voice-name">{voice.name}</span>
+                        <span className="setup-voice-accent">{voice.accent}</span>
+                      </div>
+                      <p className="setup-voice-desc">{voice.description}</p>
+                      <button
+                        type="button"
+                        className="setup-voice-play-btn"
+                        onClick={(e) => handlePreview(voice, e)}
+                      >
+                        {isPlaying ? "⏹ Stop" : "▶ Play Sample"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Optional ElevenLabs Key */}
+              <div style={{ marginTop: "var(--nx-space-4)", padding: "var(--nx-space-3)", background: "var(--nx-bg-subtle, rgba(0,0,0,0.02))", borderRadius: "8px", border: "1px solid var(--nx-border)" }}>
+                <div style={{ fontSize: "var(--nx-text-xs)", fontWeight: 600, color: "var(--nx-text-primary)", marginBottom: "4px" }}>
+                  ✨ ElevenLabs / Custom Voice (Optional)
+                </div>
+                <input
+                  type="password"
+                  placeholder="Paste ElevenLabs API Key for Ultra-Realistic AI Voice"
+                  value={elevenlabsKey}
+                  onChange={(e) => setElevenlabsKey(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", fontSize: "var(--nx-text-xs)", border: "1px solid var(--nx-border)", borderRadius: "6px" }}
+                />
+              </div>
             </div>
           )}
 
-          {/* ── Step 1: Voice ── */}
+          {/* ── Step 1: Preferences ── */}
           {step === 1 && (
             <>
               <StepHeader step={step} />
               <section className="setup-section">
-                <h2>Voice Enrollment</h2>
-                <p style={{ marginBottom: "var(--nx-space-4)" }}>
-                  Record 5 clips of your voice saying "NEXUS" to enable speaker verification.
-                  This is optional — you can skip and enroll later.
+                <h2>Interaction Controls</h2>
+                <p style={{ marginBottom: "var(--nx-space-4)", color: "var(--nx-text-secondary)", fontSize: "var(--nx-text-sm)" }}>
+                  Configure your primary wake triggers and startup settings.
                 </p>
-                <VoiceEnrollment />
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "var(--nx-space-3)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "var(--nx-text-sm)" }}>Wake Word ("NEXUS")</div>
+                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>Local neural keyword spotter (openWakeWord)</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={wakeWordEnabled}
+                      onChange={(e) => setWakeWordEnabled(e.target.checked)}
+                      style={{ width: "18px", height: "18px", accentColor: "var(--nx-accent-blue)" }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "var(--nx-text-sm)" }}>Global Hotkey</div>
+                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>Instantly wake/toggle assistant</div>
+                    </div>
+                    <input
+                      type="text"
+                      value={hotkey}
+                      onChange={(e) => setHotkey(e.target.value)}
+                      style={{ padding: "6px 10px", fontSize: "var(--nx-text-xs)", border: "1px solid var(--nx-border)", borderRadius: "6px", width: "140px", textAlign: "center" }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: "var(--nx-text-sm)" }}>Start at Login</div>
+                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>Launch in system background on boot</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={autostart}
+                      onChange={(e) => setAutostart(e.target.checked)}
+                      style={{ width: "18px", height: "18px", accentColor: "var(--nx-accent-blue)" }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ marginTop: "var(--nx-space-5)" }}>
+                  <h3 style={{ fontSize: "var(--nx-text-sm)", marginBottom: "var(--nx-space-2)" }}>Voice Lock (Optional)</h3>
+                  <VoiceEnrollment />
+                </div>
               </section>
             </>
           )}
@@ -183,19 +260,10 @@ export function SetupApp() {
             <>
               <StepHeader step={step} />
               <section className="setup-section">
-                <h2>Connect Your Accounts</h2>
+                <h2>Connect Integrations</h2>
                 <p style={{ marginBottom: "var(--nx-space-4)", color: "var(--nx-text-secondary)", fontSize: "var(--nx-text-sm)" }}>
-                  Connect Google and GitHub so NEXUS can manage your email, calendar, repos, and PRs.
-                  You can connect both, one, or skip and do it later.
+                  Connect Google and GitHub to let NEXUS manage your emails, calendar, and GitHub repos. (You can also skip and connect later).
                 </p>
-
-                {/* Server status indicator (auto-configured, not user-entered) */}
-                {serverReachable !== null && (
-                  <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-2)", fontSize: "var(--nx-text-sm)", marginBottom: "var(--nx-space-4)" }}>
-                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: serverReachable ? "var(--nx-success)" : "var(--nx-error)" }} />
-                    {serverReachable ? "Connected to server" : "Can't reach server — check back later"}
-                  </div>
-                )}
 
                 {/* Google card */}
                 <div className="setup-provider setup-provider--large">
@@ -209,19 +277,10 @@ export function SetupApp() {
                   </div>
                   <div className="setup-provider-info">
                     <h3>Google</h3>
-                    <p>Gmail · Calendar · Drive · Meet</p>
+                    <p>Gmail · Calendar · Meet</p>
                   </div>
                   {oauthStatus.google?.connected ? (
-                    <div className="setup-connected">
-                      <span className="setup-badge setup-badge--ok">
-                        Connected{oauthStatus.google.expired ? " (expired)" : ""}
-                      </span>
-                      <button className="setup-btn setup-btn--small" onClick={() => handleDisconnect("google")}>
-                        Disconnect
-                      </button>
-                    </div>
-                  ) : configCheck.google && !configCheck.google.configured ? (
-                    <span className="setup-badge setup-badge--warn">Not configured</span>
+                    <span className="setup-badge setup-badge--ok">Connected</span>
                   ) : (
                     <button className="setup-btn setup-btn--primary setup-btn--small" disabled={connecting !== null} onClick={() => handleConnect("google")}>
                       {connecting === "google" ? "Connecting..." : "Connect"}
@@ -238,48 +297,15 @@ export function SetupApp() {
                   </div>
                   <div className="setup-provider-info">
                     <h3>GitHub</h3>
-                    <p>Repos · Pull Requests · Issues</p>
+                    <p>Repos · Pull Requests</p>
                   </div>
                   {oauthStatus.github?.connected ? (
-                    <div className="setup-connected">
-                      <span className="setup-badge setup-badge--ok">Connected</span>
-                      <button className="setup-btn setup-btn--small" onClick={() => handleDisconnect("github")}>
-                        Disconnect
-                      </button>
-                    </div>
-                  ) : configCheck.github && !configCheck.github.configured ? (
-                    <span className="setup-badge setup-badge--warn">Not configured</span>
+                    <span className="setup-badge setup-badge--ok">Connected</span>
                   ) : (
                     <button className="setup-btn setup-btn--primary setup-btn--small" disabled={connecting !== null} onClick={() => handleConnect("github")}>
                       {connecting === "github" ? "Connecting..." : "Connect"}
                     </button>
                   )}
-                </div>
-              </section>
-
-              <section className="setup-section">
-                <h2>API Keys</h2>
-                <p className="setup-hint">
-                  Add API keys for services like Claude, Devin, Antigravity, etc.
-                </p>
-                {apiKeys.length > 0 && (
-                  <div className="setup-apikey-list">
-                    {apiKeys.map((provider) => (
-                      <div key={provider} className="setup-apikey-item">
-                        <span className="setup-badge setup-badge--ok">{provider}</span>
-                        <button className="setup-btn setup-btn--small setup-btn--danger" onClick={() => handleRemoveApiKey(provider)}>
-                          Remove
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="setup-apikey-add">
-                  <input type="text" placeholder="Provider (e.g. claude)" value={newApiKeyProvider} onChange={(e) => setNewApiKeyProvider(e.target.value)} />
-                  <input type="password" placeholder="API key" value={newApiKeyValue} onChange={(e) => setNewApiKeyValue(e.target.value)} />
-                  <button className="setup-btn" onClick={handleAddApiKey} disabled={!newApiKeyProvider.trim() || !newApiKeyValue.trim()}>
-                    Save Key
-                  </button>
                 </div>
               </section>
             </>
@@ -288,33 +314,36 @@ export function SetupApp() {
       </AnimatePresence>
 
       {/* ── Footer navigation ── */}
-      {step > 0 && (
-        <div className="setup-footer">
+      <div className="setup-footer">
+        {step > 0 ? (
           <button className="setup-btn" onClick={() => setStep((step - 1) as Step)}>
             ← Back
           </button>
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
-            {saved && <span className="setup-saved">Saved!</span>}
-            {step < 2 ? (
-              <button
-                className="setup-btn setup-btn--primary"
-                onClick={() => setStep((step + 1) as Step)}
-              >
-                Continue →
-              </button>
-            ) : (
-              <button className="setup-btn setup-btn--primary" onClick={handleFinish}>
-                Finish ✓
-              </button>
-            )}
-          </div>
+        ) : (
+          <div />
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
+          {saved && <span className="setup-saved">Ready!</span>}
+          {step < 2 ? (
+            <button
+              className="setup-btn setup-btn--primary"
+              onClick={async () => {
+                await saveAllSettings();
+                setStep((step + 1) as Step);
+              }}
+            >
+              Continue →
+            </button>
+          ) : (
+            <button className="setup-btn setup-btn--primary" style={{ padding: "10px 24px" }} onClick={handleFinish}>
+              🚀 Launch Assistant
+            </button>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
-
-// ── Step indicator ──────────────────────────────────────────────
 
 function StepHeader({ step }: { step: Step }) {
   return (

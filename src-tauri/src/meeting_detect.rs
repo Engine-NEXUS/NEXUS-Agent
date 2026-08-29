@@ -158,33 +158,17 @@ impl Default for MeetingState {
 /// microphone usage rather than mere process presence.
 #[cfg(not(target_os = "windows"))]
 const MEETING_PROCESS_NAMES: &[&str] = &[
-    // Windows
-    "Zoom.exe",
-    "Teams.exe",
-    "ms-teams.exe",
-    "Discord.exe",
-    "Slack.exe",
-    "Skype.exe",
-    "webex.exe",
-    "Webex.exe",
-    "obs64.exe",
-    "obs32.exe",
-    "OBS.exe",
     // macOS
     "zoom.us",
     "Microsoft Teams",
-    "Discord",
-    "Slack",
     "Skype",
     "Cisco Webex Meetings",
-    "OBS",
+    "webex",
     // Linux
     "zoom",
     "teams",
-    "discord",
-    "slack",
     "skypeforlinux",
-    "obs",
+    "webex",
 ];
 
 /// Check if any known meeting application process is running.

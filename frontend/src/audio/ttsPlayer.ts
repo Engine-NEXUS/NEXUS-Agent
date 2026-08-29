@@ -1,29 +1,63 @@
 import { useAssistant } from "../store/assistant";
 
-/**
- * Local Text-to-Speech via the Web Speech API (SpeechSynthesis).
- *
- * The browser's built-in speech synthesizer is used to speak text aloud
- * on the device. No audio is sent from the server — only text. The server
- * returns result text, and this module speaks it locally.
- *
- * Two moments of audio output:
- *   1. Acknowledgement: "On it, sir." — spoken immediately when transcript
- *      is sent to the server.
- *   2. Result: the actual answer — spoken when the server returns the
- *      result text.
- *
- * Barge-in: stopTts() cancels any in-progress speech immediately.
- *
- * Meeting mode: When a meeting is detected (another app using the mic),
- * TTS is suppressed to avoid interrupting calls. The frontend emits
- * `tts-started` / `tts-ended` events so Rust can suppress wake detection
- * while NEXUS is speaking (prevents self-triggering).
- */
+export interface VoiceOption {
+  id: string;
+  name: string;
+  provider: "neural" | "elevenlabs" | "fish_audio" | "system";
+  accent: string;
+  description: string;
+  elevenVoiceId?: string;
+  fishModelId?: string;
+  gender: "male" | "female";
+  sampleText: string;
+}
+
+export const CURATED_VOICES: VoiceOption[] = [
+  {
+    id: "jarvis",
+    name: "Jarvis",
+    provider: "neural",
+    accent: "British (UK)",
+    description: "Crisp, articulate, calm executive assistant.",
+    elevenVoiceId: "pNInz6obpgDQGcFmaJgB", // Adam
+    gender: "male",
+    sampleText: "At your service sir. All systems are operational.",
+  },
+  {
+    id: "nova",
+    name: "Nova",
+    provider: "neural",
+    accent: "American (US)",
+    description: "Warm, natural, intelligent conversationalist.",
+    elevenVoiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel
+    gender: "female",
+    sampleText: "Hello! I'm ready to help you with your workflow today.",
+  },
+  {
+    id: "echo",
+    name: "Echo",
+    provider: "neural",
+    accent: "American (US)",
+    description: "Fast, energetic, high-clarity tech companion.",
+    elevenVoiceId: "TxGEqnHWrfWFTfGW9XjX", // Josh
+    gender: "male",
+    sampleText: "Ready to build. What repository are we analyzing?",
+  },
+  {
+    id: "onyx",
+    name: "Onyx",
+    provider: "neural",
+    accent: "Deep Tech",
+    description: "Deep, commanding, grounded baritone.",
+    elevenVoiceId: "VR6AewLTigWG4xSOukaG", // Arnold
+    gender: "male",
+    sampleText: "NEXUS online. Awaiting your commands.",
+  },
+];
 
 let voicesLoaded = false;
+let activeAudio: HTMLAudioElement | null = null;
 
-// Web Speech API voices load asynchronously. Wait for them.
 function ensureVoices(): Promise<void> {
   return new Promise((resolve) => {
     if (voicesLoaded || typeof speechSynthesis === "undefined") {
@@ -37,7 +71,6 @@ function ensureVoices(): Promise<void> {
       resolve();
       return;
     }
-    // Voices not loaded yet — wait for the voiceschanged event.
     speechSynthesis.addEventListener(
       "voiceschanged",
       () => {
@@ -49,95 +82,166 @@ function ensureVoices(): Promise<void> {
   });
 }
 
-/**
- * Check if TTS should be suppressed because a meeting is active.
- * Queries the Rust meeting detection state.
- */
 async function isMeetingActive(): Promise<boolean> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     return await invoke<boolean>("meeting_active");
   } catch {
-    // If the command isn't available (e.g. in dev without Rust changes),
-    // default to not suppressing TTS.
     return false;
   }
 }
 
-/**
- * Emit a Tauri event to notify Rust that TTS is starting/ending.
- * Rust uses this to suppress wake detection while NEXUS is speaking
- * (prevents self-triggering from speaker echo).
- */
 async function emitTtsEvent(event: string): Promise<void> {
   try {
     const { emit } = await import("@tauri-apps/api/event");
     await emit(event);
   } catch {
-    // Ignore — event emission is best-effort
+    // Ignore
+  }
+}
+
+async function getSavedSettings(): Promise<any> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke("get_settings");
+  } catch {
+    return null;
   }
 }
 
 /**
- * Speak text aloud using the local Web Speech API.
- *
- * In meeting mode, TTS is suppressed — the text is not spoken aloud
- * to avoid interrupting calls. The caller can check `meetingActive()`
- * to provide a silent visual response instead.
- *
- * @param text The text to speak.
- * @param onEnd Optional callback fired when speech completes naturally.
+ * Play synthesized speech audio from ElevenLabs REST streaming API.
  */
-export async function speak(text: string, onEnd?: () => void): Promise<void> {
+async function playElevenLabs(
+  text: string,
+  voiceId: string,
+  apiKey: string,
+  onEnd?: () => void,
+): Promise<void> {
+  stopTts();
+  void emitTtsEvent("tts-started");
+
+  try {
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "xi-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_turbo_v2_5",
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.8,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`ElevenLabs error: ${response.status} ${response.statusText}`);
+    }
+
+    const blob = await response.blob();
+    const audioUrl = URL.createObjectURL(blob);
+    const audio = new Audio(audioUrl);
+    activeAudio = audio;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+      activeAudio = null;
+      void emitTtsEvent("tts-ended");
+      onEnd?.();
+    };
+
+    audio.onerror = (e) => {
+      console.warn("ElevenLabs audio playback error:", e);
+      URL.revokeObjectURL(audioUrl);
+      activeAudio = null;
+      void emitTtsEvent("tts-ended");
+      onEnd?.();
+    };
+
+    await audio.play();
+  } catch (err) {
+    console.warn("ElevenLabs TTS failed, falling back to Web Speech:", err);
+    void emitTtsEvent("tts-ended");
+    return playWebSpeech(text, "jarvis", onEnd);
+  }
+}
+
+/**
+ * Play synthesized speech using Web Speech API with the best neural voice match.
+ */
+async function playWebSpeech(
+  text: string,
+  voiceId: string,
+  onEnd?: () => void,
+  rate = 1.0,
+): Promise<void> {
   if (typeof speechSynthesis === "undefined") {
-    console.warn("Web Speech API not available — TTS disabled");
     onEnd?.();
     return;
   }
-
-  // Check meeting mode — suppress TTS if a meeting is active
-  const meeting = await isMeetingActive();
-  if (meeting) {
-    console.log("[TTS] Suppressed — meeting mode active");
-    onEnd?.();
-    return;
-  }
-
-  // NOTE: Do NOT call speechSynthesis.cancel() here.
-  // cancel() fires an 'interrupted' error on any in-progress utterance,
-  // which causes the previous speak()'s onerror handler to fire and
-  // resolve its promise early. The caller is responsible for calling
-  // stopTts() before starting a new utterance if barge-in is desired.
 
   await ensureVoices();
-
   const utterance = new SpeechSynthesisUtterance(text);
-
-  // Pick a good English voice if available.
   const voices = speechSynthesis.getVoices();
-  const englishVoice = voices.find(
-    (v) => v.lang.startsWith("en") && v.default,
-  ) || voices.find((v) => v.lang.startsWith("en"));
-  if (englishVoice) {
-    utterance.voice = englishVoice;
+
+  // Find best matching voice according to selected persona
+  let selectedVoice: SpeechSynthesisVoice | undefined;
+
+  if (voiceId === "jarvis") {
+    selectedVoice =
+      voices.find((v) => v.lang === "en-GB" && (v.name.includes("Natural") || v.name.includes("Ryan") || v.name.includes("George"))) ||
+      voices.find((v) => v.lang.startsWith("en-GB")) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    utterance.pitch = 0.95;
+    utterance.rate = 1.0 * rate;
+  } else if (voiceId === "nova") {
+    selectedVoice =
+      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Jenny") || v.name.includes("Samantha") || v.name.includes("Natural"))) ||
+      voices.find((v) => v.lang.startsWith("en-US")) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    utterance.pitch = 1.05;
+    utterance.rate = 1.02 * rate;
+  } else if (voiceId === "echo") {
+    selectedVoice =
+      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Guy") || v.name.includes("Josh"))) ||
+      voices.find((v) => v.lang.startsWith("en-US")) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    utterance.pitch = 1.0;
+    utterance.rate = 1.1 * rate;
+  } else if (voiceId === "onyx") {
+    selectedVoice =
+      voices.find((v) => v.lang.startsWith("en") && (v.name.includes("Christopher") || v.name.includes("Daniel") || v.name.includes("David"))) ||
+      voices.find((v) => v.lang.startsWith("en"));
+    utterance.pitch = 0.85;
+    utterance.rate = 0.95 * rate;
+  } else {
+    selectedVoice = voices.find((v) => v.name === voiceId) || voices.find((v) => v.lang.startsWith("en"));
+    utterance.pitch = 1.0;
+    utterance.rate = rate;
   }
 
-  // Moderate rate for clarity — not too fast, not too slow.
-  utterance.rate = 1.0;
-  utterance.pitch = 1.0;
+  if (selectedVoice) {
+    utterance.voice = selectedVoice;
+  }
+
   utterance.volume = 1.0;
 
-  // Notify Rust that TTS is starting (suppresses wake detection)
   void emitTtsEvent("tts-started");
 
   utterance.onend = () => {
-    // Notify Rust that TTS has ended (resumes wake detection after 500ms grace)
     void emitTtsEvent("tts-ended");
     onEnd?.();
   };
 
   utterance.onerror = (e) => {
-    console.warn("TTS error:", e);
+    console.warn("Web Speech TTS error:", e);
     void emitTtsEvent("tts-ended");
     onEnd?.();
   };
@@ -146,21 +250,66 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
 }
 
 /**
+ * Preview / test a voice sample instantly (e.g. from the Setup Wizard or Settings).
+ */
+export async function previewVoice(
+  voice: VoiceOption,
+  customApiKey?: string,
+  onEnd?: () => void,
+): Promise<void> {
+  stopTts();
+
+  if (voice.provider === "elevenlabs" && (customApiKey || voice.elevenVoiceId)) {
+    const key = customApiKey;
+    if (key && voice.elevenVoiceId) {
+      return playElevenLabs(voice.sampleText, voice.elevenVoiceId, key, onEnd);
+    }
+  }
+
+  return playWebSpeech(voice.sampleText, voice.id, onEnd);
+}
+
+/**
+ * Speak text aloud using user's configured voice preferences.
+ */
+export async function speak(text: string, onEnd?: () => void): Promise<void> {
+  const meeting = await isMeetingActive();
+  if (meeting) {
+    console.log("[TTS] Suppressed — meeting mode active");
+    onEnd?.();
+    return;
+  }
+
+  const settings = await getSavedSettings();
+  const voiceId = settings?.ttsVoice || "jarvis";
+  const rate = settings?.speechRate || 1.0;
+  const elevenKey = settings?.elevenlabsApiKey;
+
+  const curated = CURATED_VOICES.find((v) => v.id === voiceId);
+
+  if (elevenKey && curated?.elevenVoiceId) {
+    return playElevenLabs(text, curated.elevenVoiceId, elevenKey, onEnd);
+  }
+
+  return playWebSpeech(text, voiceId, onEnd, rate);
+}
+
+/**
  * Stop any in-progress speech immediately (barge-in).
- * Called when the user wakes NEXUS while it's speaking, or on cancel.
  */
 export function stopTts(): void {
+  if (activeAudio) {
+    activeAudio.pause();
+    activeAudio.currentTime = 0;
+    activeAudio = null;
+  }
   if (typeof speechSynthesis !== "undefined") {
     speechSynthesis.cancel();
   }
-  // Notify Rust that TTS has ended
   void emitTtsEvent("tts-ended");
   useAssistant.getState().setSpeakSeq(null);
 }
 
-/**
- * Check if the Web Speech API is available on this platform.
- */
 export function ttsAvailable(): boolean {
   return typeof speechSynthesis !== "undefined";
 }

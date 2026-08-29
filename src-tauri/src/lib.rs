@@ -406,28 +406,7 @@ pub fn run() {
 
             // Position the orb at bottom-center, just above the taskbar/dock.
             if let Some(win) = app.get_webview_window("main") {
-                use tauri::PhysicalPosition;
-                if let Ok(Some(monitor)) = win.current_monitor() {
-                    let scale = monitor.scale_factor();
-                    let screen = monitor.size();
-                    let orb = 200i32; // matches tauri.conf.json
-                    let phys_orb = (orb as f64 * scale) as i32;
-
-                    let x = (screen.width as i32 - phys_orb) / 2;
-                    // Position relative to the work area (excludes taskbar/dock).
-                    // Use the monitor's work area if available, otherwise estimate.
-                    // Windows taskbar ~48px, macOS dock ~70px.
-                    #[cfg(target_os = "macos")]
-                    let taskbar = (70.0 * scale) as i32;
-                    #[cfg(not(target_os = "macos"))]
-                    let taskbar = (48.0 * scale) as i32;
-                    // Small gap above the taskbar/dock
-                    let gap = (12.0 * scale) as i32;
-                    let y = screen.height as i32 - phys_orb - taskbar - gap;
-
-                    let _ = win.set_position(PhysicalPosition::new(x, y));
-                    tracing::info!("orb positioned at ({x}, {y})");
-                }
+                let _ = window_manager::position_orb(&win);
             }
 
             // Pre-index installed apps for instant launch (background thread).

@@ -380,7 +380,12 @@ fn volume_mute() -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("amixer").args(["-q", "set", "Master", "toggle"]).spawn();
+        // Try PipeWire (wpctl), PulseAudio (pactl), or ALSA (amixer)
+        let _ = Command::new("wpctl")
+            .args(["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])
+            .spawn()
+            .or_else(|_| Command::new("pactl").args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"]).spawn())
+            .or_else(|_| Command::new("amixer").args(["-q", "set", "Master", "toggle"]).spawn());
     }
     tracing::info!("volume muted");
     Ok(CommandResult {
@@ -406,7 +411,12 @@ fn take_screenshot() -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("gnome-screenshot").arg("-a").spawn();
+        // Try COSMIC / GNOME / Spectacle / grim / xdg-desktop-portal screenshot tools
+        let _ = Command::new("cosmic-screenshot")
+            .spawn()
+            .or_else(|_| Command::new("gnome-screenshot").arg("-a").spawn())
+            .or_else(|_| Command::new("spectacle").arg("-r").spawn())
+            .or_else(|_| Command::new("flameshot").arg("gui").spawn());
     }
     tracing::info!("screenshot taken");
     Ok(CommandResult {
@@ -483,7 +493,7 @@ fn browser_key(keys: &str, label: &str) -> Result<CommandResult, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = Command::new("xdotool").args(["key", keys.replace("+", "+")]).spawn();
+        let _ = Command::new("xdotool").args(["key", keys]).spawn();
     }
     tracing::info!("browser key: {} ({})", keys, label);
     Ok(CommandResult {
