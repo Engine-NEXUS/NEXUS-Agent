@@ -1,8 +1,15 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS Response Sidebar — Right-edge frosted glass panel
+   NEXUS Response Sidebar — Right-edge pure transparent blur panel
    Shows server responses (n8n/Ollama/Hermes) only.
    Slides in from the right edge.
    Dismissed via Ctrl+Shift+Space (the same global hotkey).
+
+   Cross-platform blur strategy:
+   - Windows: OS-level acrylic blur via window-vibrancy (apply_acrylic)
+   - macOS:   OS-level vibrancy via NSVisualEffectMaterial::Sidebar
+   - Linux:   CSS backdrop-filter fallback (works if compositor supports it)
+   CSS background is transparent so the OS blur shows through.
+   Text uses mix-blend-mode: difference for automatic contrast adaptation.
    ═══════════════════════════════════════════════════════════════ */
 
 @import "../theme/tokens.css";
@@ -52,114 +59,67 @@ html, body, #root {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.15s ease 0.25s;
 }
 
-/* ── Card: frosted glass surface ──────────────────────────────── */
+/* ── Card: pure transparent — OS blur shows through ───────────── */
 .sidebar-card {
-  width: 260px;
-  /* Translucent white — the desktop wallpaper shows through, blurred */
-  background: rgba(255, 255, 255, 0.12);
-  /* Heavy blur + saturation boost so colors behind pop through */
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  /* Soft white border with top-edge highlight (matches reference images) */
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  width: 580px;
+  /* Pure transparent — the OS-level acrylic/vibrancy blur shows through.
+     On Linux (no native blur), the CSS backdrop-filter below provides
+     a fallback blur. */
+  background: transparent;
+  /* CSS backdrop-filter: works on Linux compositor + as a subtle
+     enhancement on Win/Mac (the OS blur is the primary effect). */
+  backdrop-filter: blur(30px) saturate(140%);
+  -webkit-backdrop-filter: blur(30px) saturate(140%);
+  /* Very subtle white border for the glass edge */
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
-  /* Outer depth shadow + inset top highlight for the glass edge effect */
+  /* Outer depth shadow + inset top highlight */
   box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    0 8px 32px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
   padding: var(--nx-space-4);
   display: flex;
   flex-direction: column;
   gap: var(--nx-space-3);
   margin-right: 8px;
-}
-
-/* ── Header ───────────────────────────────────────────────────── */
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-bottom: var(--nx-space-2);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-}
-
-.sidebar-logo {
-  font-size: var(--nx-text-sm);
-  font-weight: var(--nx-weight-bold);
-  background: var(--nx-accent-grad);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: 0.04em;
-}
-
-.sidebar-status {
-  display: flex;
-  align-items: center;
-}
-
-.sidebar-loading-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--nx-accent-blue);
-  animation: dot-pulse 1s ease-in-out infinite;
-}
-
-.sidebar-done-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--nx-success);
-}
-
-@keyframes dot-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.8); }
+  /* Isolation creates a clean stacking context for mix-blend-mode */
+  isolation: isolate;
 }
 
 /* ── Query line (what the user asked) ─────────────────────────── */
 .sidebar-query {
   font-size: var(--nx-text-sm);
-  color: rgba(255, 255, 255, 0.6);
   font-weight: var(--nx-weight-medium);
   white-space: pre-wrap;
   word-wrap: break-word;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  /* Adaptive text: white text + difference blend = auto-contrast.
+     On white backgrounds → text becomes black.
+     On dark backgrounds  → text stays white. */
+  color: white;
+  mix-blend-mode: difference;
 }
 
 /* ── Response area ────────────────────────────────────────────── */
 .sidebar-response {
-  max-height: 380px;
+  flex: 1;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
 }
 
 .sidebar-response::-webkit-scrollbar { width: 4px; }
 .sidebar-response::-webkit-scrollbar-track { background: transparent; }
 .sidebar-response::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(128, 128, 128, 0.3);
   border-radius: 2px;
 }
 
 .sidebar-response-text {
   font-size: var(--nx-text-sm);
-  line-height: 1.5;
-  /* White text with soft shadow for legibility over any wallpaper */
-  color: rgba(255, 255, 255, 0.95);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  line-height: 1.6;
+  /* Adaptive text: white + difference = auto black/white based on backdrop */
+  color: white;
+  mix-blend-mode: difference;
   white-space: pre-wrap;
   word-wrap: break-word;
-}
-
-/* ── Dismiss hint at the bottom ───────────────────────────────── */
-.sidebar-dismiss-hint {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.4);
-  text-align: center;
-  padding-top: var(--nx-space-2);
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  letter-spacing: 0.02em;
 }

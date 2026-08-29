@@ -45,6 +45,28 @@ export function SidebarApp() {
     };
   }, [show, hide]);
 
+  // ─── DEMO MODE: show sample text on launch for visual testing ───
+  // Remove this block after verifying the sidebar looks right.
+  useEffect(() => {
+    const demoQuery = "What's the weather like today?";
+    const demoResponse = `Here's your weather update for today:
+
+Temperature: 28°C (82°F)
+Condition: Partly Cloudy
+Humidity: 65%
+Wind: 12 km/h NW
+
+It's a pleasant day with mild winds. Expect some sun in the afternoon with clouds building up by evening. No rain expected.
+
+Tip: Great weather for a walk outside!`;
+
+    // Show after 2s so the window is ready
+    const t = setTimeout(() => {
+      show(demoQuery, demoResponse);
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [show]);
+
   // Auto-scroll response to bottom
   useEffect(() => {
     if (responseRef.current) {
@@ -66,14 +88,6 @@ export function SidebarApp() {
   return (
     <div id="sidebar-app" className={visible ? "sidebar--visible" : "sidebar--hidden"}>
       <div className="sidebar-card">
-        {/* Header */}
-        <div className="sidebar-header">
-          <div className="sidebar-logo">NEXUS</div>
-          <div className="sidebar-status">
-            <span className="sidebar-done-dot" />
-          </div>
-        </div>
-
         {/* Query line — what the user asked */}
         {query && (
           <div className="sidebar-query">{query}</div>
@@ -82,11 +96,6 @@ export function SidebarApp() {
         {/* Response text */}
         <div className="sidebar-response" ref={responseRef}>
           <div className="sidebar-response-text">{response}</div>
-        </div>
-
-        {/* Dismiss hint */}
-        <div className="sidebar-dismiss-hint">
-          Ctrl+Shift+Space to dismiss
         </div>
       </div>
     </div>

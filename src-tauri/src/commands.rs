@@ -486,8 +486,8 @@ pub fn show_sidebar<R: Runtime>(
     if let Ok(Some(monitor)) = win.current_monitor() {
         let scale = monitor.scale_factor();
         let screen = monitor.size();
-        let sidebar_w = 280i32;
-        let sidebar_h = 500i32;
+        let sidebar_w = 600i32;
+        let sidebar_h = 1200i32;
         let phys_w = (sidebar_w as f64 * scale) as i32;
         let phys_h = (sidebar_h as f64 * scale) as i32;
 
@@ -498,8 +498,36 @@ pub fn show_sidebar<R: Runtime>(
         let gap = (12.0 * scale) as i32;
 
         let x = screen.width as i32 - phys_w - gap;
-        let y = screen.height as i32 - phys_h - taskbar - gap;
+        // Clamp Y so the window doesn't go off-screen if taller than the monitor
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
         let _ = win.set_position(PhysicalPosition::new(x, y));
+    }
+
+    // ─── Native OS blur (cross-platform) ───────────────────────────
+    // CSS backdrop-filter doesn't work on Tauri transparent windows
+    // (WebView2/WKWebView can't blur the desktop behind the window).
+    // window-vibrancy applies blur at the OS level so the desktop
+    // wallpaper actually gets blurred behind the sidebar.
+    //
+    // Windows: acrylic = frosted glass with no dark tint
+    // macOS:   vibrancy = native NSVisualEffectView (like Finder sidebar)
+    // Linux:   no native API — CSS backdrop-filter is the fallback
+    #[cfg(target_os = "windows")]
+    {
+        use window_vibrancy::apply_acrylic;
+        // Very light tint (alpha=5) — almost transparent, just enough
+        // to give the blur a surface to work with
+        let _ = apply_acrylic(&win, Some((255, 255, 255, 5)));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+        let _ = apply_vibrancy(
+            &win,
+            NSVisualEffectMaterial::Sidebar,
+            None,
+            Some(20.0), // corner radius
+        );
     }
 
     win.show().map_err(|e| e.to_string())?;
