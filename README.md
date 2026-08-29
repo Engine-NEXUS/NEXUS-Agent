@@ -15,27 +15,52 @@ A cross-platform, Siri-like floating overlay assistant. The **client** (Tauri v2
 ## Repo layout
 See the file manifest in `docs/ARCHITECTURE.md §11`.
 
-## Quick start (dev)
-```bash
-# Frontend
-pnpm --dir frontend install
-pnpm --dir frontend dev
+## Running Locally (Development)
 
-# Rust + Tauri (use mock-wake to skip the Porcupine native lib in dev/CI)
+To run the app locally with hot-reloading (frontend served by Vite):
+
+1. **Start the frontend dev server:**
+   ```powershell
+   npm --prefix frontend install
+   npm --prefix frontend run dev
+   ```
+
+2. **Run the Rust backend (Tauri):**
+   In a new terminal, set the `NEXUS_SERVER_URL` environment variable to your Cloudflare Worker URL, then run Tauri:
+   ```powershell
+   cd src-tauri
+   $env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
+   cargo run
+   ```
+
+## Local Release Build (No Installer)
+
+For a plain local build (faster iteration, no installer), you **must** pass the `custom-protocol` feature so Tauri embeds the frontend assets rather than looking for a dev server:
+
+```powershell
+npm --prefix frontend install
+npm --prefix frontend run build
+
 cd src-tauri
-cargo run --no-default-features --features mock-wake
+$env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
+cargo build --release --features custom-protocol
+# Run the built binary: .\target\release\nexus.exe
 ```
 
-## Production build
-```bash
+## Production Build (Installer)
+
+Always build the desktop app installer with the Tauri CLI via the build script:
+
+```powershell
+$env:NEXUS_SERVER_URL = "https://nexus-worker.your-subdomain.workers.dev"
 pwsh ./scripts/build.ps1 -Release
 ```
 Set signing env vars (see `scripts/build.ps1` and `.github/workflows/release.yml`).
 
-## Configuration points
-- **Backend WSS URL / device token:** `frontend/src/App.tsx` (`SERVER_URL`, `DEVICE_TOKEN`) — replace `REPLACE_FROM_KEYCHAIN` with a keychain read in production.
-- **Porcupine assets:** drop `libpv_porcupine.*`, `porcupine_params.pv`, `NEXUS.ppn` into `src-tauri/resources/porcupine/` (bundled via `tauri.conf.json` resources). AccessKey goes in the OS keychain under `NEXUS`/`porcupine-access-key`.
-- **n8n server:** import `server/n8n/master_supervisor.blueprint.json` and point it at your Ollama (`http://localhost:11434`) and piper (`http://localhost:5000`) instances.
+## Configuration Points
+- **Worker URL:** Baked into the binary at compile time via the `NEXUS_SERVER_URL` environment variable.
+- **Wake Word (openWakeWord):** The wake word engine uses openWakeWord (`wakeword-oww` feature by default) and its assets are bundled in `src-tauri/resources/oww/`.
+- **Serverless Backend:** NEXUS is fully serverless. The backend logic runs on Cloudflare Workers (intent classification, summarization via Workers AI, and D1 for storage). No local sidecar or n8n is needed.
 
 ## Platforms
 | OS | Notes |

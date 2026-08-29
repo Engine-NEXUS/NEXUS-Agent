@@ -61,8 +61,8 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
                         let _ = crate::window_manager::configure_non_activating_overlay(&win);
                         let _ = win.set_ignore_cursor_events(false);
 
-                        // Call the frontend wake handler directly.
-                        let _ = win.eval("window.__NEXUS_WAKE__ && window.__NEXUS_WAKE__()");
+                        // Call the frontend toggle handler directly.
+                        let _ = win.eval("window.__NEXUS_TOGGLE__ && window.__NEXUS_TOGGLE__()");
                     }
                 }
             }
