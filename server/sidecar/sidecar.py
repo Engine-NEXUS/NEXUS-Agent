@@ -30,10 +30,12 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import random
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -98,7 +100,13 @@ SESSIONS: Dict[str, Session] = {}
 # ---- Health ----
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"ok": True, "sessions": len(SESSIONS)})
+    from .tts import ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+    return JSONResponse({
+        "ok": True,
+        "sessions": len(SESSIONS),
+        "tts_configured": bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID),
+        "stt_url": STT_URL,
+    })
 
 
 # ---- WebSocket endpoint ----
@@ -218,12 +226,11 @@ async def _flush_and_run(sess: Session) -> None:
         credentials = {}
 
     # 3. Speak acknowledgement AND call n8n concurrently.
-    import random
     ack_text = random.choice(_ACK_PHRASES)
     tts = get_tts()
 
     # Start n8n call as a background task.
-    n8n_task = asyncio_create_task(
+    n8n_task = asyncio.create_task(
         call_supervisor(
             session_id=sess.session_id,
             user_id=sess.user_id,
@@ -232,6 +239,11 @@ async def _flush_and_run(sess: Session) -> None:
             credentials=credentials,
         )
     )
+
+    # Send the ack text to the client for transcript display.
+    if not sess.cancelled:
+        with suppress(Exception):
+            await sess.ws.send_text(json.dumps({"type": "ack", "data": ack_text}))
 
     # Speak the ack phrase immediately (this blocks until ack audio finishes).
     if not sess.cancelled:
@@ -259,6 +271,11 @@ async def _flush_and_run(sess: Session) -> None:
         if not sess.cancelled:
             await _send_done(sess.ws)
         return
+
+    # Send the result text to the client for transcript display.
+    if not sess.cancelled:
+        with suppress(Exception):
+            await sess.ws.send_text(json.dumps({"type": "result", "data": result_text}))
 
     # 5. Speak the final result (streamed at sentence boundaries for low latency).
     if not sess.cancelled:
@@ -314,12 +331,6 @@ async def _send_done(ws: WebSocket) -> None:
 async def _send_error(ws: WebSocket, message: str) -> None:
     with suppress(Exception):
         await ws.send_text(json.dumps({"type": "error", "message": message}))
-
-
-# Avoid importing asyncio at module top for clarity; use a thin alias.
-import asyncio
-def asyncio_create_task(coro):
-    return asyncio.create_task(coro)
 
 
 if __name__ == "__main__":
