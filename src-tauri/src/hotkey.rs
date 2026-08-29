@@ -12,7 +12,7 @@
 //!   - The hotkey never does both at once — it's one or the other based on
 //!     the current sidebar visibility state.
 
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const HOTKEYS: &[&str] = &[
