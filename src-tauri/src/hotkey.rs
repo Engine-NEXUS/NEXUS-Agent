@@ -29,9 +29,7 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
                 if let Some(win) = handle.get_webview_window("main") {
                     let _ = win.show();
-                    let _ = crate::window_manager::position_orb(&win);
-                    let _ = win.set_focus();
-                    let _ = win.set_always_on_top(true);
+                    let _ = crate::window_manager::configure_non_activating_overlay(&win);
                     let _ = win.set_ignore_cursor_events(false);
 
                     // Call the frontend wake handler directly.
