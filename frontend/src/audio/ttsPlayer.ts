@@ -14,6 +14,11 @@ import { useAssistant } from "../store/assistant";
  *      result text.
  *
  * Barge-in: stopTts() cancels any in-progress speech immediately.
+ *
+ * Meeting mode: When a meeting is detected (another app using the mic),
+ * TTS is suppressed to avoid interrupting calls. The frontend emits
+ * `tts-started` / `tts-ended` events so Rust can suppress wake detection
+ * while NEXUS is speaking (prevents self-triggering).
  */
 
 let voicesLoaded = false;
@@ -45,7 +50,40 @@ function ensureVoices(): Promise<void> {
 }
 
 /**
+ * Check if TTS should be suppressed because a meeting is active.
+ * Queries the Rust meeting detection state.
+ */
+async function isMeetingActive(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<boolean>("meeting_active");
+  } catch {
+    // If the command isn't available (e.g. in dev without Rust changes),
+    // default to not suppressing TTS.
+    return false;
+  }
+}
+
+/**
+ * Emit a Tauri event to notify Rust that TTS is starting/ending.
+ * Rust uses this to suppress wake detection while NEXUS is speaking
+ * (prevents self-triggering from speaker echo).
+ */
+async function emitTtsEvent(event: string): Promise<void> {
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(event);
+  } catch {
+    // Ignore — event emission is best-effort
+  }
+}
+
+/**
  * Speak text aloud using the local Web Speech API.
+ *
+ * In meeting mode, TTS is suppressed — the text is not spoken aloud
+ * to avoid interrupting calls. The caller can check `meetingActive()`
+ * to provide a silent visual response instead.
  *
  * @param text The text to speak.
  * @param onEnd Optional callback fired when speech completes naturally.
@@ -53,6 +91,14 @@ function ensureVoices(): Promise<void> {
 export async function speak(text: string, onEnd?: () => void): Promise<void> {
   if (typeof speechSynthesis === "undefined") {
     console.warn("Web Speech API not available — TTS disabled");
+    onEnd?.();
+    return;
+  }
+
+  // Check meeting mode — suppress TTS if a meeting is active
+  const meeting = await isMeetingActive();
+  if (meeting) {
+    console.log("[TTS] Suppressed — meeting mode active");
     onEnd?.();
     return;
   }
@@ -81,12 +127,18 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
   utterance.pitch = 1.0;
   utterance.volume = 1.0;
 
+  // Notify Rust that TTS is starting (suppresses wake detection)
+  void emitTtsEvent("tts-started");
+
   utterance.onend = () => {
+    // Notify Rust that TTS has ended (resumes wake detection after 500ms grace)
+    void emitTtsEvent("tts-ended");
     onEnd?.();
   };
 
   utterance.onerror = (e) => {
     console.warn("TTS error:", e);
+    void emitTtsEvent("tts-ended");
     onEnd?.();
   };
 
@@ -101,6 +153,8 @@ export function stopTts(): void {
   if (typeof speechSynthesis !== "undefined") {
     speechSynthesis.cancel();
   }
+  // Notify Rust that TTS has ended
+  void emitTtsEvent("tts-ended");
   useAssistant.getState().setSpeakSeq(null);
 }
 

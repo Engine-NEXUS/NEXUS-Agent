@@ -752,11 +752,27 @@ mod engine {
         }
 
         // 3. Feed 1280-sample chunks to KWS engine
+        //    Check meeting/privacy state — if suppressed, drain audio but
+        //    don't run detection (prevents wake during meetings and TTS self-trigger)
         {
             let mut buf = out_buf.lock();
             buf.extend(produced);
             while buf.len() >= chunk_size {
                 let chunk: Vec<f32> = buf.drain(0..chunk_size).collect();
+
+                // Check if wake detection should be suppressed
+                let suppressed = super::MEETING_STATE
+                    .get()
+                    .map(|s: &std::sync::Arc<crate::meeting_detect::MeetingState>| {
+                        s.should_suppress_wake()
+                    })
+                    .unwrap_or(false);
+
+                if suppressed {
+                    // Still consume the audio (keep buffer drained) but skip detection
+                    continue;
+                }
+
                 let mut eng = engine.lock();
                 if eng.process(&chunk) {
                     let _ = wake_tx.send(());
@@ -770,6 +786,17 @@ mod engine {
 use once_cell::sync::OnceCell;
 #[cfg(not(feature = "mock-wake"))]
 static WAKE_TX: OnceCell<tokio::sync::mpsc::UnboundedSender<()>> = OnceCell::new();
+/// Global meeting/privacy state — checked on every audio chunk.
+/// Set up in `lib.rs` before the wake engine starts.
+#[cfg(not(feature = "mock-wake"))]
+static MEETING_STATE: OnceCell<std::sync::Arc<crate::meeting_detect::MeetingState>> =
+    OnceCell::new();
+
+/// Set the global meeting state reference. Called from `lib.rs` during setup.
+#[cfg(not(feature = "mock-wake"))]
+pub fn set_meeting_state(state: std::sync::Arc<crate::meeting_detect::MeetingState>) {
+    let _ = MEETING_STATE.set(state);
+}
 
 #[cfg(not(feature = "mock-wake"))]
 pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {

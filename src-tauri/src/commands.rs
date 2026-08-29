@@ -259,3 +259,69 @@ pub fn delete_voice_profile<R: Runtime>(
     }
     Ok(())
 }
+
+// ─── Meeting / privacy mode commands ─────────────────────────────────
+
+/// IPC: Check if a meeting is active (TTS should be suppressed).
+///
+/// The frontend calls this before speaking to decide whether to
+/// produce audible TTS or show a silent visual response instead.
+#[tauri::command]
+pub fn meeting_active<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let state = app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+        .ok_or_else(|| "meeting state not managed".to_string())?;
+    Ok(state.is_meeting_active())
+}
+
+/// IPC: Check if NEXUS is paused (manual pause via tray).
+#[tauri::command]
+pub fn is_nexus_paused<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let state = app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+        .ok_or_else(|| "meeting state not managed".to_string())?;
+    Ok(state.is_paused())
+}
+
+/// IPC: Get the full meeting/privacy mode status.
+#[tauri::command]
+pub fn meeting_status<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<MeetingStatus, String> {
+    let state = app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+        .ok_or_else(|| "meeting state not managed".to_string())?;
+    Ok(MeetingStatus {
+        meeting_active: state.is_meeting_active(),
+        paused: state.is_paused(),
+        tts_playing: state.tts_playing.load(std::sync::atomic::Ordering::Relaxed),
+        detection_enabled: state.detection_enabled.load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// IPC: Enable or disable automatic meeting detection.
+#[tauri::command]
+pub fn set_meeting_detection<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    enabled: bool,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<std::sync::Arc<crate::meeting_detect::MeetingState>>()
+        .ok_or_else(|| "meeting state not managed".to_string())?;
+    state.detection_enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("meeting detection: {}", if enabled { "enabled" } else { "disabled" });
+    Ok(())
+}
+
+/// Serialized meeting status returned by `meeting_status`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MeetingStatus {
+    pub meeting_active: bool,
+    pub paused: bool,
+    pub tts_playing: bool,
+    pub detection_enabled: bool,
+}
