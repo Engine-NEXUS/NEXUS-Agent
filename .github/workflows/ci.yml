@@ -99,6 +99,10 @@ jobs:
         working-directory: server
         run: python -c "import ast; ast.parse(open('nlu_server.py').read()); print('NLU server parses OK')"
 
+      - name: Check STT server parses
+        working-directory: server
+        run: python -c "import ast; ast.parse(open('stt_server.py').read()); print('STT server parses OK')"
+
       - name: Check NLU train script parses
         working-directory: server/nlu
         run: python -c "import ast; ast.parse(open('train.py').read()); print('train.py parses OK')"
