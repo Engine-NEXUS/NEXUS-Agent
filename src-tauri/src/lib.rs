@@ -492,7 +492,7 @@ pub fn run() {
                     let user_id = format!("user_{}", network::uuid_v4());
                     let device_id = format!("device_{}", network::uuid_v4());
                     let server_url = option_env!("NEXUS_SERVER_URL")
-                        .unwrap_or("https://nexus-worker.example.workers.dev");
+                        .unwrap_or("https://nexus-worker.chitkullakshya.workers.dev");
                     let default_config = serde_json::json!({
                         "serverUrl": server_url,
                         "userId": user_id,
