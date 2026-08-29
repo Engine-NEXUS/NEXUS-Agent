@@ -91,6 +91,24 @@ windows-core = "0.61"
 
 [features]
 default = ["wakeword-oww"]
+# REQUIRED FOR PRODUCTION BUILDS — DO NOT REMOVE.
+# Tauri decides whether to load `frontendDist` (bundled assets, served over the
+# custom `tauri://` protocol) or `devUrl` (http://localhost:5173) purely from
+# this feature flag:
+#
+#   tauri-macros/src/context.rs:  dev: cfg!(not(feature = "custom-protocol"))
+#
+# Without it, EVERY build — including `cargo build --release` — embeds the dev
+# server URL and the packaged app shows "localhost refused to connect"
+# (ERR_CONNECTION_REFUSED) because no Vite server is running.
+#
+# `cargo tauri build` passes `--features custom-protocol` automatically.
+# For a plain cargo build, pass it explicitly:
+#   cargo build --release --features custom-protocol
+#
+# It is intentionally NOT in `default` — `tauri dev` needs it OFF so the Vite
+# dev server and hot reload keep working.
+custom-protocol = ["tauri/custom-protocol"]
 wakeword-porcupine = []   # legacy: bundle libpv_porcupine + .ppn at runtime
 wakeword-sherpa = []      # sherpa-onnx VAD + ASR + speaker verification (old)
 wakeword-oww = []         # openWakeWord KWS + speaker verification (new, default)

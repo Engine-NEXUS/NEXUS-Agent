@@ -42,12 +42,133 @@ pub struct AppState {
     pub events: tauri::AppHandle,
 }
 
+// ─── WebView2 stale profile cleanup (Windows) ─────────────────────────────
+//
+// See the comment in run() for why this is a separate function called
+// BEFORE tauri::Builder::default().
+#[cfg(target_os = "windows")]
+fn cleanup_webview2_profile() {
+    // The WebView2 data directory is at %LOCALAPPDATA%\<identifier>\EBWebView.
+    // The identifier is "com.nexus.assistant" (from tauri.conf.json).
+    let local_appdata = match std::env::var("LOCALAPPDATA") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let webview_dir = std::path::PathBuf::from(&local_appdata)
+        .join("com.nexus.assistant")
+        .join("EBWebView");
+
+    if !webview_dir.exists() {
+        return; // Nothing to clean — fresh install or already cleaned.
+    }
+
+    // Step 1: Kill orphaned msedgewebview2.exe processes from a PREVIOUS
+    // NEXUS instance. These processes reference our EBWebView directory
+    // (--user-data-dir=...com.nexus.assistant\EBWebView) and hold file
+    // locks that prevent deletion. The CURRENT instance hasn't created
+    // any WebView2 processes yet (we're before the Tauri builder), so
+    // any such process MUST be an orphan from a previous run.
+    //
+    // We use `taskkill /F /FI` with a window-title filter won't work, so
+    // we use PowerShell to find processes by command-line match and kill
+    // them. This is the most reliable approach on Windows.
+    let ps_script = r#"
+        $target = 'com.nexus.assistant\EBWebView'
+        $procs = Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
+            Where-Object { $_.CommandLine -like "*$target*" }
+        if ($procs) {
+            $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Milliseconds 500
+            Write-Output "KILLED:$($procs.Count)"
+        } else {
+            Write-Output "NONE"
+        }
+        "#;
+
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", ps_script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+
+    // Step 2: Attempt to delete the EBWebView directory. Retry up to 3
+    // times with 200ms between attempts — the killed processes may take
+    // a moment to release their file handles.
+    for attempt in 1..=3u8 {
+        match std::fs::remove_dir_all(&webview_dir) {
+            Ok(()) => {
+                tracing::info!("cleared WebView2 profile (attempt {}): {}", attempt, webview_dir.display());
+                return;
+            }
+            Err(e) if e.raw_os_error() == Some(32) => {
+                // os error 32 = sharing violation (files still locked)
+                tracing::debug!("WebView2 cleanup attempt {} failed (locked): {}", attempt, e);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) if e.raw_os_error() == Some(2) => {
+                // os error 2 = not found (another thread already deleted it)
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("WebView2 cleanup error (attempt {}): {}", attempt, e);
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+
+    // Step 3: If deletion still fails (stubborn locks), rename the
+    // directory instead. WebView2 will create a fresh one, and the
+    // stale rename target can be cleaned up by the OS or a future run.
+    let stale_dir = webview_dir.with_extension("stale");
+    // Remove any previous stale dir first
+    let _ = std::fs::remove_dir_all(&stale_dir);
+    match std::fs::rename(&webview_dir, &stale_dir) {
+        Ok(()) => {
+            tracing::info!(
+                "WebView2 profile locked — renamed to stale: {} → {}",
+                webview_dir.display(),
+                stale_dir.display()
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                "WebView2 profile cleanup FAILED — could not delete or rename {}: {e}",
+                webview_dir.display()
+            );
+            tracing::error!(
+                "This will likely cause 'localhost refused to connect' on this launch."
+            );
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,nexus=debug")))
         .with_target(false)
         .init();
+
+    // ─── WebView2 stale profile cleanup ───────────────────────────────
+    //
+    // This MUST happen BEFORE tauri::Builder::default() because Tauri
+    // creates WebView2 windows (and their child msedgewebview2.exe
+    // processes) during builder initialization — BEFORE .setup() runs.
+    // If we try to delete EBWebView in .setup(), the current instance's
+    // own WebView2 is already holding the directory locked (os error 32).
+    //
+    // Root cause of "localhost refused to connect":
+    //   WebView2 persists session state (Preferences, Sessions, etc.) in
+    //   %LOCALAPPDATA%/<identifier>/EBWebView. If a dev build
+    //   (localhost:5173) was ever run, the stale dev URL survives in
+    //   Preferences and is restored on every subsequent launch — even
+    //   release builds — causing ERR_CONNECTION_REFUSED.
+    //
+    // Fix: delete the entire EBWebView directory before Tauri starts so
+    // WebView2 creates a fresh profile with the bundled frontend.
+    // Also kill any orphaned msedgewebview2.exe processes from a previous
+    // NEXUS instance that may still hold the directory locked.
+    #[cfg(target_os = "windows")]
+    cleanup_webview2_profile();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -75,23 +196,11 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Clear WebView2 HTTP cache on startup to prevent stale JS files
-            // from being served after code changes (dev mode).
-            // The cache is at: %LOCALAPPDATA%/<identifier>/EBWebView/Default/Cache
-            #[cfg(target_os = "windows")]
-            {
-                if let Ok(data_dir) = app.path().app_data_dir() {
-                    let cache_dir = data_dir.join("EBWebView").join("Default").join("Cache");
-                    if cache_dir.exists() {
-                        let _ = std::fs::remove_dir_all(&cache_dir);
-                        tracing::debug!("cleared WebView2 cache: {}", cache_dir.display());
-                    }
-                    let code_cache = data_dir.join("EBWebView").join("Default").join("Code Cache");
-                    if code_cache.exists() {
-                        let _ = std::fs::remove_dir_all(&code_cache);
-                    }
-                }
-            }
+            // WebView2 profile cleanup is done BEFORE tauri::Builder::default()
+            // in run() — see cleanup_webview2_profile() above. Doing it here
+            // in .setup() is too late: Tauri has already created WebView2
+            // windows and their child processes hold the EBWebView directory
+            // locked (os error 32).
 
             // Register the nexus:// deep-link scheme (Windows + Linux runtime registration).
             // macOS uses Info.plist CFBundleURLTypes (already configured).

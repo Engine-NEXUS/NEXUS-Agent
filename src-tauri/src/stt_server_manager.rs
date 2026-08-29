@@ -1,20 +1,21 @@
 //! STT server process manager — auto-spawns the faster-whisper STT server on startup.
 //!
 //! The STT server (server/stt_server.py) runs a local faster-whisper model
-//! on port 8000. It receives raw PCM audio from the NEXUS client, transcribes
+//! on port 18765. It receives raw PCM audio from the NEXUS client, transcribes
 //! it to text, and returns the transcript. Audio NEVER leaves the device.
 //!
 //! Without this server, NEXUS cannot transcribe speech — every command
 //! fails with "Didn't catch that, sir." because the STT endpoint is unreachable.
 //!
 //! This module mirrors sidecar_manager.rs:
-//!   1. Checks if the STT server is already running (HTTP GET /health on port 8000).
+//!   1. Checks if the STT server is already running (HTTP GET /health on port 18765).
 //!   2. If not, spawns `python -m uvicorn stt_server:app` in the server directory.
 //!   3. Waits up to 30 seconds for it to become healthy (model loading takes time).
 //!   4. On Windows, uses CREATE_NO_WINDOW so no terminal pops up.
 //!   5. Redirects stdout/stderr to a log file in the app data directory.
 //!
-//! Port: Default 8000. Override with NEXUS_STT_PORT env var.
+//! Port: Default 18765 (avoids conflict with common dev ports like 8000).
+//! Override with NEXUS_STT_PORT env var.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
 
-const DEFAULT_STT_PORT: u16 = 8000;
+const DEFAULT_STT_PORT: u16 = 18765;
 /// Longer than sidecar — faster-whisper model loading can take 10-20s on CPU.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
