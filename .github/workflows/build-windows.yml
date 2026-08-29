@@ -23,12 +23,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Frontend Dependencies
-        run: |
-          npm --prefix frontend install
+        working-directory: ./frontend
+        run: npm install
 
       - name: Build Frontend Bundle
-        run: |
-          npm --prefix frontend run build
+        working-directory: ./frontend
+        run: npm run build
 
       - name: Build Windows Executable (.exe) Installer via Tauri
         uses: tauri-apps/tauri-action@v0
