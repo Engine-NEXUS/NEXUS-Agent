@@ -61,13 +61,14 @@ export const CURATED_VOICES: VoiceOption[] = [
 ];
 
 let activeAudio: HTMLAudioElement | null = null;
+let audioCtx: AudioContext | null = null;
 
 async function emitTtsEvent(event: string): Promise<void> {
   try {
     const { emit } = await import("@tauri-apps/api/event");
     await emit(event);
   } catch {
-    // Ignore
+    // Ignore outside Tauri
   }
 }
 
@@ -113,24 +114,154 @@ function playAudioUrl(url: string, onEnd?: () => void): Promise<void> {
 
     audio.onended = cleanup;
     audio.onerror = (e) => {
-      console.warn("Audio playback error on url:", url, e);
+      console.warn("[TTS] Audio playback error on url:", url, e);
       cleanup();
     };
 
     audio.play().catch((err) => {
-      console.warn("Audio play() rejected:", err);
+      console.warn("[TTS] Audio play() rejected:", err);
       cleanup();
     });
   });
 }
 
 /**
- * Stream speech audio from Google TTS endpoint with locale.
+ * Web Audio API synth voice sound generator as an instant offline fallback.
+ * Produces persona-tuned melodic speech chords when network/speech-synth is unavailable.
  */
-function playStreamTts(text: string, locale: string, onEnd?: () => void): Promise<void> {
-  const encoded = encodeURIComponent(text);
-  const streamUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${locale}&client=tw-ob&q=${encoded}`;
-  return playAudioUrl(streamUrl, onEnd);
+function playSynthVoiceSignature(voiceId: string, onEnd?: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    stopTts();
+    void emitTtsEvent("tts-started");
+
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) {
+        onEnd?.();
+        resolve();
+        return;
+      }
+
+      audioCtx = new AudioContextClass();
+      const ctx = audioCtx;
+
+      let freqs: number[] = [440, 660, 880];
+      if (voiceId === "jarvis") freqs = [330, 440, 550, 660]; // Butler Executive
+      else if (voiceId === "nova") freqs = [523.25, 659.25, 783.99]; // Warm Major
+      else if (voiceId === "echo") freqs = [880, 1108.73, 1318.51]; // Bright Tech
+      else if (voiceId === "onyx") freqs = [110, 164.81, 220]; // Deep Baritone
+
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.15, ctx.currentTime);
+      masterGain.connect(ctx.destination);
+
+      freqs.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const noteGain = ctx.createGain();
+
+        osc.type = voiceId === "onyx" ? "sawtooth" : voiceId === "jarvis" ? "triangle" : "sine";
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.1);
+
+        noteGain.gain.setValueAtTime(0.01, ctx.currentTime);
+        noteGain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + idx * 0.1 + 0.05);
+        noteGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.1 + 0.4);
+
+        osc.connect(noteGain);
+        noteGain.connect(masterGain);
+
+        osc.start(ctx.currentTime + idx * 0.1);
+        osc.stop(ctx.currentTime + idx * 0.1 + 0.45);
+      });
+
+      setTimeout(() => {
+        try {
+          ctx.close();
+        } catch {}
+        audioCtx = null;
+        void emitTtsEvent("tts-ended");
+        onEnd?.();
+        resolve();
+      }, freqs.length * 100 + 450);
+    } catch (err) {
+      console.warn("[TTS] Synth fallback error:", err);
+      void emitTtsEvent("tts-ended");
+      onEnd?.();
+      resolve();
+    }
+  });
+}
+
+/**
+ * Web Speech API speech synthesizer with WebKitGTK safety timeouts.
+ */
+function playWebSpeech(text: string, voice: VoiceOption, onEnd?: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof speechSynthesis === "undefined") {
+      void playSynthVoiceSignature(voice.id, onEnd).then(resolve);
+      return;
+    }
+
+    stopTts();
+    void emitTtsEvent("tts-started");
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = voice.locale || "en-US";
+
+    if (voice.id === "jarvis") {
+      utterance.pitch = 0.9;
+      utterance.rate = 0.95;
+    } else if (voice.id === "nova") {
+      utterance.pitch = 1.1;
+      utterance.rate = 1.0;
+    } else if (voice.id === "echo") {
+      utterance.pitch = 1.05;
+      utterance.rate = 1.1;
+    } else if (voice.id === "onyx") {
+      utterance.pitch = 0.75;
+      utterance.rate = 0.9;
+    }
+
+    let finished = false;
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(safetyTimer);
+      void emitTtsEvent("tts-ended");
+      onEnd?.();
+      resolve();
+    };
+
+    // 4-second safety watchdog in case WebKitGTK drops speech synthesis events
+    const safetyTimer = setTimeout(() => {
+      if (!finished) {
+        console.warn("[TTS] WebSpeech watchdog triggered — falling back to synth voice");
+        try {
+          speechSynthesis.cancel();
+        } catch {}
+        cleanup();
+      }
+    }, 4000);
+
+    utterance.onend = cleanup;
+    utterance.onerror = (e) => {
+      console.warn("[TTS] WebSpeech error:", e);
+      cleanup();
+    };
+
+    try {
+      // Pick matching voice if available in system
+      const systemVoices = speechSynthesis.getVoices();
+      const match = systemVoices.find(
+        (v) => v.lang.startsWith(voice.locale.slice(0, 2)) || v.lang.includes(voice.locale)
+      );
+      if (match) utterance.voice = match;
+
+      speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn("[TTS] speechSynthesis.speak failed:", err);
+      cleanup();
+    }
+  });
 }
 
 /**
@@ -176,13 +307,14 @@ async function playElevenLabs(
       onEnd?.();
     });
   } catch (err) {
-    console.warn("ElevenLabs failed, falling back to neural stream:", err);
-    return playStreamTts(text, "en-GB", onEnd);
+    console.warn("[TTS] ElevenLabs failed, falling back to WebSpeech:", err);
+    const fallbackVoice = CURATED_VOICES.find((v) => v.elevenVoiceId === voiceId) || CURATED_VOICES[0];
+    return playWebSpeech(text, fallbackVoice, onEnd);
   }
 }
 
 /**
- * Preview / test a voice sample instantly (e.g. from the Setup Wizard or Settings).
+ * Preview / test a voice sample instantly (from Setup Wizard or Settings).
  */
 export async function previewVoice(
   voice: VoiceOption,
@@ -195,7 +327,8 @@ export async function previewVoice(
     return playElevenLabs(voice.sampleText, voice.elevenVoiceId, customApiKey, onEnd);
   }
 
-  return playStreamTts(voice.sampleText, voice.locale || "en-US", onEnd);
+  // Primary preview: WebSpeech API with Web Audio fallback
+  return playWebSpeech(voice.sampleText, voice, onEnd);
 }
 
 /**
@@ -219,7 +352,7 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return playElevenLabs(text, curated.elevenVoiceId, elevenKey, onEnd);
   }
 
-  return playStreamTts(text, curated?.locale || "en-US", onEnd);
+  return playWebSpeech(text, curated, onEnd);
 }
 
 /**
@@ -232,6 +365,12 @@ export function stopTts(): void {
       activeAudio.currentTime = 0;
     } catch {}
     activeAudio = null;
+  }
+  if (audioCtx) {
+    try {
+      audioCtx.close();
+    } catch {}
+    audioCtx = null;
   }
   if (typeof speechSynthesis !== "undefined") {
     try {

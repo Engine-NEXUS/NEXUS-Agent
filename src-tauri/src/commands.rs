@@ -504,7 +504,7 @@ pub fn show_sidebar<R: Runtime>(
         #[cfg(target_os = "windows")]
         let taskbar = (48.0 * scale) as i32;
         #[cfg(target_os = "linux")]
-        let taskbar = (56.0 * scale) as i32;
+        let taskbar = (36.0 * scale) as i32;
         let gap = (12.0 * scale) as i32;
 
         let x = screen.width as i32 - phys_w - gap;
@@ -537,7 +537,7 @@ pub fn show_sidebar<R: Runtime>(
             let sidebar_h = 1000i32;
             let phys_w = (sidebar_w as f64 * scale) as i32;
             let phys_h = (sidebar_h as f64 * scale) as i32;
-            let taskbar = (56.0 * scale) as i32;
+            let taskbar = (36.0 * scale) as i32;
             let gap = (12.0 * scale) as i32;
             let x = screen.width as i32 - phys_w - gap;
             let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);

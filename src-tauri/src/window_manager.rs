@@ -23,7 +23,7 @@ pub fn position_orb<R: Runtime>(win: &WebviewWindow<R>) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         let dock_offset = (48.0 * scale) as i32;
         #[cfg(target_os = "linux")]
-        let dock_offset = (56.0 * scale) as i32;
+        let dock_offset = (36.0 * scale) as i32;
 
         let gap = (12.0 * scale) as i32;
         let y = screen.height as i32 - phys_orb - dock_offset - gap;
