@@ -210,17 +210,23 @@ pub fn run() {
                 }
             });
 
-            // Check if this is first launch (no server URL configured) → show setup.
+            // Check if this is first launch (no server URL configured).
+            // Instead of showing the setup window (which confuses users into
+            // thinking there's a connection error), auto-create the config
+            // with sensible defaults. The setup window can be opened later
+            // via the tray menu "Settings…" if the user wants to change anything.
             let store_path = app.path().app_data_dir().ok();
-            let needs_setup = if let Some(dir) = store_path {
-                !dir.join("nexus-config.json").exists()
-            } else {
-                true
-            };
-            if needs_setup {
-                if let Some(setup_win) = app.get_webview_window("setup") {
-                    let _ = setup_win.show();
-                    let _ = setup_win.set_focus();
+            if let Some(dir) = store_path {
+                let config_path = dir.join("nexus-config.json");
+                if !config_path.exists() {
+                    let default_config = serde_json::json!({
+                        "serverUrl": "ws://127.0.0.1:49152/ws",
+                        "userId": "local-user",
+                        "deviceId": "local-device",
+                    });
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&config_path, default_config.to_string());
+                    tracing::info!("auto-created default config at {:?}", config_path);
                 }
             }
 
@@ -237,6 +243,7 @@ pub fn run() {
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,
+            commands::get_server_config,
             commands::get_voice_profile_status,
             commands::enroll_voice,
             commands::delete_voice_profile,

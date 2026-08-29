@@ -49,6 +49,45 @@ pub fn save_server_config<R: Runtime>(
     Ok(())
 }
 
+/// Serialized server config returned by `get_server_config`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ServerConfig {
+    pub server_url: String,
+    pub user_id: String,
+    pub device_id: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            server_url: "ws://127.0.0.1:49152/ws".to_string(),
+            user_id: "local-user".to_string(),
+            device_id: "local-device".to_string(),
+        }
+    }
+}
+
+/// IPC: Get the saved server config (or defaults if not yet configured).
+/// The frontend calls this at startup to get the WebSocket URL, user ID,
+/// and device ID — instead of relying on build-time env vars.
+#[tauri::command]
+pub fn get_server_config<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<ServerConfig, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let config_path = dir.join("nexus-config.json");
+    if !config_path.exists() {
+        return Ok(ServerConfig::default());
+    }
+    let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(ServerConfig {
+        server_url: json["serverUrl"].as_str().unwrap_or("ws://127.0.0.1:49152/ws").to_string(),
+        user_id: json["userId"].as_str().unwrap_or("local-user").to_string(),
+        device_id: json["deviceId"].as_str().unwrap_or("local-device").to_string(),
+    })
+}
+
 /// IPC: Get the current voice profile status (enrolled or not, number of clips, threshold).
 #[tauri::command]
 pub fn get_voice_profile_status<R: Runtime>(
