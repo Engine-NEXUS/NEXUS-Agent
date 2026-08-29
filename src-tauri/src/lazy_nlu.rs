@@ -97,11 +97,20 @@ pub fn ensure_nlu_running() {
 
     tracing::info!("[lazy_nlu] starting NLU server: {:?}", script);
 
+    // Try python, then python3, then py
+    let python_cmd = if std::process::Command::new("python").arg("--version").output().is_ok() {
+        "python"
+    } else if std::process::Command::new("python3").arg("--version").output().is_ok() {
+        "python3"
+    } else {
+        "py"
+    };
+
     // Spawn: python nlu_server.py
-    let child = Command::new("python")
+    let child = Command::new(python_cmd)
         .arg(&script)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn();
 
     match child {

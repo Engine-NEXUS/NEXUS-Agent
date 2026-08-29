@@ -176,6 +176,12 @@ pub async fn transcribe_audio(
     // Convert i16 to f32 for transcribe-rs
     let f32_samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32768.0).collect();
 
+    // Log audio energy (RMS) to diagnose empty transcriptions
+    let sum_sq: f32 = f32_samples.iter().map(|s| s * s).sum();
+    let rms = (sum_sq / f32_samples.len() as f32).sqrt();
+    let duration_s = f32_samples.len() as f32 / 16000.0;
+    tracing::info!("stt: audio RMS={:.6}, duration={:.2}s, samples={}", rms, duration_s, f32_samples.len());
+
     let result = model.transcribe(&f32_samples, &TranscribeOptions::default())
         .map_err(|e| format!("Transcription error: {}", e))?;
 
