@@ -436,7 +436,7 @@ mod engine {
             tracing::info!(
                 "openWakeWord KWS engine initialized \
                  (wake word: NEXUS, 80ms sliding window, threshold: 0.7, \
-                 silence gate: RMS < 0.005 = skip)"
+                 silence gate: RMS < 0.002 = skip, AGC: target RMS 0.03)"
             );
 
             // --- Tier 3: Load command classifiers (optional) ---
@@ -461,7 +461,7 @@ mod engine {
                 speaker,
                 sample_rate: 16000,
                 chunk_buffer: Vec::with_capacity(OWW_CHUNK_SIZE),
-                threshold: 0.7,
+                threshold: 0.6,
                 detections_buffer: CircularBuffer::<DETECTION_BUFFER_SIZE, f32>::new(),
                 last_detection_time: std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(10))
@@ -477,7 +477,7 @@ mod engine {
             &mut self,
             chunk: Vec<f32>,
         ) -> (bool, f32, Option<CommandIntent>) {
-            // ─── Energy gate: skip detection on silence ───────────────
+            // ─── Energy gate + Automatic Gain Control (AGC) ────────────
             // The nexus.onnx model produces false positives (0.6-0.9 probability)
             // when fed pure digital silence (all zeros). This is because the model
             // was trained on TTS clips that always have a noise floor, so pure
@@ -487,9 +487,18 @@ mod engine {
             // the audio is too quiet to be speech. Push 0.0 to the detection buffer
             // to flush out any stale high values from the previous chunk.
             //
-            // Threshold: 0.005 (~-46dBFS) — well below any speech but above the
-            // noise floor of a typical laptop mic in a quiet room.
-            const SILENCE_RMS_THRESHOLD: f32 = 0.005;
+            // Threshold: 0.002 (~-54dBFS) — lowered from 0.005 to allow quiet/
+            //   whispered "NEXUS" calls through. Pure digital silence (RMS=0) and
+            //   mic noise floor (~0.0005-0.001) are still blocked.
+            //
+            // AGC: If the chunk passes the gate but is quieter than normal speech,
+            //   amplify it to a target RMS before feeding the classifier. This
+            //   makes quiet and loud "NEXUS" produce the same model input, so the
+            //   model (trained on normal-volume TTS) recognizes whispered speech.
+            //   The gain is capped at 30x to avoid amplifying pure noise.
+            const SILENCE_RMS_THRESHOLD: f32 = 0.002;
+            const TARGET_RMS: f32 = 0.03; // Normal speech RMS (~-30dBFS)
+            const MAX_GAIN: f32 = 30.0; // Cap to avoid amplifying noise
 
             let rms = if chunk.is_empty() {
                 0.0
@@ -507,6 +516,16 @@ mod engine {
                 }
                 return (false, 0.0, None);
             }
+
+            // AGC: amplify quiet speech to target RMS so the model sees
+            // consistent-volume input regardless of how loud the user spoke.
+            // This is the key fix for "low voice and high voice the same".
+            let chunk: Vec<f32> = if rms < TARGET_RMS {
+                let gain = (TARGET_RMS / rms).min(MAX_GAIN);
+                chunk.iter().map(|&s| (s * gain).clamp(-1.0, 1.0)).collect()
+            } else {
+                chunk
+            };
 
             // Get audio features (melspectrogram → embedding)
             let features = match self.audio_features.get_audio_features(&chunk) {
@@ -1246,7 +1265,7 @@ mod tests {
     /// carry a noise floor. That caused NEXUS to wake spontaneously while the
     /// mic was quiet (observed repeatedly in logs at RMS=0.0000).
     ///
-    /// `detect_chunk` now short-circuits below `SILENCE_RMS_THRESHOLD` (0.005)
+    /// `detect_chunk` now short-circuits below `SILENCE_RMS_THRESHOLD` (0.002)
     /// before running the classifier. This test feeds the engine a long run of
     /// digital silence and asserts it never reports a wake.
     #[test]
@@ -1276,7 +1295,7 @@ mod tests {
             "pure silence must never trigger a wake (energy gate regression)"
         );
 
-        // Very low-level noise (RMS well under the 0.005 gate) must also be
+        // Very low-level noise (RMS well under the 0.002 gate) must also be
         // ignored — a real mic idles around 1e-4, not exactly zero.
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let quiet: Vec<f32> = (0..16000 * 10)
