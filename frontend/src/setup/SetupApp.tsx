@@ -10,6 +10,7 @@ import {
   disconnectOAuth,
   type OAuthStatus,
 } from "./oauth";
+import { VoiceEnrollment } from "./VoiceEnrollment";
 
 /**
  * NEXUS Setup page.
@@ -262,6 +263,9 @@ export function SetupApp() {
           </button>
         </div>
       </section>
+
+      {/* Voice Enrollment */}
+      <VoiceEnrollment />
 
       {/* Save & Continue */}
       <div className="setup-footer">

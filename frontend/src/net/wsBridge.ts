@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAssistant, transition } from "../store/assistant";
 import { speak, stopTts } from "../audio/ttsPlayer";
 
@@ -20,7 +18,25 @@ const DEVICE_TOKEN = (import.meta.env.VITE_DEVICE_TOKEN as string) ?? "REPLACE_F
 const USER_ID = (import.meta.env.VITE_USER_ID as string) ?? "local-user";
 const DEVICE_ID = (import.meta.env.VITE_DEVICE_ID as string) ?? "local-device";
 
-let unlisten: UnlistenFn | null = null;
+/**
+ * Check if we're running inside the Tauri WebView (has IPC bridge).
+ */
+function isTauri(): boolean {
+  return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+}
+
+/** Lazy-load Tauri APIs only when running inside the Tauri WebView. */
+async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
+}
+
+async function tauriListen<T>(event: string, handler: (payload: T) => void): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<T>(event, (e) => handler(e.payload));
+}
+
+let unlisten: (() => void) | null = null;
 
 export async function openSession(
   url: string = SERVER_URL,
@@ -28,31 +44,34 @@ export async function openSession(
   userId: string = USER_ID,
   deviceId: string = DEVICE_ID,
 ): Promise<string> {
-  const sessionId = await invoke<string>("open_session", { url, token, userId, deviceId });
+  if (!isTauri()) return "";
+  const sessionId = await tauriInvoke<string>("open_session", { url, token, userId, deviceId });
   if (!unlisten) {
-    unlisten = await listen<ServerEvent>("assistant:server", (e) => handle(e.payload));
+    unlisten = await tauriListen<ServerEvent>("assistant:server", (payload) => handle(payload));
   }
   return sessionId;
 }
 
 /** Send the transcribed text to the server for processing. */
 export async function sendTranscript(text: string): Promise<void> {
-  await invoke("send_transcript", { text });
+  if (!isTauri()) return;
+  await tauriInvoke("send_transcript", { text });
 }
 
 /** Cancel the current turn. */
 export async function cancelSession(): Promise<void> {
-  await invoke("cancel_session", {});
+  if (!isTauri()) return;
+  await tauriInvoke("cancel_session", {});
 }
 
 export async function closeSession(): Promise<void> {
-  await invoke("close_session", {});
+  if (!isTauri()) return;
+  await tauriInvoke("close_session", {});
 }
 
 interface ServerEvent {
   kind: string;
   state?: string | null;
-  seq?: number | null;
   data?: string | null;
   message?: string | null;
 }
