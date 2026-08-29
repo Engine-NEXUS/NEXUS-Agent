@@ -280,7 +280,7 @@ mod engine {
         /// Tier 3: command classifiers loaded from resources/oww/commands/
         pub command_classifiers: Vec<CommandClassifier>,
         /// Sender for command-detected events (None if no command models loaded)
-        pub command_tx: Option<tokio::sync::mpsc::UnboundedSender<CommandIntent>>,
+        pub command_tx: Option<std::sync::mpsc::Sender<CommandIntent>>,
     }
 
     /// Load Tier 3 command classifiers from `resources/oww/commands/`.
@@ -706,7 +706,7 @@ mod engine {
         engine: &Arc<parking_lot::Mutex<WakeEngine>>,
         chunk_size: usize,
         to_f32: F,
-        wake_tx: &tokio::sync::mpsc::UnboundedSender<()>,
+        wake_tx: &std::sync::mpsc::Sender<()>,
     )
     where
         F: Fn(T) -> f32,
@@ -795,7 +795,7 @@ mod engine {
 #[cfg(not(feature = "mock-wake"))]
 use once_cell::sync::OnceCell;
 #[cfg(not(feature = "mock-wake"))]
-static WAKE_TX: OnceCell<tokio::sync::mpsc::UnboundedSender<()>> = OnceCell::new();
+static WAKE_TX: OnceCell<std::sync::mpsc::Sender<()>> = OnceCell::new();
 /// Global meeting/privacy state — checked on every audio chunk.
 /// Set up in `lib.rs` before the wake engine starts.
 #[cfg(not(feature = "mock-wake"))]
@@ -809,52 +809,72 @@ pub fn set_meeting_state(state: std::sync::Arc<crate::meeting_detect::MeetingSta
 }
 
 #[cfg(not(feature = "mock-wake"))]
-pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     use tauri::{Emitter, Manager};
+    use std::time::Instant;
 
+    // ─── Phase 1: Resolve directories ──────────────────────────────
+    let t0 = Instant::now();
     let res = app.path().resource_dir().map_err(|e| format!("resource dir: {e}"))?;
     let data_dir = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create app data dir: {e}"))?;
+    tracing::info!("wake-engine: dirs resolved in {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
 
+    // ─── Phase 2: Load ONNX models (CPU-heavy, may take 30-120s on cold boot) ──
+    let t1 = Instant::now();
+    let _ = app.emit("wake-engine-status", "loading-models");
+    tracing::info!("wake-engine: loading ONNX models (tract-onnx optimization)...");
     let mut wake_engine = engine::WakeEngine::new(res, data_dir)
         .map_err(|e| format!("wake engine init: {e}"))?;
+    tracing::info!(
+        "wake-engine: ONNX models loaded in {:.1}s — KWS ready",
+        t1.elapsed().as_secs_f64()
+    );
 
     // Create command channel for Tier 3 command classifiers
-    let (cmd_tx, mut cmd_rx) =
-        tokio::sync::mpsc::unbounded_channel::<engine::CommandIntent>();
+    let (cmd_tx, cmd_rx) =
+        std::sync::mpsc::channel::<engine::CommandIntent>();
     wake_engine.command_tx = Some(cmd_tx);
 
     let engine = std::sync::Arc::new(parking_lot::Mutex::new(wake_engine));
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
     let _ = WAKE_TX.set(tx);
 
-    start_audio_capture(engine.clone())?;
+    // ─── Phase 3: Start audio capture (with retry for cold-boot audio driver) ──
+    let t2 = Instant::now();
+    let _ = app.emit("wake-engine-status", "starting-audio");
+    start_audio_capture_with_retry(engine.clone())?;
+    tracing::info!(
+        "wake-engine: audio capture started in {:.1}s — listening for 'nexus'",
+        t2.elapsed().as_secs_f64()
+    );
+    let _ = app.emit("wake-engine-status", "ready");
 
-    // Spawn a task to handle Tier 3 command-detected events.
-    // These bypass STT entirely and go straight to the frontend.
+    // ─── Phase 4: Main loop (wake + command events) ────────────────
+    // Spawn a thread for Tier 3 command-detected events.
     let app_for_commands = app.clone();
-    tokio::spawn(async move {
-        while let Some(intent) = cmd_rx.recv().await {
-            tracing::info!(
-                "Tier 3: emitting command-detected event → action={}, target={}, needs_param={}",
-                intent.action, intent.target, intent.needs_param
-            );
-
-            // Emit to frontend — the frontend will skip STT and execute
-            // the intent directly via invoke("execute_command", { intent }).
-            if let Some(win) = app_for_commands.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
-                let _ = win.set_always_on_top(true);
-                let _ = win.set_ignore_cursor_events(false);
-                let _ = app_for_commands.emit("command-detected", &intent);
+    std::thread::Builder::new()
+        .name("tier3-commands".into())
+        .spawn(move || {
+            while let Ok(intent) = cmd_rx.recv() {
+                tracing::info!(
+                    "Tier 3: emitting command-detected event → action={}, target={}, needs_param={}",
+                    intent.action, intent.target, intent.needs_param
+                );
+                if let Some(win) = app_for_commands.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                    let _ = win.set_always_on_top(true);
+                    let _ = win.set_ignore_cursor_events(false);
+                    let _ = app_for_commands.emit("command-detected", &intent);
+                }
             }
-        }
-    });
+        })
+        .ok();
 
     // Main loop: handle wake-word detections
-    while rx.recv().await.is_some() {
+    while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
         if let Some(win) = app.get_webview_window("main") {
@@ -866,6 +886,39 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Retry audio device initialization — on cold boot, the audio driver
+/// may not be ready for several seconds. Retry every 2s for up to 60s.
+#[cfg(not(feature = "mock-wake"))]
+fn start_audio_capture_with_retry(
+    engine: std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>,
+) -> Result<(), String> {
+    const MAX_ATTEMPTS: u32 = 30; // 30 × 2s = 60s total
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        match start_audio_capture(engine.clone()) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt < MAX_ATTEMPTS {
+                    tracing::warn!(
+                        "audio: attempt {}/{} failed ({}), retrying in {}s...",
+                        attempt, MAX_ATTEMPTS, e, RETRY_INTERVAL.as_secs()
+                    );
+                    std::thread::sleep(RETRY_INTERVAL);
+                } else {
+                    return Err(format!(
+                        "audio device not available after {} attempts ({}s): {}",
+                        MAX_ATTEMPTS,
+                        MAX_ATTEMPTS * RETRY_INTERVAL.as_secs() as u32,
+                        e
+                    ));
+                }
+            }
+        }
+    }
+    Err("audio device retry loop exhausted".to_string())
 }
 
 #[cfg(not(feature = "mock-wake"))]

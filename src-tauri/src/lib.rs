@@ -212,13 +212,24 @@ pub fn run() {
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
 
-            // Wake-word engine (native Porcupine or mock).
+            // Wake-word engine — runs on a DEDICATED OS THREAD, not tokio.
+            // tract-onnx model optimization is CPU-heavy blocking work that
+            // can take 30-120s on a cold boot. Running it on tokio's async
+            // runtime (which is single-threaded in NEXUS) would block ALL
+            // other async tasks (meeting detection, network bridge, sidecar
+            // health check) for the entire duration.
+            //
+            // The hotkey still works immediately (registered above) — the
+            // user can press Ctrl+Shift+Space while the wake engine loads.
             let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = wakeword::run(handle).await {
-                    tracing::error!("wake-word engine stopped: {e}");
-                }
-            });
+            std::thread::Builder::new()
+                .name("wake-engine".into())
+                .spawn(move || {
+                    if let Err(e) = wakeword::run(handle) {
+                        tracing::error!("wake-word engine stopped: {e}");
+                    }
+                })
+                .ok();
 
             // Network bridge (WSS) listens for server events and forwards to frontend.
             // The sidecar (Python FastAPI on port 49152) must be running for this to work.
