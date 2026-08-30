@@ -169,18 +169,21 @@ function Get-NewLines([string]$File, [ref]$Position) {
     # File was truncated/rotated — start from beginning
     $Position.Value = 0
   }
+  if ($fi.Length -eq $Position.Value) { return @() }
   $lines = @()
   try {
     $fs = [System.IO.File]::Open($File, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     $fs.Seek($Position.Value, [System.IO.SeekOrigin]::Begin) | Out-Null
-    $sr = New-Object System.IO.StreamReader($fs)
-    while ($sr.Peek() -ge 0) {
-      $line = $sr.ReadLine()
-      $lines += $line
-    }
-    $Position.Value = $fs.Position
-    $sr.Close()
+    # Read raw bytes instead of using StreamReader — StreamReader buffers
+    # ahead, so $fs.Position ends up PAST the actual data, causing the
+    # position tracker to reset to 0 on the next call and re-read everything
+    $len = [int]($fs.Length - $Position.Value)
+    $buf = New-Object byte[] $len
+    $read = $fs.Read($buf, 0, $len)
+    $Position.Value = $Position.Value + $read
     $fs.Close()
+    $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
+    $lines = $text -split "`r?`n" | Where-Object { $_ -ne "" }
   } catch {}
   return $lines
 }
