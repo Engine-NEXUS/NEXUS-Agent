@@ -32,6 +32,13 @@ mod meeting_detect;
 mod mic_permissions;
 mod mpris;
 mod architect;
+mod dyn_windows;
+mod lazy_stt;
+mod diagnostics;
+#[cfg(target_os = "windows")]
+mod dwm_corners;
+#[cfg(target_os = "windows")]
+mod sidebar_backdrop;
 
 use tauri::{Emitter, Listener, Manager};
 #[cfg(not(target_os = "windows"))]
@@ -188,16 +195,14 @@ pub fn run() {
             let is_settings = args.iter().any(|a| a == "--settings");
 
             if is_setup {
-                if let Some(setup_win) = app.get_webview_window("setup") {
-                    let _ = setup_win.show();
-                    let _ = setup_win.unminimize();
-                    let _ = setup_win.set_focus();
+                if let Ok(win) = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::setup()) {
+                    let _ = win.show();
+                    let _ = win.set_focus();
                 }
             } else if is_settings {
-                if let Some(settings_win) = app.get_webview_window("settings") {
-                    let _ = settings_win.show();
-                    let _ = settings_win.unminimize();
-                    let _ = settings_win.set_focus();
+                if let Ok(win) = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::settings()) {
+                    let _ = win.show();
+                    let _ = win.set_focus();
                 }
             } else if let Some(main_win) = app.get_webview_window("main") {
                 let _ = main_win.show();
@@ -389,38 +394,17 @@ pub fn run() {
             // Window overlay + click-through.
             window_manager::init(app.handle())?;
 
-            // ─── Sidebar vibrancy — applied at STARTUP in setup hook ──────
+            // NOTE: Sidebar/setup/settings/architect windows are NO LONGER created
+            // at startup. They are created on-demand by dyn_windows.rs when first
+            // needed, and destroyed when closed. This saves ~1 GB of RAM at idle
+            // (each WebView2 window spawns ~7 processes = ~250 MB).
             //
-            // CRITICAL: window-vibrancy MUST be applied here (setup hook),
-            // NOT inside the show_sidebar IPC command. The DWM acrylic/Mica
-            // effect is registered against the window's HWND at creation time.
-            // If applied later (to a hidden then re-shown window), DWM may
-            // silently discard the attribute change because the window hasn't
-            // participated in a composition pass yet.
-            //
-            // The sidebar window is created at startup with visible:false —
-            // the HWND exists immediately, so we can register the effect now.
-            // It will be active the first time the window is shown.
-            #[cfg(target_os = "windows")]
-            if let Some(sidebar) = app.get_webview_window("sidebar") {
-                use window_vibrancy::apply_blur;
-                // Use dark color with 60% alpha to match Apple Music dark theme.
-                if let Err(e) = apply_blur(&sidebar, Some((18, 18, 18, 150))) {
-                    tracing::warn!("sidebar: apply_blur failed: {e:?}");
-                } else {
-                    tracing::info!("sidebar: DWM blur registered on HWND at startup");
-                }
-            }
-            #[cfg(target_os = "macos")]
-            if let Some(sidebar) = app.get_webview_window("sidebar") {
-                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-                let _ = apply_vibrancy(
-                    &sidebar,
-                    NSVisualEffectMaterial::HudWindow,
-                    None,
-                    Some(20.0),
-                );
-            }
+            // Platform-specific effects (DWM corners, macOS vibrancy) are applied
+            // inside dyn_windows::get_or_create_window() at creation time.
+
+            // Start the lazy STT idle monitor — kills the STT server after 60s
+            // of no transcription requests, saving ~340 MB RAM at idle.
+            lazy_stt::start_idle_monitor();
 
             // WebView2 permission handler — auto-approves mic/camera for our
             // own app origins so the permission dialog never re-appears.
@@ -512,11 +496,41 @@ pub fn run() {
             }
 
             if should_open_setup {
-                if let Some(win) = app.get_webview_window("setup") {
+                if let Ok(win) = crate::dyn_windows::get_or_create_window(app.handle(), crate::dyn_windows::WindowConfig::setup()) {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
             }
+
+            // Run connection diagnostics on startup.
+            // This checks STT, TTS, Cloudflare Worker, GitHub, and Google
+            // and logs a formatted status table to stdout.
+            std::thread::spawn(move || {
+                // Wait 5s for the network session to be established.
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let (worker_url, user_id) = match network::get_session_info() {
+                    Some((url, uid, _)) => (url, uid),
+                    None => {
+                        // Try reading from config file
+                        let config_path = std::env::var("APPDATA")
+                            .ok()
+                            .map(|d| std::path::Path::new(&d)
+                                .join("com.nexus.assistant")
+                                .join("nexus-config.json"));
+                        match config_path.and_then(|p| std::fs::read_to_string(p).ok()) {
+                            Some(content) => {
+                                let server_url = extract_json_string(&content, "serverUrl")
+                                    .unwrap_or_default();
+                                let uid = extract_json_string(&content, "userId")
+                                    .unwrap_or_default();
+                                (server_url, uid)
+                            }
+                            None => (String::new(), String::new()),
+                        }
+                    }
+                };
+                diagnostics::log_diagnostics(&worker_url, &user_id);
+            });
 
             Ok(())
         })
@@ -546,18 +560,37 @@ pub fn run() {
             commands::refresh_app_registry,
             commands::show_sidebar,
             commands::show_sidebar_with_content,
+            commands::show_sidebar_with_analysis,
             commands::hide_sidebar,
+            commands::get_pending_sidebar_content,
             commands::pause_wakeword,
             commands::resume_wakeword,
             stt::transcribe_audio,
             stt::stt_status,
+            diagnostics::nexus_diagnostics,
             command_executor::execute_command,
             architect::get_active_repo_url,
             architect::open_architect_window,
+            architect::get_pending_architect_repo,
             architect::analyze_repo_phase1,
             architect::analyze_repo_deep,
             architect::query_impact,
+            architect::enrich_phase1,
+            architect::analyze_repo_fast,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS application");
+}
+
+/// Simple JSON string value extractor (avoids pulling serde_json for one field).
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\"", key);
+    let idx = json.find(&pattern)?;
+    let after = &json[idx + pattern.len()..];
+    let colon = after.find(':')?;
+    let after_colon = &after[colon + 1..];
+    let quote_start = after_colon.find('"')?;
+    let after_quote = &after_colon[quote_start + 1..];
+    let quote_end = after_quote.find('"')?;
+    Some(after_quote[..quote_end].to_string())
 }

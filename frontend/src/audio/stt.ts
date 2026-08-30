@@ -12,6 +12,9 @@ function isTauri(): boolean {
 /** STT timeout — first call loads the whisper model (~10s on CPU), so allow 30s. */
 const STT_TIMEOUT_MS = 30000;
 
+/** Track last Gemini 429 to skip it for 60s after rate limiting. */
+let lastGemini429 = 0;
+
 /**
  * Convert 16kHz mono PCM16 samples to WAV Base64 string for Gemini 3.5 Transcribe.
  */
@@ -65,34 +68,44 @@ export async function transcribeGeminiAudio(
 
   for (const model of models) {
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    inline_data: {
-                      mime_type: "audio/wav",
-                      data: base64Wav,
+      // 8s timeout per model — if Gemini hangs, fall through to local STT
+      const response = await Promise.race([
+        fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey.trim()}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    {
+                      inline_data: {
+                        mime_type: "audio/wav",
+                        data: base64Wav,
+                      },
                     },
-                  },
-                  {
-                    text: "Transcribe the spoken audio accurately into text. Return ONLY the raw transcript text without markdown, quotes, or conversational commentary.",
-                  },
-                ],
-              },
-            ],
-          }),
-        },
-      );
+                    {
+                      text: "Transcribe the spoken audio accurately into text. Return ONLY the raw transcript text without markdown, quotes, or conversational commentary.",
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Gemini STT timeout")), 8000),
+        ),
+      ]);
 
       if (!response.ok) {
+        if (response.status === 429) {
+          lastGemini429 = Date.now();
+          console.log("[NEXUS] STT: Gemini 429 rate-limited, will skip for 60s");
+        }
         continue;
       }
 
@@ -153,12 +166,17 @@ export async function transcribeAudio(samples: Int16Array): Promise<string> {
     settings = await invoke<any>("get_settings").catch(() => null);
   } catch {}
 
-  // Tier 1: Gemini 3.5 Transcribe
+  // Tier 1: Gemini 3.5 Transcribe — skip if rate-limited recently
   const DEFAULT_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
   const apiKey = settings?.geminiApiKey || DEFAULT_KEY;
-  if (apiKey && (apiKey.startsWith("AIza") || apiKey.startsWith("AQ."))) {
+  const now = Date.now();
+  if (apiKey && (apiKey.startsWith("AIza") || apiKey.startsWith("AQ.")) && now - lastGemini429 > 60000) {
+    console.log("[NEXUS] STT: trying Gemini transcribe...");
     const geminiText = await transcribeGeminiAudio(samples, apiKey);
+    console.log(`[NEXUS] STT: Gemini result = "${geminiText}"`);
     if (geminiText) return geminiText;
+  } else if (now - lastGemini429 <= 60000) {
+    console.log("[NEXUS] STT: skipping Gemini (rate-limited recently)");
   }
 
   // Tier 2: Local Faster-Whisper STT (127.0.0.1:39217)
@@ -171,7 +189,23 @@ export async function transcribeAudio(samples: Int16Array): Promise<string> {
         setTimeout(() => reject(new Error("STT timeout")), STT_TIMEOUT_MS),
       ),
     ]);
-    if (text && text.trim()) return text.trim();
+    if (text && text.trim()) {
+      const trimmed = text.trim();
+      // Filter out known tiny.en hallucinations on silence/noise
+      const hallucinations = [
+        "thank you for watching",
+        "thank you for watching.",
+        "thanks for watching",
+        "thanks for watching.",
+        "you",
+        "you.",
+        "",
+      ];
+      if (!hallucinations.includes(trimmed.toLowerCase())) {
+        return trimmed;
+      }
+      console.log(`[NEXUS] STT: filtered hallucination "${trimmed}"`);
+    }
   } catch {
     // Local STT not running, fall through to Tier 3
   }

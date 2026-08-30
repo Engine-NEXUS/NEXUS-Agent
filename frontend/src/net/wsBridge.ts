@@ -94,7 +94,23 @@ async function tauriListen<T>(event: string, handler: (payload: T) => void): Pro
   return listen<T>(event, (e) => handler(e.payload));
 }
 
-let unlisten: (() => void) | null = null;
+// Track the unlisten function for the assistant:server event listener.
+// The listener is set up at module load time (below) to ensure events
+// are received regardless of how the session was opened.
+const _unlistenRef: { fn: (() => void) | null } = { fn: null };
+
+/** Set up the assistant:server event listener at module load time.
+ * This ensures events are received regardless of how the session was opened
+ * (wake word, hotkey, test script, etc.). */
+if (isTauri()) {
+  tauriListen<ServerEvent>("assistant:server", (payload) => {
+    void handle(payload);
+  }).then((u) => {
+    _unlistenRef.fn = u;
+  }).catch((e) => {
+    console.warn("[NEXUS] failed to set up assistant:server listener:", e);
+  });
+}
 
 /** Tracks whether a backend session is actually open. */
 let sessionOpen = false;
@@ -172,7 +188,7 @@ let cachedConfig: { url: string; token: string; userId: string; deviceId: string
  * Load server config from Rust (reads nexus-config.json).
  * Falls back to build-time env vars if not in Tauri or if the IPC call fails.
  */
-async function getServerConfig(): Promise<{ url: string; token: string; userId: string; deviceId: string }> {
+export async function getServerConfig(): Promise<{ url: string; token: string; userId: string; deviceId: string }> {
   if (cachedConfig) return cachedConfig;
 
   if (isTauri()) {
@@ -230,9 +246,6 @@ export async function openSession(
     try {
       const sessionId = await tauriInvoke<string>("open_session", { url, token, userId, deviceId });
       sessionOpen = true;
-      if (!unlisten) {
-        unlisten = await tauriListen<ServerEvent>("assistant:server", (payload) => handle(payload));
-      }
       return sessionId;
     } catch (err) {
       lastErr = err;
@@ -283,9 +296,10 @@ interface ServerEvent {
   state?: string | null;
   data?: string | null;
   message?: string | null;
+  analysis?: any;
 }
 
-function handle(ev: ServerEvent): void {
+async function handle(ev: ServerEvent): Promise<void> {
   const store = useAssistant.getState();
   switch (ev.kind) {
     case "state": {
@@ -320,17 +334,47 @@ function handle(ev: ServerEvent): void {
       clearLongRunningInFlight();
       if (ev.data) {
         store.addAssistantMessage(ev.data);
-        const isArchitectQuery = /\b(analy[sz]e|map|understand|explore|architecture|what breaks|blast radius)\b/i.test(pendingQuery)
+        const isArchitectQuery = /\b(analy[sz]e|map|understand|explore|create|build|show|generate|architecture|what breaks|blast radius)\b/i.test(pendingQuery)
           && /\b(repo|repository|codebase|project|architecture|code)\b/i.test(pendingQuery);
 
         if (isArchitectQuery && isTauri()) {
-          void tauriInvoke("open_architect_window");
+          // Detect the active GitHub repo from the foreground window and
+          // pass it to the architect window so it auto-starts analysis.
+          // Rust stores the repo in a pending static; the architect frontend
+          // fetches it on mount via get_pending_architect_repo (race-free).
+          void (async () => {
+            try {
+              const active = await tauriInvoke<{ owner: string; repo: string } | null>("get_active_repo_url");
+              const owner = active?.owner;
+              const repo = active?.repo;
+              await tauriInvoke("open_architect_window", owner && repo ? { owner, repo } : {});
+            } catch {
+              void tauriInvoke("open_architect_window");
+            }
+          })();
         }
 
         const showSidebar = shouldShowSidebar(pendingQuery, ev.data);
         if (showSidebar) {
-          // Show the sidebar with the full response text
-          void emitSidebarShow(pendingQuery, ev.data);
+          // If the Worker included structured analysis data, use the
+          // show_sidebar_with_analysis command which stores the analysis
+          // in the pending content (race-free for fresh sidebar windows)
+          // and also emits the sidebar:analysis event for existing windows.
+          if ((ev as any).analysis && isTauri()) {
+            try {
+              await tauriInvoke("show_sidebar_with_analysis", {
+                query: pendingQuery,
+                text: ev.data,
+                analysis: (ev as any).analysis,
+              });
+            } catch (e) {
+              console.warn("[NEXUS] show_sidebar_with_analysis failed, falling back:", e);
+              await emitSidebarShow(pendingQuery, ev.data);
+            }
+          } else {
+            // Show the sidebar with the full response text
+            void emitSidebarShow(pendingQuery, ev.data);
+          }
           // The orb may have been hidden after "On it sir" — show it briefly
           // so the user sees NEXUS is speaking the confirmation.
           store.setVisible(true);

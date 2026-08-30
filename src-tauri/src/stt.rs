@@ -39,6 +39,14 @@ pub async fn transcribe_audio<R: Runtime>(
         return Ok(String::new());
     }
 
+    // Ensure the STT server is running before attempting transcription.
+    // This is critical: the hotkey path doesn't call ensure_stt_running(),
+    // and the idle monitor may have killed the server after 60s of inactivity.
+    crate::lazy_stt::ensure_stt_running();
+
+    // Mark that a transcription request is being made (resets the lazy STT idle timer).
+    crate::lazy_stt::mark_stt_request();
+
     // Convert i16 PCM → little-endian bytes for the HTTP multipart upload.
     let mut bytes = Vec::with_capacity(samples.len() * 2);
     for &s in &samples {
@@ -88,8 +96,45 @@ pub async fn transcribe_audio<R: Runtime>(
         .trim()
         .to_string();
 
-    tracing::info!("local STT result: {:?}", text);
-    Ok(text)
+    // Filter common Whisper hallucinations on noisy/silent audio.
+    // These are phrases that faster-whisper tiny.en commonly produces
+    // when fed noise or silence instead of real speech.
+    let text_lower = text.to_lowercase();
+    const HALLUCINATIONS: &[&str] = &[
+        "thank you for watching",
+        "thank you.",
+        "thanks for watching",
+        "you",
+        "you.",
+        "thank you gov",
+        "i'm sure i'm going to",
+        "you need to fill out",
+        "i've worked in none of those",
+        "i'm going to pull out",
+        "please subscribe",
+        "like and subscribe",
+        "see you in the next video",
+        "bye",
+        "bye.",
+        "okay",
+        "okay.",
+        "mm",
+        "mm-hmm",
+        "uh",
+        "um",
+    ];
+    let is_hallucination = HALLUCINATIONS.iter().any(|h| {
+        text_lower == *h || text_lower.starts_with(h)
+    }) || text_lower.chars().filter(|c| c.is_alphabetic()).count() < 2;
+
+    let filtered = if is_hallucination {
+        tracing::info!("local STT result: {:?} (filtered as hallucination)", text);
+        String::new()
+    } else {
+        tracing::info!("local STT result: {:?}", text);
+        text
+    };
+    Ok(filtered)
 }
 
 /// Check if the local STT server is reachable (for health/status checks).

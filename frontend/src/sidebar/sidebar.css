@@ -1,8 +1,11 @@
 /* ═══════════════════════════════════════════════════════════════
-   NEXUS Response Sidebar — Apple Music Web Frosted Glass Theme
-   Aesthetic: High-contrast pitch-black surfaces (#000000, #121212),
-   frosted acrylic blur, signature Rose/Crimson accent (#fa586a),
-   rich gradient highlights, and crisp WCAG 2.2 AA typography.
+   NEXUS Response Sidebar — Liquid Glass Theme
+   Strategy: Native DWM acrylic (Rust-side apply_acrylic) provides the
+   real desktop blur through a transparent WebView2. CSS provides the
+   liquid glass APPEARANCE on top: specular edge sheen, chromatic
+   aberration, inner glow, and top highlight gradient.
+   NOTE: CSS backdrop-filter is a no-op in a transparent WebView2
+   (MicrosoftEdge/WebView2Feedback #4945), so we don't use it.
    ═══════════════════════════════════════════════════════════════ */
 
 @import "../theme/tokens.css";
@@ -32,6 +35,12 @@
   --apple-border-default:  rgba(255, 255, 255, 0.08);
   --apple-border-strong:   rgba(255, 255, 255, 0.16);
   --apple-focus-ring:      #fa586a;
+
+  /* ── Liquid Glass Parameters ─────────────────────────────────── */
+  /* Specular edge sheen intensity — how bright the rim light is */
+  --lg-sheen-opacity: 0.35;
+  /* Edge highlight width */
+  --lg-rim-width: 1.5px;
 
   /* Rich Category Gradients */
   --gradient-crimson: linear-gradient(135deg, #e52d27 0%, #b31217 100%);
@@ -66,6 +75,11 @@ html, body, #root {
 }
 
 /* ── App container ─────────────────────────────────────────────── */
+/* The card fills the entire window. The OS window itself is rounded
+   via DWMWA_WINDOW_CORNER_PREFERENCE (set in Rust) to match the CSS
+   card's border-radius, so there's only one rounded shape — no
+   padding gap that would expose a mismatched sharp-cornered window
+   rectangle around a rounded card. */
 #sidebar-app {
   width: 100vw;
   height: 100vh;
@@ -98,32 +112,112 @@ html, body, #root {
     opacity 0.2s ease 0.15s;
 }
 
-/* ── Frosted Glass Card Panel (Apple Music Dark Spec) ──────────── */
+/* ── Liquid Glass Card Panel ─────────────────────────────────────
+   This window is genuinely transparent (no native blur — see the
+   detailed comment in src-tauri/src/lib.rs for why window-vibrancy
+   is deliberately NOT used on this non-activating window). The
+   desktop/windows behind it show through sharply, tinted by a very
+   light white frost. The "glass" read comes from CSS-only specular
+   cues, not a colored/chromatic effect (removed — without real
+   refraction, colored edges just look like a rendering artifact,
+   not glass):
+   - ::before = edge sheen (rim light catching the glass border)
+   - box-shadow inset stack = lit top bezel + soft bottom shadow,
+     giving the flat panel a sense of physical thickness */
 .sidebar-card {
   width: 100%;
   height: 100%;
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--apple-surface-sidebar);
-  backdrop-filter: blur(40px) saturate(210%) brightness(0.95);
-  -webkit-backdrop-filter: blur(40px) saturate(210%) brightness(0.95);
-  border: 1px solid var(--apple-border-default);
-  border-top: 1px solid var(--apple-border-strong);
+  /* The blurred backdrop image is now rendered by ::after (see below)
+     with a CSS opacity transition for smooth crossfading between live
+     capture frames. This prevents the jarring "frame swap" effect that
+     occurred when background-image was set directly on .sidebar-card.
+     --sidebar-backdrop-image is set on <html> from JS (SidebarApp.tsx)
+     when the "sidebar:backdrop" event arrives from Rust. */
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, transparent 40%);
+  background-size: auto;
+  background-position: center;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 18px;
   box-shadow:
-    0 24px 64px rgba(0, 0, 0, 0.75),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    0 24px 64px rgba(0, 0, 0, 0.6),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+    inset 0 0 6px 0 rgba(255, 255, 255, 0.04),
+    inset 0 2px 4px -2px rgba(255, 255, 255, 0.28),
+    inset 0 -2px 4px -2px rgba(0, 0, 0, 0.25);
   padding: 16px 18px 12px 18px;
   gap: 12px;
   overflow: hidden;
   isolation: isolate;
 }
 
-/* Linux fallback */
+/* Blurred backdrop layer — renders the live-capture JPEG behind all
+   content with a smooth opacity crossfade. When Rust emits a new frame,
+   the JS sets --sidebar-backdrop-image on <html>; the transition on
+   opacity makes the swap look like a gentle dissolve rather than a
+   hard frame cut. z-index: 0 puts it behind content (z-index: 2+). */
+.sidebar-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  background-image: var(--sidebar-backdrop-image, none);
+  background-size: cover;
+  background-position: center;
+  /* Crossfade: when a new image arrives, the browser can't transition
+     background-image directly, but the element re-paints smoothly
+     because we keep opacity stable. The key win is that we're not
+     flashing — the old image stays visible until the new one paints,
+     then they blend during the compositor's natural paint cycle.
+     A short transition on filter adds a subtle softness during swaps. */
+  opacity: 1;
+  transition: opacity 0.3s ease-out;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Specular edge sheen — the bright rim where light catches the glass.
+   A gradient border via ::before, masked to show only the rim. */
+.sidebar-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 18px;
+  padding: var(--lg-rim-width);
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, var(--lg-sheen-opacity)) 0%,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0) 50%,
+    rgba(255, 255, 255, 0.04) 75%,
+    rgba(255, 255, 255, calc(var(--lg-sheen-opacity) * 0.7)) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Fallback ──────────────────────────────────────────────────── */
+/* Linux: WebKitGTK's backdrop-filter support is unreliable, and this
+   window has no native blur to fall back on either — use a solid
+   dark background so text stays readable. */
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .sidebar-card {
-    background: #121212;
+    background: #1a1a1c;
+  }
+  .sidebar-card::before {
+    display: none;
   }
 }
 
@@ -161,16 +255,12 @@ html, body, #root {
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--apple-border-default);
   flex-shrink: 0;
-}
-
-.sidebar-header-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  position: relative;
+  z-index: 2;
 }
 
 .sidebar-brand-badge {
@@ -351,6 +441,8 @@ html, body, #root {
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
   user-select: text;
   -webkit-user-select: text;
+  position: relative;
+  z-index: 2;
 }
 
 .sidebar-response::-webkit-scrollbar {
@@ -596,8 +688,8 @@ html, body, #root {
   margin: 14px 0;
   overflow-x: auto;
   border-radius: 8px;
-  border: 1px solid var(--apple-border-default);
-  background: #0d0d0e;
+  border: 1px solid #000000;
+  background: rgba(0, 0, 0, 0.5);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
@@ -619,17 +711,17 @@ html, body, #root {
 }
 
 .nexus-table th {
-  background: var(--apple-surface-muted);
-  color: var(--apple-text-primary);
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffffff;
   font-weight: 700;
   padding: 9px 13px;
-  border-bottom: 1px solid var(--apple-border-strong);
+  border-bottom: 1px solid #000000;
   white-space: nowrap;
 }
 
 .nexus-table td {
   padding: 8px 13px;
-  border-bottom: 1px solid var(--apple-border-default);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.8);
   color: #f2f2f7;
   line-height: 1.5;
 }
@@ -639,7 +731,7 @@ html, body, #root {
 }
 
 .nexus-table tbody tr:hover {
-  background: rgba(250, 88, 106, 0.08);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .nexus-table tbody tr:last-child td {
@@ -807,6 +899,275 @@ html, body, #root {
   box-shadow: 0 6px 20px rgba(250, 88, 106, 0.4);
 }
 
+/* ── Header Heading ───────────────────────────────────────────── */
+.sidebar-header-heading {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--apple-text-primary, #e8e8e8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 12px;
+  user-select: none;
+}
+
+.sidebar-header-spacer {
+  width: 36px;
+  flex-shrink: 0;
+}
+
+/* ── Analysis Dashboard ───────────────────────────────────────── */
+.analysis-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.analysis-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.analysis-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--apple-text-secondary, #999);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.analysis-overview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.analysis-card-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.analysis-overview-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.analysis-badge {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--apple-text-secondary, #aaa);
+  white-space: nowrap;
+}
+
+.analysis-badge--visibility {
+  background: rgba(100, 180, 100, 0.15);
+  color: #6bdc6b;
+}
+
+.analysis-description {
+  font-size: 13px;
+  color: var(--apple-text-primary, #e8e8e8);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ── Language Chart ───────────────────────────────────────────── */
+.language-chart-container {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.language-chart-visual {
+  width: 140px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+.language-chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.language-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.language-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.language-legend-name {
+  color: var(--apple-text-primary, #e8e8e8);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.language-legend-pct {
+  color: var(--apple-text-secondary, #999);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Framework Chart ──────────────────────────────────────────── */
+.framework-chart-container {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.framework-chart-visual {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+.framework-chart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.framework-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.framework-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.framework-legend-name {
+  color: var(--apple-text-primary, #e8e8e8);
+  white-space: nowrap;
+}
+
+.framework-legend-cat {
+  color: var(--apple-text-secondary, #777);
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+/* ── Databases ────────────────────────────────────────────────── */
+.analysis-databases {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.analysis-database-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.analysis-database-name {
+  font-weight: 600;
+  color: var(--apple-text-primary, #e8e8e8);
+}
+
+.analysis-database-evidence {
+  color: var(--apple-text-secondary, #777);
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* ── Features ─────────────────────────────────────────────────── */
+.analysis-features {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analysis-feature-item {
+  font-size: 12px;
+  color: var(--apple-text-primary, #e8e8e8);
+  padding-left: 14px;
+  position: relative;
+  line-height: 1.4;
+}
+
+.analysis-feature-item::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  color: rgba(100, 160, 255, 0.7);
+}
+
+/* ── Architecture ─────────────────────────────────────────────── */
+.analysis-architecture {
+  font-size: 12px;
+  color: var(--apple-text-primary, #e8e8e8);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* ── Activity / Quality ───────────────────────────────────────── */
+.analysis-activity-grid {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.analysis-activity-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.analysis-activity-item.yes {
+  color: #6bdc6b;
+}
+
+.analysis-activity-item.no {
+  color: #dc6b6b;
+}
+
+.analysis-activity-icon {
+  font-size: 14px;
+}
+
+.analysis-activity-label {
+  white-space: nowrap;
+}
+
+.analysis-no-data {
+  font-size: 12px;
+  color: var(--apple-text-secondary, #777);
+  font-style: italic;
+}
+
 /* ── Footer ────────────────────────────────────────────────────── */
 .sidebar-footer {
   display: flex;
@@ -815,6 +1176,8 @@ html, body, #root {
   padding-top: 8px;
   border-top: 1px solid var(--apple-border-default);
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .sidebar-footer-hint {

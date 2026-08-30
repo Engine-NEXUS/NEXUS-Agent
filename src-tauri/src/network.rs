@@ -39,24 +39,29 @@ pub struct ServerEvent {
     pub data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<serde_json::Value>,
 }
 
 impl ServerEvent {
     fn state(s: &str) -> Self {
-        Self { kind: "state".into(), state: Some(s.into()), data: None, message: None }
+        Self { kind: "state".into(), state: Some(s.into()), data: None, message: None, analysis: None }
     }
     fn ack(text: &str) -> Self {
-        Self { kind: "ack".into(), state: None, data: Some(text.into()), message: None }
+        Self { kind: "ack".into(), state: None, data: Some(text.into()), message: None, analysis: None }
     }
     fn result(text: &str) -> Self {
-        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None }
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: None }
+    }
+    fn result_with_analysis(text: &str, analysis: serde_json::Value) -> Self {
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: Some(analysis) }
     }
     #[allow(dead_code)]
     fn done() -> Self {
-        Self { kind: "done".into(), state: None, data: None, message: None }
+        Self { kind: "done".into(), state: None, data: None, message: None, analysis: None }
     }
     fn error(msg: &str) -> Self {
-        Self { kind: "error".into(), state: None, data: None, message: Some(msg.into()) }
+        Self { kind: "error".into(), state: None, data: None, message: Some(msg.into()), analysis: None }
     }
 }
 
@@ -125,6 +130,16 @@ pub async fn open_session<R: Runtime>(
     });
 
     Ok(session_id)
+}
+
+/// Public accessor for the current Worker session config.
+/// Used by architect.rs to POST enrichment requests directly to the Worker
+/// without going through the full transcript flow.
+pub fn get_session_info() -> Option<(String, String, String)> {
+    let guard = SESSION.lock();
+    guard.as_ref().map(|s| {
+        (s.worker_url.clone(), s.user_id.clone(), s.device_id.clone())
+    })
 }
 
 /// IPC: send transcript text to the Worker via HTTP POST.
@@ -225,7 +240,12 @@ pub async fn send_transcript<R: Runtime>(
         .or(data["response"].as_str())
         .unwrap_or("I couldn't process that request.");
 
-    let _ = app.emit("assistant:server", ServerEvent::result(reply_text));
+    // Check if the Worker included structured analysis data
+    if let Some(analysis) = data.get("analysis") {
+        let _ = app.emit("assistant:server", ServerEvent::result_with_analysis(reply_text, analysis.clone()));
+    } else {
+        let _ = app.emit("assistant:server", ServerEvent::result(reply_text));
+    }
 
     // 7. Do NOT emit "done" immediately — the frontend will emit "done"
     // after TTS finishes speaking the result. Emitting "done" here would

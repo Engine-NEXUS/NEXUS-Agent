@@ -1,31 +1,54 @@
 //! IPC commands for setup window management and configuration.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{Emitter, Manager, Runtime};
 #[cfg(feature = "wakeword-sherpa")]
 use crate::voice_profile;
 use crate::app_registry;
 
+// ─── Pending sidebar content ───────────────────────────────────────
+//
+// When the sidebar window is created on-demand, the WebView2 needs time
+// to load sidebar.html and mount the React app before it can receive
+// Tauri events. If we emit `sidebar:show` / `sidebar:backdrop` immediately
+// after creating the window, those events are lost because no listener
+// exists yet.
+//
+// Instead, we store the content + backdrop here. The frontend calls
+// `get_pending_sidebar_content` on mount, which returns and clears the
+// pending data. This is race-free regardless of how long the WebView
+// takes to load.
+
+#[derive(Clone)]
+struct PendingSidebar {
+    query: String,
+    text: String,
+    backdrop: Option<String>, // data:image/png;base64,... URI
+    analysis: Option<serde_json::Value>, // structured repo analysis data
+}
+
+static PENDING_SIDEBAR: Mutex<Option<PendingSidebar>> = Mutex::new(None);
+
 /// IPC: open the setup window (called from tray menu "Settings…" or first launch).
+/// Creates the window on-demand if it doesn't exist (saves ~250 MB RAM at idle).
 #[tauri::command]
 pub fn open_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("setup")
-        .ok_or_else(|| "setup window not found".to_string())?;
+    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::setup())?;
     win.show().map_err(|e| e.to_string())?;
     win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// IPC: close/hide the setup window and activate the main assistant orb.
+/// IPC: close/destroy the setup window and activate the main assistant orb.
+/// Destroys the window (not just hide) to free ~250 MB of WebView2 processes.
 #[tauri::command]
 pub fn close_setup_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("setup") {
-        let _ = win.hide();
-    }
+    let _ = crate::dyn_windows::destroy_window(&app, "setup");
     if let Some(main_win) = app.get_webview_window("main") {
         let _ = main_win.show();
         let _ = crate::window_manager::configure_non_activating_overlay(&main_win);
@@ -492,64 +515,234 @@ pub struct MeetingStatus {
 
 /// IPC: Show the response sidebar window (positioned at bottom-right).
 /// Called when a server response is incoming (n8n/Ollama/Hermes).
+/// Creates the sidebar window on-demand if it doesn't exist (saves ~250 MB RAM at idle).
+///
+/// MUST be async — WebviewWindowBuilder::build() dispatches to the main thread,
+/// and a synchronous command runs on a blocking thread that can't yield, causing
+/// a deadlock. Async commands run on the tokio runtime which can properly yield.
 #[tauri::command]
-pub fn show_sidebar<R: Runtime>(
+pub async fn show_sidebar<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("sidebar")
-        .ok_or_else(|| "sidebar window not found".to_string())?;
-    show_sidebar_inner(&app, &win)?;
+    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::sidebar())?;
+    // Check if window is already visible to avoid capturing ourselves
+    let already_visible = win.is_visible().unwrap_or(false);
+    show_sidebar_inner(&app, &win, already_visible)?;
     Ok(())
 }
 
 /// IPC: Show the sidebar AND set its content.
-/// Emits the "sidebar:show" event to Tauri listeners and invokes the React hook
-/// via JS eval with full JSON encoding (preserving Markdown, images, tables, code blocks).
+///
+/// The sidebar window is created on-demand. Since the React app needs time
+/// to load before it can receive Tauri events, we store the content + backdrop
+/// in a static. The frontend calls `get_pending_sidebar_content` on mount,
+/// which returns and clears the pending data. This is race-free.
+///
+/// If the window already exists (React already loaded), we also emit the
+/// `sidebar:show` event as a fast path — the event listener will handle it
+/// immediately without needing to poll the pending content.
 #[tauri::command]
-pub fn show_sidebar_with_content<R: Runtime>(
+pub async fn show_sidebar_with_content<R: Runtime>(
     app: tauri::AppHandle<R>,
     query: String,
     text: String,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("sidebar")
-        .ok_or_else(|| "sidebar window not found".to_string())?;
-    show_sidebar_inner(&app, &win)?;
+    let window_existed = app.get_webview_window("sidebar").is_some();
+    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::sidebar())?;
 
-    // 1. Emit event to all Tauri listeners
-    let payload = serde_json::json!({
-        "query": query,
-        "text": text,
-    });
-    let _ = app.emit("sidebar:show", payload);
+    // ── Key fix: pre-position the window BEFORE capturing the backdrop ──
+    // A freshly-created window sits at physical (0, 0). On Windows, a window
+    // at (0, 0) may be partially off-screen or on the wrong monitor, which
+    // causes `win.current_monitor()` inside `capture_backdrop` to return None,
+    // silently aborting the capture. We run the same positioning math used by
+    // `show_sidebar_inner` here first, so the window is in its final position
+    // on the correct monitor before we call `BitBlt`. This is safe to do even
+    // before `win.show()` — `set_position` works on hidden windows.
+    if let Ok(Some(monitor)) = win.current_monitor().or_else(|_| {
+        // Fallback: if not yet on a monitor, try primary monitor
+        win.primary_monitor()
+    }) {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let sidebar_w = 600i32;
+        let sidebar_h = 1000i32;
+        let phys_w = (sidebar_w as f64 * scale) as i32;
+        let phys_h = (sidebar_h as f64 * scale) as i32;
+        #[cfg(target_os = "windows")]
+        let taskbar = (48.0 * scale) as i32;
+        #[cfg(not(target_os = "windows"))]
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+        let x = screen.width as i32 - phys_w - gap;
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
 
-    // 2. Direct JS evaluation as a guaranteed fallback for the React application
-    let query_json = serde_json::to_string(&query).unwrap_or_else(|_| "\"\"".to_string());
-    let text_json = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".to_string());
-    let js = format!(
-        r#"
-        (function() {{
-            if (window.__NEXUS_SET_SIDEBAR_CONTENT__) {{
-                window.__NEXUS_SET_SIDEBAR_CONTENT__({q}, {t});
-            }}
-            var app = document.getElementById('sidebar-app');
-            if (app) {{
-                app.className = 'sidebar--visible';
-            }}
-        }})();
-        "#,
-        q = query_json,
-        t = text_json,
-    );
+    // Capture the backdrop before showing (only for fresh windows or hidden ones).
+    // If the window is already visible, skip capture to avoid capturing ourselves.
+    let backdrop = if window_existed && win.is_visible().unwrap_or(false) {
+        None
+    } else {
+        capture_backdrop(&app, &win)
+    };
 
-    let _ = win.eval(&js);
-    tracing::info!("sidebar: shown with content (query={} chars, text={} chars)", query.len(), text.len());
+    // Store the pending content so the frontend can fetch it on mount.
+    // This handles the fresh-window case where events would be missed.
+    {
+        let mut pending = PENDING_SIDEBAR.lock().unwrap();
+        *pending = Some(PendingSidebar {
+            query: query.clone(),
+            text: text.clone(),
+            backdrop: backdrop.clone(),
+            analysis: None,
+        });
+    }
+
+    // Show the window (no-op if already visible).
+    show_sidebar_inner(&app, &win, backdrop.is_some())?;
+
+    // If the window already existed (React already loaded), also emit the
+    // event as a fast path. The frontend listener will handle it immediately.
+    if window_existed {
+        let payload = serde_json::json!({
+            "query": query,
+            "text": text,
+        });
+        let _ = app.emit("sidebar:show", payload);
+        // Also emit the backdrop if we captured one.
+        if let Some(uri) = backdrop {
+            let _ = app.emit("sidebar:backdrop", uri);
+        }
+    }
+
+    tracing::info!("sidebar: shown with content (query={} chars, text={} chars, window_existed={})", query.len(), text.len(), window_existed);
     Ok(())
 }
 
+/// IPC: Show the sidebar with structured analysis data (rich dashboard).
+/// Like `show_sidebar_with_content` but also stores the analysis JSON so
+/// the frontend can render the AnalysisDashboard with pie charts.
+#[tauri::command]
+pub async fn show_sidebar_with_analysis<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    query: String,
+    text: String,
+    analysis: serde_json::Value,
+) -> Result<(), String> {
+    let window_existed = app.get_webview_window("sidebar").is_some();
+    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::sidebar())?;
+
+    // Pre-position the window before capturing backdrop
+    if !window_existed {
+        let _ = win.set_position(tauri::LogicalPosition::new(0.0, 0.0));
+    }
+
+    let backdrop = if window_existed && win.is_visible().unwrap_or(false) {
+        None
+    } else {
+        capture_backdrop(&app, &win)
+    };
+
+    {
+        let mut pending = PENDING_SIDEBAR.lock().unwrap();
+        *pending = Some(PendingSidebar {
+            query: query.clone(),
+            text: text.clone(),
+            backdrop: backdrop.clone(),
+            analysis: Some(analysis.clone()),
+        });
+    }
+
+    show_sidebar_inner(&app, &win, backdrop.is_some())?;
+
+    // Fast path: if the window already exists, also emit events
+    if window_existed {
+        let _ = app.emit("sidebar:show", serde_json::json!({
+            "query": query,
+            "text": text,
+        }));
+        let _ = app.emit("sidebar:analysis", serde_json::json!({
+            "query": query,
+            "text": text,
+            "analysis": analysis,
+        }));
+        if let Some(uri) = backdrop {
+            let _ = app.emit("sidebar:backdrop", uri);
+        }
+    }
+
+    tracing::info!("sidebar: shown with analysis (query={} chars, text={} chars, window_existed={})", query.len(), text.len(), window_existed);
+    Ok(())
+}
+
+/// IPC: Fetch pending sidebar content (called by the frontend on mount).
+/// Returns the content + backdrop + analysis that was stored by
+/// `show_sidebar_with_content` or `show_sidebar_with_analysis`, or null
+/// if no content is pending. Clears the pending data after returning.
+#[tauri::command]
+pub fn get_pending_sidebar_content() -> Result<Option<serde_json::Value>, String> {
+    let mut pending = PENDING_SIDEBAR.lock().unwrap();
+    let data = pending.take();
+    match data {
+        Some(p) => {
+            tracing::info!("sidebar: pending content fetched (query={} chars, text={} chars, has_backdrop={}, has_analysis={})", p.query.len(), p.text.len(), p.backdrop.is_some(), p.analysis.is_some());
+            Ok(Some(serde_json::json!({
+                "query": p.query,
+                "text": p.text,
+                "backdrop": p.backdrop,
+                "analysis": p.analysis,
+            })))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Capture the desktop region behind the sidebar window (Windows only).
+/// Must be called BEFORE `win.show()` so we don't capture the sidebar itself.
+/// Returns the blurred backdrop as a `data:image/png;base64,...` URI, or None.
+fn capture_backdrop<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let monitor = win.current_monitor().ok()??;
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let sidebar_w = 600i32;
+        let sidebar_h = 1000i32;
+        let phys_w = (sidebar_w as f64 * scale) as i32;
+        let phys_h = (sidebar_h as f64 * scale) as i32;
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+        let x = screen.width as i32 - phys_w - gap;
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+
+        match crate::sidebar_backdrop::capture_and_blur(x, y, phys_w, phys_h, 32.0) {
+            Some(data_uri) => {
+                tracing::info!("sidebar: backdrop captured ({} bytes)", data_uri.len());
+                Some(data_uri)
+            }
+            None => {
+                tracing::warn!("sidebar: backdrop capture failed (x={x}, y={y}, w={phys_w}, h={phys_h})");
+                None
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// Shared inner logic for showing the sidebar window.
+/// `backdrop_already_captured`: if true, skip the backdrop capture (it was
+/// already done by the caller and stored in the pending content). This prevents
+/// re-capturing the window itself when the window is already visible.
 fn show_sidebar_inner<R: Runtime>(
     _app: &tauri::AppHandle<R>,
     win: &tauri::WebviewWindow<R>,
+    backdrop_already_captured: bool,
 ) -> Result<(), String> {
 
     // Position at bottom-right of the screen, above the taskbar.
@@ -576,17 +769,15 @@ fn show_sidebar_inner<R: Runtime>(
         let _ = win.set_position(PhysicalPosition::new(x, y));
     }
 
-    // ─── Native OS blur (cross-platform) ───────────────────────────
-    // Primary acrylic registration happens in lib.rs setup hook (correct
-    // timing). This is a safety re-apply in case the effect was lost
-    // (e.g. window was hidden/shown by the OS). Called AFTER win.show()
-    // so the window has participated in at least one DWM composition pass.
-    //
-    // Windows: DWM acrylic = blurs what's behind the window (other apps,
-    //          desktop wallpaper). Tint (0,0,0,0) = no color overlay —
-    //          the glass look is provided entirely by the CSS card.
-    // macOS:   Applied in setup hook (NSVisualEffectView persists).
-    // Linux:   No native API — CSS backdrop-filter is the fallback.
+    // ─── "Fake blur" backdrop capture (Windows only) ───────────────
+    // Only capture if the caller hasn't already done so. This prevents
+    // capturing the sidebar itself when the window is already visible
+    // (e.g. when show_sidebar is called from the frontend's useEffect).
+    if !backdrop_already_captured {
+        if let Some(data_uri) = capture_backdrop(_app, win) {
+            let _ = _app.emit("sidebar:backdrop", data_uri);
+        }
+    }
 
     win.show().map_err(|e| e.to_string())?;
 
@@ -610,11 +801,104 @@ fn show_sidebar_inner<R: Runtime>(
 
     #[cfg(target_os = "windows")]
     {
-        use window_vibrancy::apply_blur;
-        // Re-apply after show. Dark 60% alpha.
-        if let Err(e) = apply_blur(&win, Some((18, 18, 18, 150))) {
-            tracing::warn!("sidebar: re-apply blur failed: {e:?}");
+        // No window-vibrancy re-apply here — see the detailed comment in
+        // lib.rs's setup hook for why this window intentionally never calls
+        // apply_blur/apply_acrylic/apply_mica. The window's transparency
+        // comes from tao's own material-free DWM registration (done once at
+        // window creation) and does not need re-applying on every show.
+        //
+        // Corner rounding is a plain window-shape attribute (not a material)
+        // so it's safe/cheap to re-assert on every show in case it was lost.
+        crate::dwm_corners::round_corners(&win);
+
+        // ── Live blur: 1 FPS + change detection ──────────────────────
+        // The previous 200ms (5 FPS) loop created a "buffering video"
+        // effect — each frame required the full capture→blur→JPEG→base64
+        //→event→repaint pipeline (~50-100ms), making 5 FPS look stuttery.
+        //
+        // Now: capture every 1s, hash the raw BGRA, and only run the
+        // expensive blur→encode→emit pipeline when the background actually
+        // changed (hash differs). When nothing moves behind the sidebar,
+        // CPU stays at ~0. When something moves, the blur updates within
+        // ~1s with a gentle CSS crossfade (see sidebar.css ::before).
+        static LIVE_BLUR_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static LAST_FRAME_HASH: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+        if !LIVE_BLUR_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+            LIVE_BLUR_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+            // Reset hash so the first frame after show always emits
+            *LAST_FRAME_HASH.lock().unwrap() = None;
+
+            let win_clone = win.clone();
+            let app_clone = _app.clone();
+            tauri::async_runtime::spawn(async move {
+                // Wait for window to fully appear
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                while win_clone.is_visible().unwrap_or(false) {
+                    // 1 FPS — 1000ms between captures
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+                    if !win_clone.is_visible().unwrap_or(false) {
+                        break;
+                    }
+
+                    if let Ok(Some(monitor)) = win_clone.current_monitor() {
+                        let scale = monitor.scale_factor();
+                        let screen = monitor.size();
+                        let sidebar_w = 600i32;
+                        let sidebar_h = 1000i32;
+                        let phys_w = (sidebar_w as f64 * scale) as i32;
+                        let phys_h = (sidebar_h as f64 * scale) as i32;
+                        let taskbar = (48.0 * scale) as i32;
+                        let gap = (12.0 * scale) as i32;
+                        let x = screen.width as i32 - phys_w - gap;
+                        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+
+                        // Step 1: cheap raw capture for hashing (~1ms)
+                        let raw_bgra = match crate::sidebar_backdrop::capture_region_bgra_public(x, y, phys_w, phys_h) {
+                            Some(bgra) => bgra,
+                            None => continue,
+                        };
+
+                        // Step 2: hash and compare to previous frame
+                        let current_hash = crate::sidebar_backdrop::frame_hash(&raw_bgra);
+                        let mut prev_hash_guard = LAST_FRAME_HASH.lock().unwrap();
+                        let should_emit = match *prev_hash_guard {
+                            Some(prev) => prev != current_hash,
+                            None => true, // First frame after show — always emit
+                        };
+                        *prev_hash_guard = Some(current_hash);
+                        drop(prev_hash_guard);
+
+                        // Step 3: only run the expensive pipeline if changed
+                        if should_emit {
+                            // We already have the raw BGRA — blur + encode it
+                            // without re-capturing (reuse the bytes we have).
+                            if let Some(data_uri) = crate::sidebar_backdrop::blur_bgra_to_jpeg(&raw_bgra, phys_w, phys_h, 32.0) {
+                                let _ = app_clone.emit("sidebar:backdrop", data_uri);
+                            }
+                        }
+                    }
+                }
+
+                // Clean up: reset hash so next show captures fresh
+                *LAST_FRAME_HASH.lock().unwrap() = None;
+                LIVE_BLUR_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Re-apply vibrancy after show — the effect can be lost if the
+        // window was hidden for a long time or the app was backgrounded.
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+        let _ = apply_vibrancy(
+            &win,
+            NSVisualEffectMaterial::Sidebar,
+            Some(NSVisualEffectState::Active),
+            Some(20.0),
+        );
     }
 
     Ok(())
@@ -626,21 +910,21 @@ fn show_sidebar_inner<R: Runtime>(
 pub fn hide_sidebar<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("sidebar")
-        .ok_or_else(|| "sidebar window not found".to_string())?;
-    win.hide().map_err(|e| e.to_string())?;
+    // Destroy the sidebar window to free ~250 MB of WebView2 processes.
+    // It will be recreated on-demand next time show_sidebar is called.
+    let _ = crate::dyn_windows::destroy_window(&app, "sidebar");
     Ok(())
 }
 
 // ─── Settings window + persistence ───────────────────────────────────
 
 /// IPC: Open the settings window.
+/// Creates the window on-demand if it doesn't exist (saves ~250 MB RAM at idle).
 #[tauri::command]
 pub fn open_settings_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("settings")
-        .ok_or_else(|| "settings window not found".to_string())?;
+    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::settings())?;
     win.show().map_err(|e| e.to_string())?;
     win.set_focus().map_err(|e| e.to_string())?;
     Ok(())
@@ -651,9 +935,8 @@ pub fn open_settings_window<R: Runtime>(
 pub fn close_settings_window<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let win = app.get_webview_window("settings")
-        .ok_or_else(|| "settings window not found".to_string())?;
-    win.hide().map_err(|e| e.to_string())?;
+    // Destroy to free ~250 MB of WebView2 processes.
+    let _ = crate::dyn_windows::destroy_window(&app, "settings");
     Ok(())
 }
 
@@ -684,6 +967,8 @@ pub struct NexusSettings {
     pub fish_audio_api_key: String,
     #[serde(default)]
     pub gemini_api_key: String,
+    #[serde(default)]
+    pub google_cloud_api_key: String,
 }
 
 fn default_tts_provider() -> String {
@@ -710,10 +995,11 @@ impl Default for NexusSettings {
             device_id: String::new(),
             tts_voice: "jarvis".to_string(),
             speech_rate: 1.0,
-            tts_provider: "neural".to_string(),
+            tts_provider: "fish_audio".to_string(),
             elevenlabs_api_key: String::new(),
             fish_audio_api_key: String::new(),
             gemini_api_key: String::new(),
+            google_cloud_api_key: String::new(),
         }
     }
 }
@@ -756,6 +1042,11 @@ pub fn get_settings<R: Runtime>(
     if settings.gemini_api_key.is_empty() {
         if let Ok(key) = std::env::var("GEMINI_API_KEY").or_else(|_| std::env::var("NEXUS_GEMINI_API_KEY")) {
             settings.gemini_api_key = key;
+        }
+    }
+    if settings.google_cloud_api_key.is_empty() {
+        if let Ok(key) = std::env::var("GOOGLE_CLOUD_API_KEY").or_else(|_| std::env::var("NEXUS_GOOGLE_CLOUD_API_KEY")) {
+            settings.google_cloud_api_key = key;
         }
     }
     Ok(settings)

@@ -3,83 +3,64 @@ import { useAssistant } from "../store/assistant";
 export interface VoiceOption {
   id: string;
   name: string;
-  provider: "neural" | "elevenlabs" | "fish_audio" | "gemini_tts" | "system";
+  provider: "google_cloud" | "neural" | "elevenlabs" | "fish_audio" | "gemini_tts" | "system";
   accent: string;
   description: string;
   elevenVoiceId?: string;
   fishModelId?: string;
   geminiModelId?: string;
+  googleVoiceId?: string;
   locale: string;
   gender: "male" | "female";
   sampleText: string;
 }
 
 export const CURATED_VOICES: VoiceOption[] = [
+  // ── Fish Audio s2.1-pro-free (FREE — no credit card, no billing) ──
   {
-    id: "gemini_flash",
-    name: "Gemini Flash (Google AI)",
-    provider: "gemini_tts",
-    accent: "Natural Expressive (US)",
-    description: "Ultra low-latency speech powered by Gemini 3.1 Flash TTS Preview.",
-    geminiModelId: "gemini-3.1-flash-tts-preview",
-    locale: "en-US",
+    id: "jarvis",
+    name: "Jarvis (Fish Audio)",
+    provider: "fish_audio",
+    accent: "British (UK)",
+    description: "Sophisticated British butler voice. Refined, calm, authoritative. Powered by Fish Audio S2.1 Pro Free. No credit card required.",
+    fishModelId: "17e9990aa92c4da8b09ad3f0f2231e48",
+    locale: "en-GB",
     gender: "male",
-    sampleText: "Hello! I'm Gemini Flash TTS, ready for instant speech synthesis.",
+    sampleText: "At your service, sir. All systems are operational and ready for your commands.",
   },
   {
     id: "ethan",
     name: "Ethan (Fish Audio)",
     provider: "fish_audio",
     accent: "Conversational (US)",
-    description: "Ultra-realistic male voice powered by Fish Audio s2.1-pro model.",
+    description: "Ultra-realistic male voice. Conversational, warm, natural. Powered by Fish Audio S2.1 Pro Free. No credit card required.",
     fishModelId: "536d3a5e000945adb7038665781a4aca",
     locale: "en-US",
     gender: "male",
-    sampleText: "Hello sir. I'm Ethan, running on Fish Audio s2.1-pro.",
-  },
-  {
-    id: "jarvis",
-    name: "Jarvis",
-    provider: "neural",
-    accent: "British (UK)",
-    description: "Crisp, articulate, calm executive assistant.",
-    elevenVoiceId: "pNInz6obpgDQGcFmaJgB", // Adam
-    locale: "en-GB",
-    gender: "male",
-    sampleText: "At your service sir. All systems are operational.",
+    sampleText: "Hello sir. I'm Ethan, running on Fish Audio S2.1 Pro Free.",
   },
   {
     id: "nova",
-    name: "Nova",
-    provider: "neural",
+    name: "Nova (Fish Audio)",
+    provider: "fish_audio",
     accent: "American (US)",
-    description: "Warm, natural, intelligent conversationalist.",
-    elevenVoiceId: "21m00Tcm4TlvDq8ikWAM", // Rachel
+    description: "Warm, natural, intelligent female voice. Powered by Fish Audio S2.1 Pro Free. No credit card required.",
+    fishModelId: "00a1b221-6137-4b73-ad62-b0cbce134167",
     locale: "en-US",
     gender: "female",
     sampleText: "Hello! I'm ready to help you with your workflow today.",
   },
+  // ── Web Speech API fallbacks (offline, always available) ──
   {
-    id: "echo",
-    name: "Echo",
+    id: "jarvis_offline",
+    name: "Jarvis (Offline Fallback)",
     provider: "neural",
-    accent: "Australian (AU)",
-    description: "Fast, energetic, high-clarity tech companion.",
-    elevenVoiceId: "TxGEqnHWrfWFTfGW9XjX", // Josh
-    locale: "en-AU",
+    accent: "British (UK)",
+    description: "Crisp, articulate, calm executive assistant. Offline Web Speech fallback when no API key is set.",
+    elevenVoiceId: "pNInz6obpgDQGcFmaJgB",
+    locale: "en-GB",
     gender: "male",
-    sampleText: "Ready to build. What repository are we analyzing?",
-  },
-  {
-    id: "onyx",
-    name: "Onyx",
-    provider: "neural",
-    accent: "Deep Tech (CA)",
-    description: "Deep, commanding, grounded baritone.",
-    elevenVoiceId: "VR6AewLTigWG4xSOukaG", // Arnold
-    locale: "en-CA",
-    gender: "male",
-    sampleText: "NEXUS online. Awaiting your commands.",
+    sampleText: "At your service sir. All systems are operational.",
   },
 ];
 
@@ -354,6 +335,68 @@ async function playElevenLabs(
 }
 
 /**
+ * Synthesize speech via Google Cloud Text-to-Speech API.
+ * Supports Chirp3-HD, WaveNet, Neural2, and Standard voices.
+ * Returns MP3 audio via the v1 text:synthesize endpoint.
+ */
+export async function playGoogleCloudTTS(
+  text: string,
+  voiceId: string,
+  apiKey: string,
+  onEnd?: () => void,
+): Promise<void> {
+  stopTts();
+  void emitTtsEvent("tts-started");
+
+  try {
+    // Extract language code from voice ID (e.g., "en-GB" from "en-GB-Chirp3-HD-Algenib")
+    const langCode = voiceId.split("-").slice(0, 2).join("-");
+
+    const response = await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey.trim()}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          input: { text },
+          voice: {
+            languageCode: langCode,
+            name: voiceId,
+          },
+          audioConfig: {
+            audioEncoding: "MP3",
+            speakingRate: 1.0,
+            pitch: 0.0,
+            volumeGainDb: 0.0,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`Google Cloud TTS error: ${response.status} ${errBody}`);
+    }
+
+    const data = await response.json();
+    const audioContent = data.audioContent;
+    if (!audioContent) {
+      throw new Error("Google Cloud TTS returned no audio content");
+    }
+
+    // The API returns base64-encoded MP3
+    const audioUrl = `data:audio/mp3;base64,${audioContent}`;
+    return playAudioUrl(audioUrl, onEnd);
+  } catch (err) {
+    console.warn("[TTS] Google Cloud TTS failed, falling back to WebSpeech:", err);
+    const fallbackVoice = CURATED_VOICES.find((v) => v.googleVoiceId === voiceId) || CURATED_VOICES[0];
+    return playWebSpeech(text, fallbackVoice, onEnd);
+  }
+}
+
+/**
  * Stream speech from Fish Audio API (s2.1-pro model).
  */
 export async function playFishAudio(
@@ -377,7 +420,7 @@ export async function playFishAudio(
         reference_id: referenceId,
         format: "mp3",
         latency: "normal",
-        model: "s2.1-pro",
+        model: "s2.1-pro-free",
       }),
     });
 
@@ -511,19 +554,28 @@ export async function previewVoice(
 
   const settings = await getSavedSettings();
 
-  const DEFAULT_GEMINI_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
-
-  if (voice.provider === "gemini_tts") {
-    const apiKey = customApiKey || settings?.geminiApiKey || DEFAULT_GEMINI_KEY;
-    if (apiKey) {
-      return playGeminiTts(voice.sampleText, apiKey, onEnd);
-    }
-  }
-
+  // Fish Audio — primary provider (free, no credit card)
   if (voice.provider === "fish_audio" && voice.fishModelId) {
     const apiKey = customApiKey || settings?.fishAudioApiKey;
     if (apiKey) {
       return playFishAudio(voice.sampleText, voice.fishModelId, apiKey, onEnd);
+    }
+    console.warn("[TTS] No Fish Audio API key set, falling back to WebSpeech for preview");
+  }
+
+  // Google Cloud TTS (if key is set)
+  if (voice.provider === "google_cloud" && voice.googleVoiceId) {
+    const apiKey = customApiKey || settings?.googleCloudApiKey;
+    if (apiKey) {
+      return playGoogleCloudTTS(voice.sampleText, voice.googleVoiceId, apiKey, onEnd);
+    }
+  }
+
+  // Legacy Gemini TTS
+  if (voice.provider === "gemini_tts") {
+    const apiKey = customApiKey || settings?.geminiApiKey;
+    if (apiKey) {
+      return playGeminiTts(voice.sampleText, apiKey, onEnd);
     }
   }
 
@@ -531,7 +583,7 @@ export async function previewVoice(
     return playElevenLabs(voice.sampleText, voice.elevenVoiceId, customApiKey, onEnd);
   }
 
-  // Primary preview: WebSpeech API with Web Audio fallback
+  // Fallback: WebSpeech API with Web Audio fallback
   return playWebSpeech(voice.sampleText, voice, onEnd);
 }
 
@@ -547,27 +599,32 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
   }
 
   const settings = await getSavedSettings();
-  const voiceId = settings?.ttsVoice || "gemini_flash";
-  const elevenKey = settings?.elevenlabsApiKey;
+  const voiceId = settings?.ttsVoice || "jarvis";
   const fishKey = settings?.fishAudioApiKey;
-  
-  const DEFAULT_GEMINI_KEY = "AQ.Ab8RN6IQHjANZWrQJn2AgOee37Sqln_aYlEOJUraqW1L54Lkug";
-  const geminiKey = settings?.geminiApiKey || DEFAULT_GEMINI_KEY;
 
   const curated = CURATED_VOICES.find((v) => v.id === voiceId) || CURATED_VOICES[0];
 
-  if (curated?.provider === "gemini_tts" && geminiKey) {
-    return playGeminiTts(text, geminiKey, onEnd);
-  }
-
+  // 1st: Fish Audio s2.1-pro-free (primary — free, no credit card)
   if (curated?.fishModelId && fishKey) {
     return playFishAudio(text, curated.fishModelId, fishKey, onEnd);
   }
 
-  if (elevenKey && curated?.elevenVoiceId) {
-    return playElevenLabs(text, curated.elevenVoiceId, elevenKey, onEnd);
+  // 2nd: Google Cloud TTS (if key is set)
+  if (curated?.provider === "google_cloud" && curated.googleVoiceId && settings?.googleCloudApiKey) {
+    return playGoogleCloudTTS(text, curated.googleVoiceId, settings.googleCloudApiKey, onEnd);
   }
 
+  // 3rd: Legacy Gemini TTS (if key is set)
+  if (curated?.provider === "gemini_tts" && settings?.geminiApiKey) {
+    return playGeminiTts(text, settings.geminiApiKey, onEnd);
+  }
+
+  // 4th: Legacy ElevenLabs (if key is set)
+  if (settings?.elevenlabsApiKey && curated?.elevenVoiceId) {
+    return playElevenLabs(text, curated.elevenVoiceId, settings.elevenlabsApiKey, onEnd);
+  }
+
+  // Last resort: Web Speech API (always available, offline)
   return playWebSpeech(text, curated, onEnd);
 }
 

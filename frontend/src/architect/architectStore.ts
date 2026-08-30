@@ -29,6 +29,8 @@ export interface Phase1Data {
   edges: ArchitectEdge[];
   entry_points: string[];
   total_files: number;
+  /** Sample file paths for LLM enrichment (not used for rendering). */
+  sample_file_paths?: string[];
 }
 
 export interface FileNodeInfo {
@@ -111,6 +113,7 @@ interface ArchitectState {
   setDeepScanning: (deepScanning: boolean) => void;
   setProgress: (stage: string, message: string) => void;
   setPhase1Data: (data: Phase1Data) => void;
+  enrichPhase1: (enrichment: { summary: string; layers: { id: string; label: string; tech_stack: string }[] }) => void;
   setPhase2Data: (data: Phase2Data) => void;
   setSelectedNodeId: (nodeId: string | null) => void;
   setImpactResult: (result: ImpactResult | null) => void;
@@ -159,6 +162,26 @@ export const useArchitect = create<ArchitectState>((set) => ({
       loading: false,
       progressStage: "complete",
       progressMessage: "Phase 1 visual map ready",
+    }),
+  enrichPhase1: (enrichment) =>
+    set((state) => {
+      if (!state.phase1Data) return {};
+      const updatedLayers = state.phase1Data.layers.map((layer) => {
+        const enriched = enrichment.layers.find((e) => e.id === layer.id);
+        if (!enriched) return layer;
+        return {
+          ...layer,
+          label: enriched.label || layer.label,
+          tech_stack: enriched.tech_stack || layer.tech_stack,
+        };
+      });
+      return {
+        phase1Data: {
+          ...state.phase1Data,
+          summary: enrichment.summary || state.phase1Data.summary,
+          layers: updatedLayers,
+        },
+      };
     }),
   setPhase2Data: (data) =>
     set({

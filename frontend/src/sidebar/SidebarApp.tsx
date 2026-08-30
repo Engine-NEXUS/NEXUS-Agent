@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
-import { useSidebar, type SidebarFontSize } from "./sidebarStore";
+import { useSidebar } from "./sidebarStore";
 import { renderMarkdownToHtml } from "./markdownRenderer";
 import { speak, stopTts } from "../audio/ttsPlayer";
+import { AnalysisDashboard } from "./AnalysisDashboard";
 
 /**
  * NEXUS Response Sidebar
@@ -16,6 +17,7 @@ import { speak, stopTts } from "../audio/ttsPlayer";
  * - GitHub Callout / Alert cards ([!NOTE], [!TIP], [!IMPORTANT], etc.)
  * - Safe external link handling in user's default browser
  * - Read Aloud (TTS) control, Copy Full Response, Font-size adjustment
+ * - Rich repository analysis dashboard with pie charts
  * - Smooth acrylic blur with readable high-contrast typography
  */
 export function SidebarApp() {
@@ -25,18 +27,33 @@ export function SidebarApp() {
   const fontSize = useSidebar((s) => s.fontSize);
   const speaking = useSidebar((s) => s.speaking);
   const activeImage = useSidebar((s) => s.activeImage);
-  const collapsedQuery = useSidebar((s) => s.collapsedQuery);
+  const analysisData = useSidebar((s) => s.analysisData);
 
   const show = useSidebar((s) => s.show);
   const hide = useSidebar((s) => s.hide);
-  const setFontSize = useSidebar((s) => s.setFontSize);
   const setSpeaking = useSidebar((s) => s.setSpeaking);
   const setActiveImage = useSidebar((s) => s.setActiveImage);
-  const setCollapsedQuery = useSidebar((s) => s.setCollapsedQuery);
 
   const responseScrollRef = useRef<HTMLDivElement>(null);
-  const [copyFeedback, setCopyFeedback] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
+
+  // Format the query as a heading: "analyse zync" → "Analysis: zync-meet/Zync"
+  const heading = useMemo(() => {
+    if (!query) return "";
+    // If we have analysis data, use the resolved repo name
+    if (analysisData?.repo) {
+      return `Analysis: ${analysisData.repo}`;
+    }
+    // Otherwise format the raw query
+    const q = query.trim();
+    if (/analy[sz]e/i.test(q)) {
+      // Extract repo name from "analyse owner/repo" or "analyse repo"
+      const match = q.match(/analy[sz]e\s+(.+)/i);
+      if (match) return `Analysis: ${match[1]}`;
+    }
+    // Capitalize first letter
+    return q.charAt(0).toUpperCase() + q.slice(1);
+  }, [query, analysisData]);
 
   // Render markdown to sanitized HTML with custom enhancements
   const renderedHtml = useMemo(() => {
@@ -59,17 +76,71 @@ export function SidebarApp() {
     };
   }, [show, hide]);
 
-  // Listen for Tauri events
+  // Listen for Tauri events + fetch pending content on mount.
+  //
+  // When the sidebar window is created on-demand, the React app needs time
+  // to load before it can receive Tauri events. So Rust stores the content
+  // in a pending static, and we fetch it here on mount via
+  // `get_pending_sidebar_content`. This is race-free.
+  //
+  // We also keep the event listeners as a fast path for when the window
+  // already exists (React already loaded) — in that case Rust emits the
+  // events directly.
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
+
+    // Fetch pending content on mount — handles the fresh-window case
+    // where events were emitted before the listener was registered.
+    invoke<{ query: string; text: string; backdrop: string | null; analysis?: any } | null>(
+      "get_pending_sidebar_content"
+    )
+      .then((pending) => {
+        if (pending) {
+          if (pending.backdrop) {
+            document.documentElement.style.setProperty(
+              "--sidebar-backdrop-image",
+              `url(${pending.backdrop})`
+            );
+          }
+          // If analysis data is present, use the rich dashboard view
+          if (pending.analysis) {
+            useSidebar.getState().showAnalysis(pending.query, pending.text, pending.analysis);
+          } else {
+            show(pending.query, pending.text);
+          }
+        }
+      })
+      .catch((e) => console.warn("[sidebar] get_pending_sidebar_content failed:", e));
 
     listen<{ query: string; text: string }>("sidebar:show", (event) => {
       show(event.payload.query, event.payload.text);
     }).then((u) => unlisteners.push(u));
 
+    // Listen for structured analysis data from the Worker (rich dashboard)
+    listen<{ query: string; text: string; analysis: any }>("sidebar:analysis", (event) => {
+      const { query: q, text: t, analysis } = event.payload;
+      if (analysis) {
+        useSidebar.getState().showAnalysis(q, t, analysis);
+      } else {
+        show(q, t);
+      }
+    }).then((u) => unlisteners.push(u));
+
     listen("sidebar:hide", () => {
       stopTts();
       hide();
+    }).then((u) => unlisteners.push(u));
+
+    // "Fake blur" backdrop (Windows only — see sidebar_backdrop.rs).
+    // Rust captures + blurs the screen region behind the window right
+    // before it becomes visible and sends the result here as a data:
+    // URI. Set directly as a CSS variable (not React state) so it
+    // applies instantly without waiting on a render cycle.
+    listen<string>("sidebar:backdrop", (event) => {
+      document.documentElement.style.setProperty(
+        "--sidebar-backdrop-image",
+        `url(${event.payload})`
+      );
     }).then((u) => unlisteners.push(u));
 
     return () => {
@@ -108,10 +179,11 @@ export function SidebarApp() {
   }, []);
 
   // Native window visibility management
+  // The sidebar window is shown by Rust (show_sidebar_with_content) before
+  // this React app even loads, so we do NOT call invoke("show_sidebar") here.
+  // We only need to call hide_sidebar when the user dismisses the sidebar.
   useEffect(() => {
-    if (visible) {
-      invoke("show_sidebar").catch(() => {});
-    } else {
+    if (!visible) {
       stopTts();
       const t = setTimeout(() => invoke("hide_sidebar").catch(() => {}), 400);
       return () => clearTimeout(t);
@@ -179,18 +251,6 @@ export function SidebarApp() {
     [setActiveImage]
   );
 
-  // Copy entire response
-  const handleCopyAll = async () => {
-    if (!response) return;
-    try {
-      await navigator.clipboard.writeText(response);
-      setCopyFeedback(true);
-      setTimeout(() => setCopyFeedback(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy response:", err);
-    }
-  };
-
   // Toggle Read Aloud (TTS)
   const handleToggleTts = () => {
     if (speaking) {
@@ -205,13 +265,6 @@ export function SidebarApp() {
     }
   };
 
-  // Cycle font size (sm -> md -> lg -> xl -> sm)
-  const handleCycleFontSize = () => {
-    const sizes: SidebarFontSize[] = ["sm", "md", "lg", "xl"];
-    const nextIdx = (sizes.indexOf(fontSize) + 1) % sizes.length;
-    setFontSize(sizes[nextIdx]);
-  };
-
   // Scroll to top
   const scrollToTop = () => {
     responseScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -222,26 +275,7 @@ export function SidebarApp() {
       <div className={`sidebar-card font-size--${fontSize}`}>
         {/* ── Top Header Toolbar ─────────────────────────────────────── */}
         <header className="sidebar-header">
-          <div className="sidebar-header-left">
-            <div className="sidebar-brand-badge">
-              <span className="sidebar-brand-dot" />
-              <span className="sidebar-brand-name">NEXUS</span>
-              <span className="sidebar-tag">INTELLIGENCE</span>
-            </div>
-          </div>
-
           <div className="sidebar-header-actions">
-            {/* Font Size Toggle */}
-            <button
-              type="button"
-              className="sidebar-action-btn"
-              onClick={handleCycleFontSize}
-              title={`Font size: ${fontSize.toUpperCase()} (Click to change)`}
-            >
-              <span className="sidebar-font-size-icon">A</span>
-              <span className="sidebar-font-size-label">{fontSize.toUpperCase()}</span>
-            </button>
-
             {/* Read Aloud (TTS) */}
             <button
               type="button"
@@ -261,79 +295,26 @@ export function SidebarApp() {
                 </svg>
               )}
             </button>
-
-            {/* Copy Full Response */}
-            <button
-              type="button"
-              className={`sidebar-action-btn ${copyFeedback ? "sidebar-action-btn--success" : ""}`}
-              onClick={handleCopyAll}
-              title={copyFeedback ? "Copied to clipboard!" : "Copy full response"}
-            >
-              {copyFeedback ? (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              ) : (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
-              )}
-            </button>
-
-            {/* Close Sidebar */}
-            <button
-              type="button"
-              className="sidebar-close-btn"
-              onClick={() => {
-                stopTts();
-                hide();
-              }}
-              title="Close (Esc)"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
           </div>
+          {/* Heading — shows the command/repo name */}
+          {heading && (
+            <div className="sidebar-header-heading">{heading}</div>
+          )}
+          <div className="sidebar-header-spacer" />
         </header>
 
-        {/* ── User Query Banner ──────────────────────────────────────── */}
-        {query && (
-          <div className="sidebar-query-card">
-            <div className="sidebar-query-header" onClick={() => setCollapsedQuery(!collapsedQuery)}>
-              <div className="sidebar-query-title">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <span>PROMPT</span>
-              </div>
-              <button type="button" className="sidebar-query-toggle" aria-label="Toggle query preview">
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  style={{ transform: collapsedQuery ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
-                >
-                  <polyline points="18 15 12 9 6 15" />
-                </svg>
-              </button>
-            </div>
-            {!collapsedQuery && <div className="sidebar-query-text">{query}</div>}
-          </div>
-        )}
-
-        {/* ── Response Body (Rich Markdown / Tables / Code / Images) ─── */}
+        {/* ── Response Body ─────────────────────────────────────────── */}
+        {/* If we have analysis data, show the rich dashboard. Otherwise, show markdown. */}
         <div className="sidebar-response" ref={responseScrollRef} onScroll={handleScroll}>
-          <div
-            className="nexus-markdown-body"
-            dangerouslySetInnerHTML={{ __html: renderedHtml }}
-            onClick={handleContainerClick}
-          />
+          {analysisData ? (
+            <AnalysisDashboard data={analysisData} />
+          ) : (
+            <div
+              className="nexus-markdown-body"
+              dangerouslySetInnerHTML={{ __html: renderedHtml }}
+              onClick={handleContainerClick}
+            />
+          )}
         </div>
 
         {/* ── Floating Scroll to Top button ──────────────────────────── */}

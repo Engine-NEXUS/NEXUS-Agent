@@ -115,8 +115,10 @@ mod engine {
     const DETECTION_BUFFER_SIZE: usize = 12;
 
     /// Minimum positive detections before triggering
-    /// (2 frames = 160ms of consistent detection — filters transient spikes
-    /// but is lenient enough for the 78.6% accuracy model)
+    /// (1 frame = 80ms — the model produces 0.3-0.5 for real speech from
+    /// non-enrolled speakers, so requiring 2+ frames above threshold kills
+    /// many valid detections. With the max-based smoothing and lowered
+    /// threshold, 1 frame is sufficient.)
     const MIN_POSITIVE_DETECTIONS: f32 = 1.0;
 
     /// Single-frame high-confidence threshold.
@@ -134,7 +136,9 @@ mod engine {
     const SINGLE_FRAME_HIGH_CONFIDENCE: f32 = 0.5;
 
     /// Refractory period after a detection (ms)
-    const NO_DETECTION_MS: u64 = 2000;
+    /// Increased from 2s to 3s to compensate for the more sensitive
+    /// max-based detection (prevents double-triggers on the same utterance).
+    const NO_DETECTION_MS: u64 = 3000;
 
     /// Resolve the oww resources directory.
     pub fn resolve_oww_dir(app_resource_dir: &Path) -> Option<PathBuf> {
@@ -326,6 +330,12 @@ mod engine {
         pub command_classifiers: Vec<CommandClassifier>,
         /// Sender for command-detected events (None if no command models loaded)
         pub command_tx: Option<std::sync::mpsc::Sender<CommandIntent>>,
+        /// Secondary confirmation: after a raw detection, collect 500ms of
+        /// audio to verify there was actual speech (not a noise spike).
+        /// If the RMS of the confirmation window is below 0.01, discard.
+        pub confirmation_buffer: Vec<f32>,
+        pub confirmation_active: bool,
+        pub pending_probability: f32,
     }
 
     /// Load Tier 3 command classifiers from `resources/oww/commands/`.
@@ -457,11 +467,12 @@ mod engine {
             #[cfg(not(feature = "wakeword-sherpa"))]
             let speaker = ();
 
-            let threshold = 0.45f32;
+            let threshold = 0.35f32;
             tracing::info!(
                 "openWakeWord KWS engine initialized \
                  (wake word: NEXUS, 80ms sliding window, threshold: {}, \
-                 silence gate: RMS < 0.0005 = skip, AGC: target RMS 0.03)",
+                 silence gate: RMS < 0.0005 = skip, AGC: target RMS 0.03, \
+                 detection: max-based)",
                 threshold
             );
 
@@ -487,13 +498,16 @@ mod engine {
                 speaker,
                 sample_rate: 16000,
                 chunk_buffer: Vec::with_capacity(OWW_CHUNK_SIZE),
-                threshold: 0.45,
+                threshold: 0.35,
                 detections_buffer: CircularBuffer::<DETECTION_BUFFER_SIZE, f32>::new(),
                 last_detection_time: std::time::Instant::now()
                     .checked_sub(std::time::Duration::from_secs(10))
                     .unwrap_or_else(std::time::Instant::now),
                 command_classifiers,
                 command_tx: None,
+                confirmation_buffer: Vec::with_capacity(16000), // 500ms @ 16kHz
+                confirmation_active: false,
+                pending_probability: 0.0,
             })
         }
 
@@ -745,21 +759,24 @@ mod engine {
             }
         }
 
-        /// Calculate average of positive detections in the buffer.
+        /// Calculate the detection score from the buffer.
         ///
-        /// Two trigger paths:
+        /// Three trigger paths (ordered by sensitivity):
         /// 1. **High-confidence single frame:** If any frame in the buffer
-        ///    exceeds `SINGLE_FRAME_HIGH_CONFIDENCE` (0.7), return it
-        ///    immediately. This fixes the root cause where a single 0.89
-        ///    probability detection was silently discarded because
-        ///    `positive_count (1.0) < MIN_POSITIVE_DETECTIONS (2.0)`.
-        ///    A single 0.7+ frame is a real wake — the silence gate already
-        ///    blocks digital silence, and the model produces <0.01 on
-        ///    non-wake speech.
-        /// 2. **Smoothed multi-frame:** Otherwise, require at least
-        ///    `MIN_POSITIVE_DETECTIONS` (2) frames above threshold and
-        ///    return their average. This filters transient noise spikes
-        ///    that don't reach high confidence.
+        ///    exceeds `SINGLE_FRAME_HIGH_CONFIDENCE` (0.5), return it
+        ///    immediately. A single 0.5+ frame is a real wake — the silence
+        ///    gate already blocks digital silence, and the model produces
+        ///    <0.01 on non-wake speech.
+        /// 2. **Max-based detection:** Return the maximum probability in
+        ///    the buffer if it exceeds the threshold. This is far more
+        ///    sensitive than averaging — a single 0.36 frame surrounded by
+        ///    0.0s gives max=0.36 (triggers at threshold 0.35) vs
+        ///    avg=0.03 (never triggers). This is the key fix for 58.2%
+        ///    recall — the model often produces one good frame per
+        ///    utterance, and the old averaging diluted it to nothing.
+        /// 3. **Multi-frame confirmation:** If at least
+        ///    `MIN_POSITIVE_DETECTIONS` frames exceed threshold, return
+        ///    their average. This is a fallback for borderline cases.
         fn calculate_average(&self) -> f32 {
             let all = self.detections_buffer.to_vec();
 
@@ -770,7 +787,16 @@ mod engine {
                 }
             }
 
-            // Path 2: smoothed multi-frame detection
+            // Path 2: max-based detection — return the highest probability
+            // in the buffer if it exceeds threshold. This is the key change
+            // from the old averaging approach which diluted single good
+            // frames with surrounding 0.0s.
+            let max_prob = all.iter().cloned().fold(0.0f32, f32::max);
+            if max_prob > self.threshold {
+                return max_prob;
+            }
+
+            // Path 3: multi-frame confirmation (fallback)
             let mut cumulative = 0.0f32;
             let mut positive_count = 0.0f32;
             for d in all {
@@ -790,7 +816,47 @@ mod engine {
         /// Returns true if the wake word "NEXUS" was detected and the speaker was accepted.
         /// Also emits command-detected events via `command_tx` if any Tier 3
         /// command classifier fires.
+        ///
+        /// Secondary confirmation: after a raw detection, collects 500ms of
+        /// audio to verify there was actual speech (RMS > 0.001). This filters
+        /// pure digital silence/noise spikes that pass the classifier but
+        /// aren't real speech. The threshold is very low (0.001) because the
+        /// Intel SST driver produces brief audio bursts that fade quickly —
+        /// by the time the 500ms confirmation window completes, the mic may
+        /// have gone silent again. The silence gate (0.0005) still blocks
+        /// pure digital silence before it reaches the classifier.
         pub fn process(&mut self, samples: &[f32]) -> bool {
+            // If we're in confirmation mode, collect audio and check RMS
+            if self.confirmation_active {
+                self.confirmation_buffer.extend_from_slice(samples);
+                // 500ms = 8000 samples @ 16kHz
+                if self.confirmation_buffer.len() >= 8000 {
+                    let buf = std::mem::take(&mut self.confirmation_buffer);
+                    let rms = {
+                        let sum_sq: f32 = buf.iter().map(|s| s * s).sum();
+                        (sum_sq / buf.len() as f32).sqrt()
+                    };
+                    self.confirmation_active = false;
+
+                    if rms >= 0.001 {
+                        tracing::info!(
+                            "OWW wake confirmed! (probability: {:.3}, confirmation RMS: {:.4})",
+                            self.pending_probability, rms
+                        );
+                        return true;
+                    } else {
+                        tracing::info!(
+                            "OWW wake rejected — confirmation RMS too low ({:.4} < 0.001), likely noise spike",
+                            rms
+                        );
+                        // Reset detection state
+                        self.detections_buffer.clear();
+                        self.last_detection_time = std::time::Instant::now();
+                    }
+                }
+                // Still process chunks for command detection while confirming
+            }
+
             self.chunk_buffer.extend_from_slice(samples);
 
             while self.chunk_buffer.len() >= OWW_CHUNK_SIZE {
@@ -805,10 +871,8 @@ mod engine {
                     }
                 }
 
-                if detected {
+                if detected && !self.confirmation_active {
                     // --- Speaker verification ---
-                    // TODO: implement audio ring buffer for proper speaker verification.
-                    // For now, accept — the KWS model is accurate enough.
                     #[cfg(feature = "wakeword-sherpa")]
                     let accepted = if let Some(ref verifier) = self.speaker {
                         if verifier.has_profile() {
@@ -826,8 +890,13 @@ mod engine {
                     let accepted = true;
 
                     if accepted {
-                        tracing::info!("OWW wake detected! (probability: {:.3})", prob);
-                        return true;
+                        tracing::info!(
+                            "OWW raw wake detected (probability: {:.3}) — awaiting 500ms confirmation...",
+                            prob
+                        );
+                        self.confirmation_active = true;
+                        self.pending_probability = prob;
+                        self.confirmation_buffer.clear();
                     }
                 }
             }
@@ -907,6 +976,14 @@ mod engine {
             if rms_scaled > prev {
                 MAX_RMS_SEEN.store(rms_scaled, Ordering::Relaxed);
             }
+        }
+
+        // Update file-level statics for the silence-recovery thread.
+        // These mirror the function-local statics so the recovery thread
+        // (which runs in a separate thread) can monitor audio health.
+        super::CALLBACK_COUNT_GLOBAL.store(n, Ordering::Relaxed);
+        if rms > 0.001 {
+            super::LAST_NONSILENT_FOR_RECOVERY.store(n, Ordering::Relaxed);
         }
 
         if n % 1000 == 0 && n > 0 {
@@ -1034,6 +1111,23 @@ unsafe impl Sync for SendStream {}
 static CPAL_STREAM: once_cell::sync::Lazy<parking_lot::RwLock<Option<SendStream>>> =
     once_cell::sync::Lazy::new(|| parking_lot::RwLock::new(None));
 
+/// Global engine reference — needed by the silence-recovery thread to
+/// restart the audio stream without going through the full init path.
+#[cfg(not(feature = "mock-wake"))]
+static WAKE_ENGINE_GLOBAL: once_cell::sync::Lazy<parking_lot::Mutex<Option<std::sync::Arc<parking_lot::Mutex<engine::WakeEngine>>>>> =
+    once_cell::sync::Lazy::new(|| parking_lot::Mutex::new(None));
+
+/// File-level statics for the silence-recovery thread.
+/// The audio callback (inside `mod engine`) updates these so the recovery
+/// thread can monitor without accessing function-local statics.
+static CALLBACK_COUNT_GLOBAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_NONSILENT_FOR_RECOVERY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_CALLBACK_FOR_RECOVERY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Tracks how many times the silence-recovery has restarted the stream.
+/// Used to rate-limit restarts and log the count for debugging.
+static RECOVERY_RESTART_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Pause the wake-word audio stream (release the OS mic lock).
 /// Called by the frontend via `pause_wakeword` IPC before getUserMedia().
 #[cfg(not(feature = "mock-wake"))]
@@ -1121,6 +1215,149 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     );
     let _ = app.emit("wake-engine-status", "ready");
 
+    // Store engine globally for the silence-recovery thread.
+    {
+        let mut g = WAKE_ENGINE_GLOBAL.lock();
+        *g = Some(engine.clone());
+    }
+
+    // ─── Silence Recovery Thread ────────────────────────────────────
+    // The Intel SST driver sometimes stops delivering audio after 15-30
+    // minutes (RMS drops to exactly 0.0 and stays there). This thread
+    // monitors the callback counter and restarts the stream when silence
+    // persists for more than 90 seconds. The restart drops the old cpal
+    // stream (which may be in a stuck state) and creates a fresh one.
+    #[cfg(not(feature = "mock-wake"))]
+    {
+        tracing::info!("silence-recovery: spawning monitor thread");
+        std::thread::Builder::new()
+            .name("silence-recovery".into())
+            .spawn(move || {
+                use std::sync::atomic::Ordering;
+                #[allow(unused_imports)]
+                use cpal::traits::{DeviceTrait, HostTrait};
+                #[cfg(target_os = "windows")]
+                use std::os::windows::process::CommandExt;
+                tracing::info!("silence-recovery: thread started, monitoring for mic silence");
+                loop {
+                    // Check every 5s (was 10s, originally 30s). The Intel SST
+                    // driver delivers audio in brief 5-15s bursts after each
+                    // stream restart, then goes silent. A faster poll gives
+                    // us more chances to catch a working window.
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    let last_cb = LAST_CALLBACK_FOR_RECOVERY.load(Ordering::Relaxed);
+                    let last_non_silent = LAST_NONSILENT_FOR_RECOVERY.load(Ordering::Relaxed);
+                    let now_cb = CALLBACK_COUNT_GLOBAL.load(Ordering::Relaxed);
+
+                    // If no callbacks at all in 5s, the stream is dead.
+                    // If callbacks are flowing but all silent for >5s, restart.
+                    let callbacks_stalled = now_cb.saturating_sub(last_cb) == 0;
+                    let silence_duration = now_cb.saturating_sub(last_non_silent);
+                    // ~33 callbacks/sec → 5s = 165 callbacks
+                    let long_silence = silence_duration > 165;
+
+                    if callbacks_stalled || long_silence {
+                        let restart_n = RECOVERY_RESTART_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+                        tracing::warn!(
+                            "silence-recovery #{}: restarting audio stream (stalled={}, silence_callbacks={}, total_callbacks={})",
+                            restart_n, callbacks_stalled, silence_duration, now_cb
+                        );
+
+                        // Every 12 restarts (~60s of continuous silence),
+                        // try to restart the Windows Audio service. This can
+                        // fix the Intel SST driver when simple stream restarts
+                        // don't help. Requires admin privileges — if we don't
+                        // have them, the command silently fails.
+                        if restart_n % 12 == 0 {
+                            tracing::warn!(
+                                "silence-recovery #{}: 12 restarts failed — attempting Windows Audio service restart",
+                                restart_n
+                            );
+                            #[cfg(target_os = "windows")]
+                            {
+                                let _ = std::process::Command::new("net")
+                                    .args(["stop", "Audiosrv"])
+                                    .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .status();
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                                let _ = std::process::Command::new("net")
+                                    .args(["start", "Audiosrv"])
+                                    .creation_flags(0x08000000) // CREATE_NO_WINDOW
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .status();
+                                std::thread::sleep(std::time::Duration::from_secs(3));
+                                tracing::info!(
+                                    "silence-recovery #{}: Windows Audio service restart attempted",
+                                    restart_n
+                                );
+                            }
+                        }
+
+                        // Drop the old stream
+                        {
+                            let mut guard = CPAL_STREAM.write();
+                            *guard = None;
+                        }
+
+                        // Re-acquire the engine and restart using the FAST path
+                        // (try_device_silent) — no 5s probe. The probe is only
+                        // useful at initial startup to pick the best device.
+                        // On recovery, we already know which device to use, so
+                        // we just restart it instantly. This reduces the
+                        // restart cycle from 35s to ~10s.
+                        let engine_opt = WAKE_ENGINE_GLOBAL.lock().clone();
+                        if let Some(engine) = engine_opt {
+                            // Try the default device directly (skip probe)
+                            let host = cpal::default_host();
+                            let restart_result = if let Some(device) = host.default_input_device() {
+                                let dev_name = device.name().unwrap_or_else(|_| "default".into());
+                                tracing::info!(
+                                    "silence-recovery #{}: fast-restarting on '{}' (no probe)",
+                                    restart_n, dev_name
+                                );
+                                try_device_silent(&device, engine)
+                            } else {
+                                // No default device — fall back to full enumeration
+                                tracing::warn!(
+                                    "silence-recovery #{}: no default device, full restart",
+                                    restart_n
+                                );
+                                start_audio_capture(engine)
+                            };
+
+                            match restart_result {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "silence-recovery #{}: audio stream restarted successfully",
+                                        restart_n
+                                    );
+                                    // Reset the silence tracker so we don't
+                                    // immediately restart again
+                                    LAST_NONSILENT_FOR_RECOVERY.store(
+                                        CALLBACK_COUNT_GLOBAL.load(Ordering::Relaxed),
+                                        Ordering::Relaxed,
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "silence-recovery #{}: failed to restart audio: {e}",
+                                        restart_n
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Update our last-seen callback count
+                    LAST_CALLBACK_FOR_RECOVERY.store(now_cb, Ordering::Relaxed);
+                }
+            })
+            .ok();
+    }
+
     // ─── Phase 4: Main loop (wake + command events) ────────────────
     // Spawn a thread for Tier 3 command-detected events.
     let app_for_commands = app.clone();
@@ -1145,6 +1382,11 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // Main loop: handle wake-word detections
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
+
+        // Start the STT server on-demand (lazy STT — saves ~340 MB at idle).
+        // The server takes ~5-10s to start, so we kick it off here so it's
+        // ready by the time the user finishes speaking.
+        crate::lazy_stt::ensure_stt_running();
 
         // Only use the direct eval — the frontend's __NEXUS_WAKE__ handler
         // calls wakeWithGreeting(). Do NOT also emit Tauri events, as the

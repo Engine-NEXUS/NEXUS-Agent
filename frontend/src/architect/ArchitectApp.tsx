@@ -19,21 +19,38 @@ export function ArchitectApp() {
   const setDeepScanning = useArchitect((s) => s.setDeepScanning);
   const setProgress = useArchitect((s) => s.setProgress);
   const setPhase1Data = useArchitect((s) => s.setPhase1Data);
+  const enrichPhase1 = useArchitect((s) => s.enrichPhase1);
   const setPhase2Data = useArchitect((s) => s.setPhase2Data);
   const setViewMode = useArchitect((s) => s.setViewMode);
 
   const [inputRepo, setInputRepo] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Fetch GitHub OAuth token from the Worker (for private repo access)
+  const fetchGithubToken = useCallback(async (): Promise<string | null> => {
+    try {
+      const { getServerConfig } = await import("../net/wsBridge");
+      const config = await getServerConfig();
+      const resp = await fetch(`${config.url}/oauth/github-token?user_id=${encodeURIComponent(config.userId)}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        return data.token || null;
+      }
+    } catch (err) {
+      console.warn("Failed to fetch GitHub token:", err);
+    }
+    return null;
+  }, []);
+
   // Trigger Phase 2 deep dependency scan in background
   const triggerDeepScan = useCallback(
-    async (o: string, r: string) => {
+    async (o: string, r: string, token: string | null) => {
       setDeepScanning(true);
       try {
         const result = await invoke<Phase2Data>("analyze_repo_deep", {
           owner: o,
           repo: r,
-          githubToken: null,
+          githubToken: token,
         });
         setPhase2Data(result);
       } catch (err: any) {
@@ -52,23 +69,35 @@ export function ArchitectApp() {
       setErrorMsg(null);
       setProgress("init", `Starting Phase 1 analysis for ${o}/${r}...`);
 
+      // Fetch GitHub token for private repo access
+      const token = await fetchGithubToken();
+
       try {
         const result = await invoke<Phase1Data>("analyze_repo_phase1", {
           owner: o,
           repo: r,
-          githubToken: null,
+          githubToken: token,
         });
         setPhase1Data(result);
 
+        // Fire-and-forget LLM enrichment — never blocks the diagram.
+        // The Worker rewrites generic layer labels into repo-specific ones
+        // (e.g. "Client / Presentation Layer" → "Next.js App Router (React 19)")
+        // and streams them back via the architect:phase1-enriched event.
+        void invoke("enrich_phase1", {
+          phase1: result,
+          filePaths: result.sample_file_paths ?? [],
+        }).catch((e) => console.warn("Phase 1 enrichment failed (non-fatal):", e));
+
         // Auto start background Phase 2 deep scan
-        void triggerDeepScan(o, r);
+        void triggerDeepScan(o, r, token);
       } catch (err: any) {
         console.error("Phase 1 analysis failed:", err);
         setErrorMsg(typeof err === "string" ? err : err.message || "Failed to analyze repo");
         setLoading(false);
       }
     },
-    [setLoading, setProgress, setPhase1Data, triggerDeepScan]
+    [setLoading, setProgress, setPhase1Data, enrichPhase1, triggerDeepScan, fetchGithubToken]
   );
 
   // Detect active repo from foreground window
@@ -114,9 +143,26 @@ export function ArchitectApp() {
     }
   };
 
-  // Listen to Tauri events
+  // Listen to Tauri events + fetch pending repo on mount.
+  //
+  // When the architect window is created on-demand, the React app needs time
+  // to load before it can receive Tauri events. So Rust stores the repo in a
+  // pending static, and we fetch it here on mount via `get_pending_architect_repo`.
+  // This is race-free. We also keep the event listener as a fast path for when
+  // the window already exists (React already loaded).
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
+
+    // Fetch pending repo on mount — handles the fresh-window case.
+    invoke<{ owner: string; repo: string } | null>("get_pending_architect_repo")
+      .then((pending) => {
+        if (pending) {
+          setRepo(pending.owner, pending.repo);
+          setInputRepo(`${pending.owner}/${pending.repo}`);
+          void triggerAnalysis(pending.owner, pending.repo);
+        }
+      })
+      .catch((e) => console.warn("[architect] get_pending_architect_repo failed:", e));
 
     listen<{ owner: string; repo: string }>("architect:set-repo", (event) => {
       setRepo(event.payload.owner, event.payload.repo);
@@ -132,6 +178,15 @@ export function ArchitectApp() {
       setPhase1Data(event.payload);
     }).then((u) => unlisteners.push(u));
 
+    // LLM enrichment streams in ~2-3s after first paint — merges
+    // repo-specific layer labels + summary into the existing diagram.
+    listen<{ summary: string; layers: { id: string; label: string; tech_stack: string }[] }>(
+      "architect:phase1-enriched",
+      (event) => {
+        enrichPhase1(event.payload);
+      }
+    ).then((u) => unlisteners.push(u));
+
     listen<Phase2Data>("architect:graph-ready", (event) => {
       setPhase2Data(event.payload);
     }).then((u) => unlisteners.push(u));
@@ -139,7 +194,7 @@ export function ArchitectApp() {
     return () => {
       unlisteners.forEach((u) => u());
     };
-  }, [setRepo, setProgress, setPhase1Data, setPhase2Data, triggerAnalysis]);
+  }, [setRepo, setProgress, setPhase1Data, enrichPhase1, setPhase2Data, triggerAnalysis]);
 
   return (
     <div className="architect-app">
@@ -219,7 +274,7 @@ export function ArchitectApp() {
             <button
               type="button"
               className="architect-analyze-btn"
-              onClick={() => triggerDeepScan(phase1Data.owner, phase1Data.repo)}
+              onClick={() => triggerDeepScan(phase1Data.owner, phase1Data.repo, null)}
             >
               ⚡ Run Deep Scan
             </button>

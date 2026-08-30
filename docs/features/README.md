@@ -61,6 +61,11 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 | 18 | Cancel Hotkey + Double Wake Fix | [18-ak-port-cancel-hotkey-double-wake-fix.md](18-ak-port-cancel-hotkey-double-wake-fix.md) | Ctrl+Space cancel hotkey + fix triple event emission causing "on it sir" twice |
 | 19 | Audio Volume + Multi-Turn VAD | [19-ak-port-audio-volume-multi-turn-vad.md](19-ak-port-audio-volume-multi-turn-vad.md) | RMS volume tracking for avatar reactivity + "didn't catch that" retry (max 3) |
 | 20 | STT Fix + Wake Reliability | [20-stt-fix-wakeword-reliability.md](20-stt-fix-wakeword-reliability.md) | STT server missing __main__ block + wake word model assessment |
+| 21 | Liquid Glass Sidebar | [21-liquid-glass-sidebar.md](21-liquid-glass-sidebar.md) | Screenshot-capture blur (GDI BitBlt + Rust blur) for non-activating windows + pending content pattern for dynamic windows |
+| 22 | Worker AI Latency Optimization | [22-worker-ai-latency-optimization-plan.md](22-worker-ai-latency-optimization-plan.md) | Plan to reduce Worker AI response from 40s to 3-4s via prompt truncation, model tiering, GitHub API caching, and SSE streaming |
+| 23 | TTS Voice Research | [23-tts-voice-research-elevenlabs-vs-fish.md](23-tts-voice-research-elevenlabs-vs-fish.md) | ElevenLabs vs Fish Audio free tier analysis — Fish Audio s2.1-pro-free recommended (free API, ~100ms TTFA, voice cloning) |
+| 24 | TTS Deep Research (All Providers) | [24-tts-deep-research-all-providers.md](24-tts-deep-research-all-providers.md) | 10 TTS providers compared — Kokoro (self-host, Apache 2.0, unlimited), Fish Audio, Google Cloud, Polly, Piper, Azure, HuggingFace, Coqui, ElevenLabs, TTSMaker |
+| 25 | Rich Repo Analysis Dashboard | [25-rich-repo-analysis-dashboard.md](25-rich-repo-analysis-dashboard.md) | GLM-4.7-flash (free) + GitHub languages API + pie charts (languages/frameworks) + databases + features + top bar heading |
 
 ---
 
