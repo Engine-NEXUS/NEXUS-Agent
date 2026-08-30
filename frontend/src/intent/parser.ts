@@ -27,6 +27,7 @@
 export type Intent =
   | { action: "open_app"; target: string }
   | { action: "open_url"; target: string; url: string }
+  | { action: "open_architect" }
   | { action: "search"; query: string }
   | { action: "media_play_pause" }
   | { action: "media_next" }
@@ -519,6 +520,17 @@ function levenshtein(a: string, b: string): number {
  */
 export function parseIntent(transcript: string): Intent {
   const text = transcript.trim().toLowerCase().replace(/\s+/g, " ");
+
+  // --- Open Architecture Mapper ---
+  // "open architecture mapper", "open architect", "open architecture map"
+  // "launch architecture mapper", "show architecture", "open architect window"
+  if (/^(?:open|launch|start|show|bring\s+up|pull\s+up)\s+(?:architecture|architect)(?:\s+(?:mapper|map|window|mapper\s+window))?$/i.test(text)) {
+    return { action: "open_architect" };
+  }
+  // Also catch "open the architect" / "open the architecture mapper"
+  if (/^(?:open|launch|start|show)\s+the\s+(?:architecture|architect)(?:\s+(?:mapper|map|window))?$/i.test(text)) {
+    return { action: "open_architect" };
+  }
 
   // --- Media Control (MPRIS D-Bus / System Keys) ---
   if (/^(?:pause|pause\s+music|pause\s+media|play|resume|resume\s+music|play\s*[\/\s]*pause|toggle\s+media)$/i.test(text)) {

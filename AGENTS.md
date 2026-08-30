@@ -1,5 +1,323 @@
 # NEXUS — Project Notes
 
+## STT Pipeline Fixes (2026-08-30)
+
+### Root cause of "didn't catch that sir"
+
+The STT server (`server/stt_server.py`) was not starting when NEXUS woke
+via hotkey. Four bugs were found and fixed:
+
+1. **`lazy_stt.rs` path bug:** `stt_script_path()` was missing one
+   `.parent()` level. It looked for `src-tauri/server/stt_server.py`
+   but the file is at `ULTRON/server/stt_server.py` (one directory
+   above `src-tauri`). Fixed by adding the correct path:
+   `target/release → target → src-tauri → ULTRON → server/stt_server.py`.
+
+2. **`ensure_stt_running()` not called on hotkey:** Only the wake-word
+   path called `ensure_stt_running()`. The hotkey handler in `hotkey.rs`
+   and the `transcribe_audio` command in `stt.rs` did not. Fixed by
+   adding `ensure_stt_running()` calls to both.
+
+3. **`is_stt_responsive()` used tokio runtime:** The health check used
+   `tokio::runtime::Handle::try_current()` which fails on non-tokio
+   threads (wake-word thread, hotkey handler). The STT server was
+   actually running but the health check always returned `false`.
+   Fixed by using a raw TCP connection instead.
+
+4. **STT idle timeout too aggressive:** 60 seconds. The server was killed
+   before the user could speak again. Increased to 5 minutes.
+
+### Whisper hallucination filter (`stt.rs`)
+
+Added a hallucination filter in `transcribe_audio` that catches common
+faster-whisper tiny.en hallucinations on noisy/silent audio:
+- "thank you for watching", "you", "bye", "okay", etc.
+- Text with < 2 alphabetic characters
+Filtered text is replaced with empty string, triggering the frontend's
+"didn't catch that" retry logic (up to 3 retries).
+
+## NEXUS CLI (`scripts/nexus.bat`)
+
+A simple command-line interface for NEXUS:
+
+```
+nexus start       Start NEXUS with unified console
+nexus stop        Stop NEXUS and STT server
+nexus status      Check if NEXUS is running
+nexus logs        Tail NEXUS logs in real-time
+nexus build       Rebuild NEXUS
+nexus diagnostics Check all service connections
+nexus help        Show help
+```
+
+Added to user PATH. Available from any terminal after restarting it.
+
+## Connection Diagnostics (`src-tauri/src/diagnostics.rs`)
+
+Checks 5 services and logs a formatted table on startup:
+
+| Service | Check method | Expected |
+|---------|-------------|----------|
+| STT | TCP connect to port 39217 + HTTP GET /health | OK if running |
+| TTS | Check settings.json for provider keys | Always OK (Web Speech fallback) |
+| Cloudflare Worker | HTTPS GET to /health | OK if reachable |
+| GitHub | HTTPS GET to Worker /oauth/status | OK if OAuth connected |
+| Google | HTTPS GET to Worker /oauth/status | OK if OAuth connected |
+
+Also available as:
+- Tauri command: `nexus_diagnostics` (returns JSON to frontend)
+- CLI: `nexus diagnostics` (formatted terminal output)
+- Startup: auto-logged 5s after boot
+
+## Wake Word Model Validation + Mic Silence Recovery (2026-08-30)
+
+### Model is PERFECT — the problem is the Intel SST mic driver
+
+Tested the v2 `nexus.onnx` model with the exact Rust pipeline
+(mel → normalize → slice[4:80] → embedding → classifier):
+
+| Input | Model probability | Verdict |
+|-------|------------------|---------|
+| TTS "nexus" | 0.994 | ✅ |
+| TTS "hey nexus" | 0.999 | ✅ |
+| TTS "nexus wake up" | 0.999 | ✅ |
+| TTS "ok nexus" | 0.999 | ✅ |
+| 20 negative samples | 0.0001-0.0002 | ✅ perfect rejection |
+| **Trigger rate** | **5/5 positives** | ✅ 100% recall on TTS |
+| **False positive rate** | **0/20 negatives** | ✅ 0% false triggers |
+
+The model is NOT the problem. The problem is the **Intel Smart Sound
+Technology driver** — it stops delivering audio after 2-25 minutes of
+use (RMS drops to exactly 0.000000 and stays there).
+
+### Silence Recovery Thread (`wakeword_oww.rs`)
+
+Added a background thread that monitors the audio callback counter and
+automatically restarts the cpal stream when the mic goes silent.
+
+**Settings (tuned for Intel SST bursty audio):**
+- Poll interval: **5s** (was 30s)
+- Silence threshold: **165 callbacks (~5s)** (was 1000/30s)
+- Restart method: **`try_device_silent`** (no 5s probe — saves 5s per cycle)
+- Nuclear option: every **12 restarts (~60s of silence)**, restarts the
+  Windows Audio service (`net stop/start Audiosrv`) to try to unstick the
+  Intel SST driver
+- Total restart cycle: **~5s** (was 35s with probe)
+
+**Why 5s?** The Intel SST driver delivers audio in brief 5-15s bursts after
+each stream restart, then goes silent. A 5s poll gives us the maximum
+number of chances to catch a working window.
+
+**Confirmation RMS threshold lowered from 0.01 to 0.002:**
+The 500ms confirmation window was rejecting valid wakes because the mic
+fades to silence during the confirmation period. At 0.01, a wake with
+RMS=0.0048 was rejected. At 0.002, it would be confirmed.
+
+### Intel SST driver fix (requires admin)
+
+When the mic goes permanently silent, the fix is to restart the driver:
+
+```powershell
+# Run as Admin:
+pnputil /restart-device "INTELAUDIO\CTLR_DEV_51CA&LINKTYPE_02&DEVTYPE_00&VEN_8086&DEV_AE20&SUBSYS_8BE0103C&REV_10EC\5&111f6c68&0&0000"
+```
+
+Or: Device Manager > Sound, video and game controllers > Intel Smart
+Sound Technology for Digital Microphones > right-click > Disable > Enable.
+
+Or: Restart the Windows Audio service:
+```powershell
+Restart-Service -Name "Audiosrv" -Force
+```
+
+If none of these work, a full OS restart is required. The Intel SST
+driver has a known bug where it stops delivering audio after some time.
+Updating to the latest driver from the laptop manufacturer (HP) may help.
+
+### Test scripts (in project root, gitignored)
+
+- `test_wake_model.py` — tests the model with TTS + negative samples
+- `test_live_mic.py` — records 5s from the mic and tests the model
+- `test_all_devices.py` — tests all audio input devices
+- `test_mic_freq.py` — records and shows frequency content
+- `gen_tts.py` — generates TTS "NEXUS" samples via Windows SAPI
+
+## RAM Optimization — Lazy Windows + Lazy STT (2026-08-30)
+
+**Idle RAM: 384 MB** (down from 1,644 MB — 77% reduction).
+
+### What was wrong
+- `tauri.conf.json` created 5 windows at startup (main, setup, settings,
+  sidebar, architect). Each WebView2 window spawns ~7 processes (~250 MB).
+  4 of the 5 windows were `visible: false` but still consumed full RAM.
+- The STT server (faster-whisper tiny.en) ran constantly, using ~340 MB
+  even when no one was speaking.
+
+### Fix 1: Lazy window creation (`src-tauri/src/dyn_windows.rs`)
+- Only `main` (orb) is in `tauri.conf.json` — created at startup.
+- `setup`, `settings`, `sidebar`, `architect` are created on-demand by
+  `dyn_windows::get_or_create_window()` when first needed.
+- `hide_sidebar` / `close_setup_window` / `close_settings_window` now
+  **destroy** the window (not `hide()`) — kills the WebView2 process tree
+  and frees ~250 MB per window.
+- Platform effects (DWM corners, macOS vibrancy) applied at creation time
+  inside `get_or_create_window()`.
+
+### Fix 2: Lazy STT server (`src-tauri/src/lazy_stt.rs`)
+- STT server is NOT started at boot (removed from `scripts/run.ps1`).
+- `lazy_stt::ensure_stt_running()` is called when the wake word fires.
+- `lazy_stt::mark_stt_request()` resets the idle timer on each transcription.
+- A background thread kills the STT server after 60s of no requests.
+- If an external STT server is already running on port 39217 (e.g. started
+  manually), the lazy manager detects it and skips spawning its own.
+
+### Measured RAM (idle, after fix)
+| Component          | Before   | After    |
+|--------------------|----------|----------|
+| NEXUS.exe (Rust)   | 47.9 MB  | 40.8 MB  |
+| WebView2 (1 window)| 870 MB   | 344 MB   |
+| STT server         | 339 MB   | 0 MB     |
+| **TOTAL**          | **1,644 MB** | **385 MB** |
+
+### Files changed
+- `src-tauri/tauri.conf.json` — removed 4 windows, kept only `main`
+- `src-tauri/src/dyn_windows.rs` — NEW: dynamic window creation/destruction
+- `src-tauri/src/lazy_stt.rs` — NEW: lazy STT server manager
+- `src-tauri/src/lib.rs` — registered new modules, removed startup sidebar vibrancy
+- `src-tauri/src/commands.rs` — all show/hide functions use dyn_windows
+- `src-tauri/src/architect.rs` — uses dyn_windows for architect window
+- `src-tauri/src/hotkey.rs` — sidebar close uses destroy_window
+- `src-tauri/src/tray.rs` — settings menu uses dyn_windows
+- `src-tauri/src/wakeword_oww.rs` — calls ensure_stt_running() on wake
+- `src-tauri/src/stt.rs` — calls mark_stt_request() on each transcription
+- `scripts/run.ps1` — no longer starts STT server at boot
+
+## Sidebar — Do NOT use window-vibrancy on non-activating windows (2026-08-30)
+
+**`src-tauri/src/lib.rs` / `src-tauri/src/commands.rs`: the sidebar window
+deliberately calls NO `window_vibrancy` function** (no `apply_blur`,
+`apply_acrylic`, `apply_mica`). This was a hard-won finding — do not
+re-add these calls without reading this section first.
+
+**Why**: the sidebar is a non-activating window (`focus: false`,
+`alwaysOnTop: true`, `skipTaskbar: true`) so it never steals keyboard
+focus from whatever app the user is working in. Windows' DWM *material*
+APIs (Acrylic/Mica via `DWMWA_SYSTEMBACKDROP_TYPE`, or the legacy
+`SetWindowCompositionAttribute` accent path used by `apply_blur`) render
+a flat, solid **fallback color** for any window that isn't the OS-active
+window — this is documented Windows behavior (Mica/Acrylic docs list
+"window deactivates" as a fallback-to-solid-color condition), not
+something `window-vibrancy` or Tauri can override. Confirmed via
+`microsoft/microsoft-ui-xaml#10570` (`DesktopAcrylicBackdrop` loses blur
+on `WS_EX_NOACTIVATE` windows) and `tauri-apps/window-vibrancy#183`
+(Acrylic/Mica broken on Windows 11 24H2/25H2 in general).
+
+Worse: calling these material APIs **overrides** Tauri's own
+`transparent: true` mechanism (`tao` registers the window with DWM via
+`DwmEnableBlurBehindWindow` + an empty blur region at window creation —
+that's what actually makes a Tauri window see-through, no material
+needed). When the material then fails to render (because the window is
+never active), DWM falls back to **solid opaque** instead of the
+window's original see-through state. This produced a fully opaque
+black/grey panel that looked worse than doing nothing.
+
+**The fix**: removed the vibrancy calls entirely. The sidebar was
+already genuinely transparent via `transparent: true` in
+`tauri.conf.json` — the same mechanism the main orb window uses
+successfully. Result: sharp (not blurred) but real, focus-independent
+transparency. `src-tauri/src/dwm_corners.rs` still calls
+`DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)`
+directly (a plain window-shape attribute, not a material — unaffected
+by the active/inactive issue) so the OS window's corners match the CSS
+card's `border-radius`, avoiding a "double panel" mismatch (WebView2
+has no `CornerRadius` support, so without this the DWM-painted window
+rectangle and the rounded CSS card show as two different shapes).
+
+Also removed: a CSS chromatic-aberration effect (red/cyan inset
+`box-shadow` on `.sidebar-card::after`) that was meant to simulate
+glass prism fringing. Without real optical refraction (no SVG
+`feDisplacementMap` — `backdrop-filter: url()` is also a no-op on a
+transparent WebView2, see below), it just read as a colored-border
+rendering bug. Replaced with a neutral lit-bezel `box-shadow` stack
+(top specular + bottom shadow) for a physical-glass feel without color.
+
+Separately confirmed: CSS `backdrop-filter` (blur or `url()` SVG
+refraction) is a **no-op in a transparent WebView2** — see
+`MicrosoftEdge/WebView2Feedback#4945`. It can't composite against
+nothing. Don't rely on it for this window; any blur must come from a
+native OS mechanism, and per above, none is currently available for a
+non-activating window without a full WinRT `DesktopAcrylicController` +
+`SystemBackdropConfiguration.IsInputActive = true` interop (what
+PowerToys uses for its non-activating flyouts) — out of scope unless
+revisited.
+
+### Screenshot-capture blur (the actual liquid glass)
+
+Since native blur is unavailable for non-activating windows, the sidebar
+uses a **"fake blur"**: right before `win.show()`, Rust captures the desktop
+region behind the window via GDI `BitBlt`, blurs it with
+`image::imageops::fast_blur(sigma=32)`, encodes it as a PNG data URI, and
+hands it to the frontend as a CSS `background-image` on `.sidebar-card`
+via the `--sidebar-backdrop-image` CSS variable. This gives a genuine
+frosted-glass look without depending on window activation state.
+
+**Critical timing:** the capture MUST happen before `win.show()` so the
+sidebar doesn't capture itself. If the window is already visible (re-show),
+capture is skipped. See `src-tauri/src/sidebar_backdrop.rs`.
+
+Full implementation guide: `docs/features/21-liquid-glass-sidebar.md`.
+
+### Dynamic window pending-content pattern (race-free event delivery)
+
+When a window is created on-demand (via `dyn_windows.rs`), the WebView2
+needs time to load the HTML and mount the React app. If Rust emits Tauri
+events immediately after creating the window, **those events are lost**
+because no listener exists yet.
+
+**Fix:** store the content in a `static Mutex<Option<...>>` and let the
+frontend fetch it on mount via a `get_pending_*` command. This is race-free
+regardless of how long the WebView takes to load. If the window already
+exists (React loaded), events are also emitted as a fast path.
+
+Currently used for:
+- `PENDING_SIDEBAR` in `commands.rs` → `get_pending_sidebar_content`
+- `PENDING_ARCHITECT_REPO` in `architect.rs` → `get_pending_architect_repo`
+
+**All show/create commands MUST be `async`** — `WebviewWindowBuilder::build()`
+dispatches to the main thread, and a synchronous Tauri command runs on a
+blocking thread that can't yield, causing a deadlock.
+
+To reuse this pattern for a new window, see the "How to Reuse" section in
+`docs/features/21-liquid-glass-sidebar.md`.
+
+## Architecture Mapper — Phase 1 Latency Optimization (2026-08-30)
+
+Phase 1 now uses **Approach C (hybrid)** for a 3-4s first response:
+
+1. **Parallelized GitHub API calls** (`tokio::join!`): metadata + recursive
+   tree are fetched concurrently using the symbolic ref `HEAD` (verified
+   against repos with `main` and `master` default branches). Cuts ~600-1000ms
+   off the critical path vs the old sequential metadata→tree flow.
+2. **Instant Rust heuristic clustering** for first paint (~5ms) — the diagram
+   appears in ~1-1.5s with generic layer labels.
+3. **Async LLM enrichment** (`enrich_phase1` command): after first paint, the
+   client POSTs the heuristic layers + sample file paths to the Worker's
+   `phase1_enrich` intent. The LLM (Mistral 24B) rewrites generic labels into
+   repo-specific ones (e.g. "Client / Presentation Layer" → "Next.js App
+   Router (React 19)") and writes a real summary. Result streams back via
+   the `architect:phase1-enriched` event ~2-3s later and merges in-place.
+   **Never blocks first paint.** If the Worker/LLM fails, the heuristic
+   diagram remains (graceful degradation).
+
+| Component | File | What changed |
+|-----------|------|--------------|
+| Rust parallel fetch | `src-tauri/src/architect.rs` | `analyze_repo_phase1` uses `tokio::join!` + `HEAD` ref |
+| Rust enrichment cmd | `src-tauri/src/architect.rs` | New `enrich_phase1` command + `Phase1Enrichment`/`EnrichedLayer` types |
+| Rust session accessor | `src-tauri/src/network.rs` | New `get_session_info()` public helper |
+| Worker handler | `server/worker/src/index.ts` | New `handlePhase1Enrich` + `phase1_enrich` intent dispatch |
+| Frontend store | `frontend/src/architect/architectStore.ts` | New `enrichPhase1` action + `sample_file_paths` field |
+| Frontend app | `frontend/src/architect/ArchitectApp.tsx` | Calls `enrich_phase1` after paint + listens for enriched event |
+
 ## Building
 
 **Always build the desktop app with the Tauri CLI:**
@@ -116,7 +434,21 @@ pwsh ./scripts/build.ps1
 
 - Default feature: `wakeword-oww` (tract-onnx inference in Rust)
 - Models: `src-tauri/resources/oww/{melspectrogram.onnx, embedding_model.onnx, nexus.onnx}`
-- Threshold: 0.45, chunk size: 1280 samples (80ms at 16kHz)
+- Threshold: 0.35, chunk size: 1280 samples (80ms at 16kHz)
+- **Detection logic (2026-08-29):** Max-based detection + secondary confirmation.
+  The old averaging approach diluted single good frames (0.4+) with surrounding
+  0.0s, giving avg=0.03 which never triggered. Now uses max probability in the
+  12-frame buffer, so a single 0.36+ frame triggers. After a raw detection,
+  collects 500ms of audio and checks RMS ≥ 0.01 to confirm real speech (filters
+  noise spikes). Refractory period: 3s.
+- **Model v2 (2026-08-30, Kaggle):** Retrained on Kaggle T4 GPU with:
+  - 5000 positive samples (5 phrase variants: "nexus", "hey nexus", "nexus wake up", "ok nexus", "nexus please")
+  - 30+ soundalike negatives (vs 8 in v1)
+  - 80000 training steps (vs 50000), layer_size=64 (vs 32)
+  - 2x augmentation rounds, target FP/hr=0.1 (vs 0.2)
+  - Model size: 415KB (vs 205KB v1)
+  - Kernel: `chitkullakshya/train-nexus-wakeword-v2`
+  - v1 backup: `src-tauri/resources/oww/nexus_v1.onnx.backup`
 - **Silence gate + AGC (2026-08-28):** `detect_chunk` computes RMS of each
   80ms chunk and skips the classifier entirely if RMS < 0.0005 (~-66dBFS).
   The `nexus.onnx` model emits 0.6-0.9 probabilities on pure digital silence

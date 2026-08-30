@@ -66,16 +66,16 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> Result<(), tauri::Error> {
                 }
             }
             "settings" => {
-                // Open the dedicated settings window (not the setup wizard)
-                if let Some(w) = app.get_webview_window("settings") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                } else if let Some(w) = app.get_webview_window("setup") {
-                    // Fallback to setup window if settings window not found
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                } else {
-                    let _ = app.emit("assistant:settings", ());
+                // Open the dedicated settings window (created on-demand)
+                match crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::settings()) {
+                    Ok(w) => {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                    Err(e) => {
+                        tracing::warn!("tray: failed to create settings window: {e}");
+                        let _ = app.emit("assistant:settings", ());
+                    }
                 }
             }
             "quit" => app.exit(0),

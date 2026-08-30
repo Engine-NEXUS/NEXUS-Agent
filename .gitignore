@@ -83,3 +83,33 @@ docs/research/
 
 # Temporary CDP debug scripts
 scripts/cdp_*.js
+scripts/check_*.js
+scripts/test_*.js
+scripts/show_*.js
+scripts/test_*.ps1
+scripts/collect_wake_samples.py
+
+# Temporary root-level debug/test files
+check-css-var.cjs
+deep-debug.cjs
+reshow.cjs
+show-blur-test*.cjs
+show-demo.cjs
+check_mic.ps1
+test_*.py
+test_*.wav
+list_*.py
+gen_tts.py
+demo-v3.png
+live_mic_5s.wav
+mic_test_dev21.wav
+
+# Kaggle training output (machine-specific)
+kaggle_nexus_v2/
+
+# Backup model files
+src-tauri/resources/oww/*.backup
+
+# Test/example directories
+src-tauri/examples/
+src-tauri/src/test_wda.rs

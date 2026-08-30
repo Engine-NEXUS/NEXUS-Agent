@@ -35,6 +35,7 @@ interface Settings {
   ttsProvider?: string;
   elevenlabsApiKey?: string;
   fishAudioApiKey?: string;
+  googleCloudApiKey?: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -53,9 +54,10 @@ const DEFAULT_SETTINGS: Settings = {
   deviceId: "local-device",
   ttsVoice: "jarvis",
   speechRate: 1.0,
-  ttsProvider: "neural",
+  ttsProvider: "fish_audio",
   elevenlabsApiKey: "",
   fishAudioApiKey: "",
+  googleCloudApiKey: "",
 };
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
@@ -246,7 +248,7 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
       sampleText: "Hello sir, NEXUS is ready to assist you.",
     };
     setPlayingVoice(voiceId);
-    await previewVoice(voice, settings.elevenlabsApiKey, () => {
+    await previewVoice(voice, settings.fishAudioApiKey, () => {
       setPlayingVoice(null);
     });
   };
@@ -297,15 +299,15 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
 
         <div className="nx-row">
           <div className="nx-row-label">
-            <span className="nx-row-name">ElevenLabs API Key</span>
-            <span className="nx-row-hint">Optional: Enables ultra-realistic neural streaming</span>
+            <span className="nx-row-name">Fish Audio API Key</span>
+            <span className="nx-row-hint">Free — no credit card. Get key: fish.audio → Sign Up → Dashboard → API Keys</span>
           </div>
           <input
             type="password"
             className="nx-input"
-            placeholder="xi-api-key..."
-            value={settings.elevenlabsApiKey || ""}
-            onChange={(e) => update("elevenlabsApiKey", e.target.value)}
+            placeholder="Fish Audio API key..."
+            value={settings.fishAudioApiKey || ""}
+            onChange={(e) => update("fishAudioApiKey", e.target.value)}
             style={{ width: 220 }}
           />
         </div>
