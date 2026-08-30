@@ -78,20 +78,30 @@ if ($Build) {
 # ─── Kill any existing instances ───────────────────────────────────────────
 Write-Log "INIT" "Killing existing NEXUS / STT instances..." $C_SYS
 Get-Process nexus -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Also kill orphaned WebView2 child processes left by previous NEXUS runs
+Get-Process msedgewebview2 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*stt_server*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep 2
+Start-Sleep 3
 
-# Clear old log files so the tail loop doesn't read stale content
-Write-Log "INIT" "Clearing old logs..." $C_SYS
+# Use timestamped log filenames so we never conflict with a lingering
+# file handle from a previous run.ps1 that was killed without cleanup.
+# The old approach (Clear-Content on a fixed filename) failed when a
+# zombie process held an exclusive write lock on the log file — Windows
+# doesn't release handles instantly after Stop-Process. Unique filenames
+# sidestep the issue entirely.
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $sttLog = "$LogDir\stt_unified.log"
 $sttErr = "$LogDir\stt_unified_err.log"
-$nexusLog = "$LogDir\nexus_unified.log"
-$nexusErr = "$LogDir\nexus_unified_err.log"
+$nexusLog = "$LogDir\nexus_${stamp}.log"
+$nexusErr = "$LogDir\nexus_${stamp}_err.log"
 $cdpLog = "$LogDir\cdp_unified.log"
 $cdpErr = "$LogDir\cdp_unified_err.log"
-foreach ($f in @($sttLog, $sttErr, $nexusLog, $nexusErr, $cdpLog, $cdpErr)) {
-  if (Test-Path $f) { Clear-Content $f -Force }
-}
+
+# Clean up old timestamped log files (keep only the 5 most recent)
+Get-ChildItem "$LogDir\nexus_*.log" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -Skip 5 |
+  Remove-Item -Force -ErrorAction SilentlyContinue
 
 # ─── STT Server ────────────────────────────────────────────────────────────
 # NOTE: STT server is now started LAZILY by the Rust app (lazy_stt.rs) when
