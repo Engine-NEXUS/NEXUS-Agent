@@ -87,7 +87,7 @@ export async function playKokoro(text: string, voiceId: string, onEnd?: () => vo
 
 export async function previewVoice(
   voice: VoiceOption,
-  customApiKey?: string,
+  _customApiKey?: string,
   onEnd?: () => void,
 ): Promise<void> {
   stopTts();
