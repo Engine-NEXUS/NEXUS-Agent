@@ -24,6 +24,7 @@ mod commands;
 mod command_executor;
 mod app_registry;
 mod stt;
+mod tts;
 // voice_profile: speaker embedding via sherpa-onnx — only needed with wakeword-sherpa.
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
 #[cfg(feature = "wakeword-sherpa")]
@@ -33,7 +34,6 @@ mod mic_permissions;
 mod mpris;
 mod architect;
 mod dyn_windows;
-mod lazy_stt;
 mod diagnostics;
 #[cfg(target_os = "windows")]
 mod dwm_corners;
@@ -321,10 +321,26 @@ pub fn run() {
             tray::setup(app.handle())?;
 
             // ─── Meeting / privacy mode state ──────────────────────────
-            // Shared atomic state — read by the audio callback on every chunk,
-            // written by the meeting detection loop, tray menu, and frontend events.
             let meeting_state = std::sync::Arc::new(meeting_detect::MeetingState::new());
             app.manage(meeting_state.clone());
+
+            // ─── STT / TTS Local Engine State ──────────────────────────
+            let stt_state = stt::SttState { transcriber: std::sync::Arc::new(tokio::sync::Mutex::new(None)) };
+            app.manage(stt_state);
+
+            let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+            let tts_state = tts::TtsState { engine: tts_engine_arc.clone() };
+            app.manage(tts_state);
+            tauri::async_runtime::spawn(async move {
+                tracing::info!("tts: initializing Kokoro engine in background...");
+                match kokoro_micro::TtsEngine::new().await {
+                    Ok(engine) => {
+                        *tts_engine_arc.lock().await = Some(engine);
+                        tracing::info!("tts: Kokoro engine ready.");
+                    }
+                    Err(e) => tracing::error!("tts: failed to init Kokoro: {}", e),
+                }
+            });
 
             // Wire the meeting state into the wake engine so the audio callback
             // can check `should_suppress_wake()` on every chunk.
@@ -401,10 +417,6 @@ pub fn run() {
             //
             // Platform-specific effects (DWM corners, macOS vibrancy) are applied
             // inside dyn_windows::get_or_create_window() at creation time.
-
-            // Start the lazy STT idle monitor — kills the STT server after 60s
-            // of no transcription requests, saving ~340 MB RAM at idle.
-            lazy_stt::start_idle_monitor();
 
             // WebView2 permission handler — auto-approves mic/camera for our
             // own app origins so the permission dialog never re-appears.
@@ -567,6 +579,7 @@ pub fn run() {
             commands::resume_wakeword,
             stt::transcribe_audio,
             stt::stt_status,
+            tts::speak_text,
             diagnostics::nexus_diagnostics,
             command_executor::execute_command,
             architect::get_active_repo_url,
