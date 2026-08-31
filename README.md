@@ -89,5 +89,54 @@ Signed Windows NSIS installer is output to: `src-tauri/target/release/bundle/nsi
 
 ---
 
+## 📥 Releases & Installation
+
+### Windows (NSIS Installer)
+
+**[⬇ Download NEXUS_0.1.0_x64-setup.exe (60 MB)](https://github.com/Engine-NEXUS/NEXUS-Agent/releases/download/v0.1.0/NEXUS_0.1.0_x64-setup.exe)**
+
+Or visit the [Releases](https://github.com/Engine-NEXUS/NEXUS-Agent/releases/tag/v0.1.0) page.
+
+The installer:
+- Installs `NEXUS.exe` to `%LOCALAPPDATA%\NEXUS\`
+- Bundles Python STT/NLU servers in `resources/server/`
+- Bundles Kokoro TTS model and espeak-ng data
+- Registers the `nexus://` deep-link protocol for OAuth callbacks
+- Creates a Windows Scheduled Task for auto-start at login
+- Registers uninstaller in Add/Remove Programs
+
+### macOS (DMG)
+
+```bash
+nexus build --bundles dmg
+# Output: src-tauri/target/release/bundle/dmg/NEXUS_0.1.0_x64.dmg
+```
+
+### Linux (AppImage / Deb)
+
+```bash
+nexus build --bundles appimage,deb
+# Output: src-tauri/target/release/bundle/appimage/NEXUS_0.1.0_amd64.AppImage
+```
+
+### First Launch
+
+1. **Setup Wizard** — Auto-opens on first launch.
+2. **Microphone Permission** — Grant mic access for wake word + STT.
+3. **Voice Selection** — Pick from 4 voices (af_sky, af_bella, am_adam, bf_emma).
+4. **Connect GitHub** — OAuth via browser. Token stored securely in Cloudflare D1.
+5. **Hotkey** — `Ctrl+Space` to wake NEXUS and start speaking.
+
+### What Gets Stored
+
+| Data | Location | Purpose |
+|------|----------|---------|
+| `nexus-config.json` | `%APPDATA%/com.nexus.assistant/` | User ID, device ID, Worker URL |
+| `settings.json` | `%APPDATA%/com.nexus.assistant/` | Voice, hotkey, autostart preferences |
+| GitHub OAuth token | Cloudflare D1 (encrypted) | PR analysis, repo access |
+| STT hotwords | `%APPDATA%/com.nexus.assistant/stt_hotwords.txt` | Custom vocabulary for transcription |
+
+---
+
 ## 📄 License
 © 2026 **Team V-Max (Team #5)**.
