@@ -1021,6 +1021,7 @@ pub fn get_settings<R: Runtime>(
                 }
             }
         }
+    }
     Ok(settings)
 }
 
