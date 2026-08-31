@@ -1,6 +1,19 @@
 # ⚡ NEXUS — Hackathon Quick Start Guide
 
-> **For Evaluators & Judges:** This guide will get you up and running with NEXUS in under **60 seconds**.
+**Event:** Citta RISE (Idea2Agent Edition) — 29 Aug 2026  
+**Problem Statement 05:** Architecture Mapper (*"Not a diagram. A consequence engine."*)  
+**Team Name:** V-Max (Team #5)  
+**Team Leader:** Prem Sai Kota ([@prem22k](https://github.com/prem22k))  
+**Team Members:**
+* Lakshya Chitkul ([@chitkullakshya](https://github.com/chitkullakshya))
+* Ajith Kumar ([@ajithhhak](https://github.com/ajithhhak))
+
+---
+
+## 🎯 The Core Problem Solved
+> *"If I change this piece of code, what else could be affected — and why?"*
+
+Enterprise codebases span thousands of files where architecture evolves faster than documentation. Traditional tools only list static file imports. **NEXUS is a consequence engine**: it calculates the exact **blast radius** using sub-10ms reverse-BFS graph traversal, reconstructs the shortest dependency paths, mathematically detects circular dependencies (Tarjan's SCC), and uses an AI agent with voice to explain engineering risks in plain English.
 
 ---
 
@@ -21,12 +34,12 @@
 
 ---
 
-## 🧪 3. Five Key Test Scenarios for Judges
+## 🧪 3. Key Test Scenarios for Hackathon Judges
 
-### Scenario A: Autonomous Codebase Architecture Mapper *(Track Highlight)*
+### Scenario A: Autonomous Codebase Architecture Mapper *(Core Hackathon Feature)*
 1. Trigger NEXUS (`Ctrl+Shift+Space`) and say:
    > *"Analyze the architecture of this repository"*
-2. **Result:** The Architecture Window opens, parses the repository graph in parallel, categorizes files into architectural layers (Frontend, Backend, DB, Infrastructure), and renders an interactive dependency diagram.
+2. **Result:** The Architecture Window opens, parses the repository graph in parallel (via Rayon + Petgraph), categorizes files into architectural layers (Frontend, Backend, DB, Infrastructure), and renders an interactive dependency diagram.
 
 ### Scenario B: Change Impact Analysis & Blast Radius
 1. In the Architecture Map or via voice, ask:
