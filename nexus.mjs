@@ -553,7 +553,8 @@ function cmdRun() {
       if (process.argv.includes("--build") || process.argv.includes("-Build")) {
         psArgs.push("-Build");
       }
-      run("pwsh", psArgs, { shell: false });
+      const psExe = has("pwsh") ? "pwsh" : "powershell";
+      run(psExe, psArgs, { shell: false });
       return;
     }
     // Fall back to direct launch if run.ps1 doesn't exist

@@ -192,17 +192,17 @@ function Get-NewLines([string]$File, [ref]$Position) {
   try {
     $fs = [System.IO.File]::Open($File, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     $fs.Seek($Position.Value, [System.IO.SeekOrigin]::Begin) | Out-Null
-    # Read raw bytes instead of using StreamReader — StreamReader buffers
-    # ahead, so $fs.Position ends up PAST the actual data, causing the
-    # position tracker to reset to 0 on the next call and re-read everything
+    # Read raw bytes instead of using StreamReader - it buffers ahead
     $len = [int]($fs.Length - $Position.Value)
     $buf = New-Object byte[] $len
     $read = $fs.Read($buf, 0, $len)
     $Position.Value = $Position.Value + $read
     $fs.Close()
     $text = [System.Text.Encoding]::UTF8.GetString($buf, 0, $read)
-    $lines = $text -split "`r?`n" | Where-Object { $_ -ne "" }
-  } catch {}
+    $lines = $text -split "\r?\n" | Where-Object { $_ -ne "" }
+  } catch {
+    # Ignore read errors
+  }
   return $lines
 }
 

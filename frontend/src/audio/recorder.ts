@@ -11,6 +11,7 @@ import {
 import { transcribeAudio } from "./stt";
 import { speak } from "./ttsPlayer";
 import { parseIntent, type Intent } from "../intent/parser";
+import { memoryAgent } from "../agents/memoryAgent";
 
 /**
  * Parse a transcript using the Rust-side enhanced intent parser.
@@ -463,6 +464,167 @@ function waitForTtsIdle(): Promise<void> {
   });
 }
 
+function formatIntentName(intentStr: string): string {
+  try {
+    const intent = JSON.parse(intentStr);
+    if (intent.action === "open_app") return `Open ${intent.target}`;
+    if (intent.action === "youtube_play") return `Play ${intent.query} on YouTube`;
+    if (intent.action === "spotify_play") return `Play ${intent.query} on Spotify`;
+    if (intent.action === "search") return `Search for ${intent.query}`;
+    if (intent.action === "github_list_repos") return `Check repositories`;
+    if (intent.action === "github_list_prs") return `Check pull requests`;
+    return intent.action.replace(/_/g, " ");
+  } catch {
+    return intentStr;
+  }
+}
+
+async function handleRoutineFlow(transcript: string): Promise<boolean> {
+  const lower = transcript.toLowerCase();
+
+  if ((window as any).__NEXUS_UPDATING_ROUTINE__) {
+    // If user says "no", "stop", "cancel", "that's it", we finish updating.
+    if (/\b(cancel|nevermind|stop|no|that's it|nothing else)\b/i.test(transcript) || lower.trim() === "no") {
+      (window as any).__NEXUS_UPDATING_ROUTINE__ = false;
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Routine saved, sir.");
+      await speak("Routine saved, sir.");
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+      captureInProgress = false;
+      return true;
+    }
+
+    // If user explicitly asks to start the routine while updating, break out and start it
+    if (/\b(start|star|store|run|do|begin|play)\b.*\b(morning|routine|schedule|usual)\b/i.test(transcript)) {
+      (window as any).__NEXUS_UPDATING_ROUTINE__ = false;
+      // Let the flow fall through to the Start Routine block below
+    } else if (/\b(reset|clear|delete|remove|restart)\b.*\b(morning|routine|schedule|usual)\b/i.test(transcript)) {
+      await memoryAgent.clearCustomRoutines();
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("I have cleared your routine, sir. What would you like to add?");
+      await speak("I have cleared your routine, sir. What would you like to add?");
+      captureInProgress = false;
+      setTimeout(() => {
+          const wake = (window as any).__NEXUS_WAKE__;
+          if (wake) wake();
+      }, 100);
+      return true;
+    } else {
+      useAssistant.getState().setState("thinking");
+
+      // Split the user's long, rambling sentence by conjunctions to extract multiple actions
+      const phrases = transcript.split(/\b(?:and then|and|then|also|after that)\b/i).map(s => s.trim()).filter(s => s.length > 0);
+      const addedItems = [];
+
+      for (const phrase of phrases) {
+        const { intent: phraseIntent } = await parseTranscriptEnhanced(phrase);
+        if (phraseIntent && phraseIntent.action !== "unknown") {
+          await memoryAgent.addCustomRoutine(JSON.stringify(phraseIntent));
+          addedItems.push(formatIntentName(JSON.stringify(phraseIntent)));
+        } else if (phraseIntent && phraseIntent.action === "unknown") {
+          // If it's unknown, maybe it's a general request. Let's just save it as a text command.
+          // The executor handles arbitrary text via the fallback LLM.
+          const fallbackIntent = { action: "unknown", raw: phrase };
+          await memoryAgent.addCustomRoutine(JSON.stringify(fallbackIntent));
+          addedItems.push(`Command: ${phrase}`);
+        }
+      }
+
+      useAssistant.getState().setState("speaking");
+      if (addedItems.length > 0) {
+        let list = addedItems.join(", and ");
+        if (addedItems.length > 2) {
+           list = addedItems.slice(0, -1).join(", ") + ", and " + addedItems[addedItems.length - 1];
+        }
+        const msg = `I have given that to my background agent and added ${list}. Would you like me to add anything else?`;
+        useAssistant.getState().addAssistantMessage(msg);
+        await speak(msg);
+      } else {
+        useAssistant.getState().addAssistantMessage("I couldn't understand any actions from that. Would you like to try again or say stop?");
+        await speak("I couldn't understand any actions from that. Would you like to try again or say stop?");
+      }
+
+      captureInProgress = false;
+      setTimeout(() => {
+          const wake = (window as any).__NEXUS_WAKE__;
+          if (wake) wake();
+      }, 100);
+      return true;
+    }
+  }
+
+  // Reset routine
+  if (/\b(reset|clear|delete|remove|restart)\b.*\b(morning|routine|schedule|usual)\b/i.test(transcript)) {
+    await memoryAgent.clearCustomRoutines();
+    (window as any).__NEXUS_UPDATING_ROUTINE__ = true;
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("I have cleared your routine, sir. What would you like to add?");
+    await speak("I have cleared your routine, sir. What would you like to add?");
+    captureInProgress = false;
+    setTimeout(() => {
+        const wake = (window as any).__NEXUS_WAKE__;
+        if (wake) wake();
+    }, 100);
+    return true;
+  }
+
+  // Update routine
+  if (/\b(save|update|add to|change|edit)\b.*\b(morning|routine|schedule|usual)\b/i.test(transcript)) {
+    (window as any).__NEXUS_UPDATING_ROUTINE__ = true;
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("Okay sir, what would you like me to add?");
+    await speak("Okay sir, what would you like me to add?");
+    captureInProgress = false;
+    setTimeout(() => {
+        const wake = (window as any).__NEXUS_WAKE__;
+        if (wake) wake();
+    }, 100);
+    return true;
+  }
+
+  // Start routine
+  if (/\b(start|star|store|run|do|begin|play)\b.*\b(morning|routine|schedule|usual)\b/i.test(transcript)) {
+    const suggestions = await memoryAgent.getRoutineSuggestions();
+    if (suggestions.length > 0) {
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("Starting your routine, sir.");
+      await speak("Starting your routine, sir.");
+      
+      const { invoke } = await import("@tauri-apps/api/core");
+      for (const suggestionStr of suggestions) {
+         try {
+           const suggestionIntent = JSON.parse(suggestionStr);
+           if (suggestionIntent.action === "unknown") {
+             const wsBridge = await import("../net/wsBridge");
+             wsBridge.sendTranscript(suggestionIntent.raw);
+           } else {
+             await invoke("execute_command", { intent: suggestionIntent });
+           }
+         } catch(e) {}
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+      captureInProgress = false;
+      return true;
+    } else {
+      useAssistant.getState().setState("speaking");
+      useAssistant.getState().addAssistantMessage("I don't have enough data for a routine yet, sir.");
+      await speak("I don't have enough data for a routine yet, sir.");
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      useAssistant.getState().setVisible(false);
+      setTimeout(() => useAssistant.getState().reset(), 550);
+      captureInProgress = false;
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Called by VAD on silence: stop the recorder, run local STT on the
  * buffered audio, send the transcript text to the server, and speak
@@ -549,6 +711,11 @@ export async function finishCapture(): Promise<void> {
   //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   //    Uses the Rust-side enhanced parser (app registry + analyse patterns).
   const { intent } = await parseTranscriptEnhanced(transcript);
+  void memoryAgent.log("user", transcript, JSON.stringify(intent));
+
+  if (await handleRoutineFlow(transcript)) {
+      return;
+  }
 
   // Special case: open architecture mapper window directly
   if (intent.action === "open_architect") {
@@ -821,6 +988,11 @@ async function _finishCaptureFromVadInner(
   //    "unknown" (i.e. it's a conversational query needing n8n/Ollama).
   //    Uses the Rust-side enhanced parser (app registry + analyse patterns).
   const { intent } = await parseTranscriptEnhanced(transcript);
+  void memoryAgent.log("user", transcript, JSON.stringify(intent));
+
+  if (await handleRoutineFlow(transcript)) {
+      return;
+  }
 
   // Special case: open architecture mapper window directly
   if (intent.action === "open_architect") {

@@ -125,6 +125,9 @@ export async function previewVoice(
 }
 
 export async function speak(text: string, onEnd?: () => void): Promise<void> {
+  // Cancel any currently playing TTS (barge-in / prevent overlay)
+  stopTts();
+
   const meeting = await isMeetingActive();
   if (meeting) {
     console.log("[TTS] Suppressed — meeting mode active");

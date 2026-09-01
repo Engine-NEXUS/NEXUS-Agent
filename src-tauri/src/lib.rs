@@ -727,6 +727,9 @@ pub fn run() {
             architect::query_impact,
             architect::enrich_phase1,
             architect::analyze_repo_fast,
+            commands::save_memory,
+            commands::load_memory,
+            commands::clear_memory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NEXUS application");

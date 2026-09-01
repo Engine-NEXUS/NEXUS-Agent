@@ -1277,3 +1277,34 @@ pub fn resume_wakeword() -> Result<(), String> {
     crate::wakeword_oww::resume_stream();
     Ok(())
 }
+
+/// IPC: Save memory data to a local JSON file (e.g., routines, history, preferences).
+#[tauri::command]
+pub fn save_memory<R: Runtime>(app: tauri::AppHandle<R>, key: String, data: String) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.json", key));
+    std::fs::write(&path, data).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// IPC: Load memory data from a local JSON file.
+#[tauri::command]
+pub fn load_memory<R: Runtime>(app: tauri::AppHandle<R>, key: String) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.json", key));
+    if !path.exists() {
+        return Ok("".to_string());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// IPC: Clear memory files.
+#[tauri::command]
+pub fn clear_memory<R: Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(dir.join("history.json"));
+    let _ = std::fs::remove_file(dir.join("routines.json"));
+    let _ = std::fs::remove_file(dir.join("preferences.json"));
+    Ok(())
+}

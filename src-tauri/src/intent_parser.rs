@@ -31,6 +31,12 @@ pub enum ParsedIntent {
     OpenArchitect,
     #[serde(rename = "search")]
     Search { query: String },
+    #[serde(rename = "youtube_play")]
+    YoutubePlay { query: String },
+    #[serde(rename = "youtube_search")]
+    YoutubeSearch { query: String },
+    #[serde(rename = "spotify_play")]
+    SpotifyPlay { query: String },
     #[serde(rename = "analyse_repo")]
     AnalyseRepo { owner: Option<String>, repo: String },
     #[serde(rename = "analyse_pr")]
@@ -121,6 +127,12 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
     // "analyse servx repo", "analyse servx", "analyse owner/repo"
     // "analyse repo servx", "analyse the repo servx"
     if let Some(result) = parse_analyse_command(&text) {
+        return Some(result);
+    }
+
+    // --- Youtube / Media ---
+    // "play cat videos on youtube", "open cat videos on youtube", "play cat videos"
+    if let Some(result) = parse_youtube_command(&text) {
         return Some(result);
     }
 
@@ -600,6 +612,43 @@ fn clean_repo_name(text: &str) -> String {
     text.trim().to_string()
 }
 
+// ─── Youtube / Media ───────────────────────────────────────────────────────
+
+fn parse_youtube_command(text: &str) -> Option<ParseResult> {
+    // "play X on youtube", "play X", "open X on youtube", "search youtube for X"
+    if let Some(caps) = regex::Regex::new(r"^(?:play|open)\s+(.+?)(?:\s+on\s+youtube)?$").ok()?.captures(text) {
+        let query = caps[1].trim();
+        // If it's a generic "open" command without "on youtube" or "videos",
+        // we don't want to steal it from parse_open_command (e.g. "open calculator").
+        // But if they say "open cat videos" or "play ...", we capture it.
+        let is_play = text.starts_with("play ");
+        let has_youtube = text.contains("youtube");
+        let has_videos = text.contains("videos");
+        
+        if is_play || has_youtube || has_videos {
+            return Some(ParseResult {
+                intent: ParsedIntent::YoutubePlay {
+                    query: query.to_string(),
+                },
+                confidence: 1.0,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+    
+    if let Some(caps) = regex::Regex::new(r"^(?:search|find)\s+(?:on\s+)?youtube\s+for\s+(.+)$").ok()?.captures(text) {
+        return Some(ParseResult {
+            intent: ParsedIntent::YoutubeSearch {
+                query: caps[1].trim().to_string(),
+            },
+            confidence: 1.0,
+            source: "deterministic".to_string(),
+        });
+    }
+    
+    None
+}
+
 // ─── Search command ────────────────────────────────────────────────────────
 
 const SEARCH_VERBS: &[&str] = &[
@@ -802,10 +851,13 @@ fn parse_media(text: &str) -> Option<ParsedIntent> {
 fn is_architect_command(text: &str) -> bool {
     regex_match(
         text,
-        r"^(?:open|launch|start|show|bring\s+up|pull\s+up)\s+(?:the\s+)?(?:architecture|architect)(?:\s+(?:mapper|map|window|mapper\s+window))?$",
+        r"^(?:open|launch|start|show|bring\s+up|pull\s+up|analyse|analyze|map)\s+(?:the\s+)?(?:architecture|architect)(?:\s+(?:mapper|map|window|mapper\s+window))?$",
     ) || regex_match(
         text,
-        r"^(?:open|launch|start|show)\s+the\s+(?:architecture|architect)(?:\s+(?:mapper|map|window))?$",
+        r"^(?:open|launch|start|show|analyse|analyze|map)\s+the\s+(?:architecture|architect)(?:\s+(?:mapper|map|window))?$",
+    ) || regex_match(
+        text,
+        r"^(?:architecture|architect)\s+(?:mapper|map)$"
     )
 }
 

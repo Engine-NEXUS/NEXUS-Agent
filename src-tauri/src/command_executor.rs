@@ -96,7 +96,7 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
         // ── Type 2: Parameterized commands ──
         Intent::SpotifyPlay { query } => spotify_play(&query),
         Intent::YoutubeSearch { query } => youtube_search(&query),
-        Intent::YoutubePlay { query } => youtube_play(&query),
+        Intent::YoutubePlay { query } => youtube_play(&query).await,
         Intent::GoogleSearch { query } => open_search(&query),
         Intent::GithubSearch { query } => github_search(&query),
         Intent::SendMessage { query } => send_message(&query),
@@ -281,18 +281,45 @@ fn youtube_search(query: &str) -> Result<CommandResult, String> {
     }
 }
 
-/// Play a video on YouTube (search + first result via YouTube deep link).
-fn youtube_play(query: &str) -> Result<CommandResult, String> {
-    // YouTube search URL — user can click the first result.
-    // A true "play first result" would need the YouTube API, but search
-    // is the most reliable cross-platform approach.
-    let url = format!(
+/// Play a video on YouTube (fetches search results and opens first video).
+async fn youtube_play(query: &str) -> Result<CommandResult, String> {
+    let search_url = format!(
         "https://www.youtube.com/results?search_query={}",
         urlencoding::encode(query)
     );
-    match open::that(&url) {
+    
+    // Fetch the search page
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+    let final_url = match client.get(&search_url).send().await {
+        Ok(resp) => {
+            if let Ok(text) = resp.text().await {
+                // Look for the first standard video ID (filtering out Shorts which use "reelItemRenderer")
+                // YouTube injects initial data into script tags
+                if let Some(caps) = regex::Regex::new(r#""videoRenderer":\{"videoId":"([a-zA-Z0-9_-]{11})""#).ok().and_then(|re| re.captures(&text)) {
+                    let video_id = &caps[1];
+                    tracing::info!("youtube play: found video id {}", video_id);
+                    format!("https://www.youtube.com/watch?v={}", video_id)
+                } else {
+                    tracing::warn!("youtube play: could not find videoId in HTML, falling back to search");
+                    search_url
+                }
+            } else {
+                search_url
+            }
+        }
+        Err(e) => {
+            tracing::warn!("youtube play: fetch failed ({}), falling back to search", e);
+            search_url
+        }
+    };
+
+    match open::that(&final_url) {
         Ok(()) => {
-            tracing::info!("youtube play: {}", query);
+            tracing::info!("youtube play: opened {}", final_url);
             Ok(CommandResult {
                 success: true,
                 message: format!("Playing {} on YouTube, sir.", query),
