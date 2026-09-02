@@ -8,6 +8,7 @@ import {
   isLongRunningInFlight,
   isDuplicateLongRunning,
 } from "../net/wsBridge";
+import { showLoadingIndicator } from "../loading/loadingController";
 import { transcribeAudio } from "./stt";
 import { speak } from "./ttsPlayer";
 import { parseIntent, type Intent } from "../intent/parser";
@@ -82,6 +83,9 @@ function processNextQueuedCommand(): void {
   console.log(`[NEXUS] queue: processing next queued command: "${next}"`);
   // Send it — the session should still be open from the previous command.
   setLongRunningInFlight(next, processNextQueuedCommand);
+  // The orb is already hidden from the previous command's "On it sir".
+  // Re-show the loading indicator for this queued command.
+  void showLoadingIndicator();
   void sendTranscript(next).then(() => {
     console.log(`[NEXUS] queue: sent "${next}" to worker`);
   }).catch((e) => {
@@ -127,7 +131,8 @@ async function handleDuplicateOrQueuedLongRunning(transcript: string): Promise<v
 function isLongRunningQuery(transcript: string): boolean {
   const t = transcript.toLowerCase();
   // PR analysis: "analyse PR 5 in servx", "review PR 3", "analyse the pull request"
-  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|review|deep\s*dive|critique|evaluate|assess|inspect|examine|map|understand|explore|create|build|show|generate)\b/.test(t);
+  // Also matches "analysis" (noun form) — e.g. "deep analysis for the PR 24"
+  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine|map|understand|explore|create|build|show|generate)\b/.test(t);
   const hasPR = /\b(pr|pull\s*request)\b/.test(t);
   const hasRepo = /\b(repo|repository|codebase|project|architecture|code)\b/.test(t);
   // Also catch "PR <number>" patterns even without "analyse" (STT may mishear)
@@ -238,22 +243,6 @@ function correctSttTranscript(transcript: string): string {
     console.log(`[NEXUS] STT correction: "${transcript}" → "${t}"`);
   }
   return t;
-}
-
-/**
- * Give an immediate "On it sir" acknowledgment for long-running queries,
- * then HIDE the orb. The orb reappears when the Worker response arrives
- * (handled in wsBridge result handler).
- */
-async function ackLongRunningQuery(): Promise<void> {
-  useAssistant.getState().setState("speaking");
-  useAssistant.getState().addAssistantMessage("On it sir.");
-  setLocalAckGiven(); // prevent server ack from double-speaking
-  await speak("On it sir");
-  await waitForTtsIdle();
-  // Hide the orb — it will reappear when the response arrives
-  useAssistant.getState().setVisible(false);
-  setTimeout(() => useAssistant.getState().reset(), 550);
 }
 
 /**
@@ -543,6 +532,43 @@ export async function finishCapture(): Promise<void> {
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
 
+  // 2b. INSTANT ACK for long-running queries — BEFORE intent parsing.
+  //     The NLU server can take 3-4s to cold-start on first use, and the
+  //     user shouldn't wait in silence. isLongRunningQuery() is a pure
+  //     regex check (<1ms) that catches "analyse PR/repo/branch" patterns.
+  //     We give "On it sir" immediately, then parse + send in the background.
+  const isLong = isLongRunningQuery(transcript);
+  if (isLong) {
+    // Check dedup/queue BEFORE acking
+    if (isLongRunningInFlight()) {
+      captureInProgress = false;
+      await handleDuplicateOrQueuedLongRunning(transcript);
+      return;
+    }
+    // Immediate ack — fire and forget, don't block on TTS
+    console.log("[NEXUS] instant ack (before parsing): long-running query detected");
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("On it sir.");
+    setLocalAckGiven(); // prevent server ack from double-speaking
+    void speak("On it sir").then(() => {
+      // After ack TTS finishes, hide the orb — it will reappear when
+      // the Worker response arrives (wsBridge result handler).
+      // Check both "speaking" (TTS just finished) and "thinking" (Rust
+      // already emitted thinking state while TTS was playing). In both
+      // cases, the orb should be hidden — the result handler will
+      // re-show it when the Worker responds.
+      const curState = useAssistant.getState().state;
+      if (curState === "speaking" || curState === "thinking") {
+        useAssistant.getState().setVisible(false);
+        setTimeout(() => useAssistant.getState().reset(), 550);
+        // Show the loading indicator — the orb (wakeup animation) is
+        // now hidden, so the user sees the loading animation at the
+        // top-right corner while NEXUS processes the request.
+        void showLoadingIndicator();
+      }
+    });
+  }
+
   // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
   //    (open app, open URL, search), execute it locally — no need to send
   //    to the remote backend. Only send to the backend if the intent is
@@ -630,27 +656,14 @@ export async function finishCapture(): Promise<void> {
   //    If the backend is available, send the transcript and let the server
   //    handle it. The server sends back ack/result/done events.
   try {
-    // For long-running queries (PR analysis, repo review), give an immediate
-    // "On it sir" ack and hide the orb. The result handler will show the
-    // sidebar + speak "Here is the analysis sir" when the response arrives.
-    const isLong = isLongRunningQuery(transcript) || isAnalyseIntent(intent);
-    console.log("[NEXUS] finishCapture: intent=", intent.action, "isLongRunning=", isLong, "transcript=", transcript);
+    // isLong was already determined above (before intent parsing).
+    // If it's long-running, we already gave the instant ack and handled
+    // dedup/queue. Here we just need to set the in-flight flag and send.
+    const isLongFinal = isLong || isAnalyseIntent(intent);
+    console.log("[NEXUS] finishCapture: intent=", intent.action, "isLongRunning=", isLongFinal, "transcript=", transcript);
 
-    // ─── Dedup + Queue for long-running queries ──────────────────────
-    // If a long-running query is already in flight:
-    //   - SAME command → say "on it sir" + hide, do NOT send again
-    //   - DIFFERENT command → say "on it sir" + hide, add to queue
-    if (isLong && isLongRunningInFlight()) {
-      captureInProgress = false;
-      await handleDuplicateOrQueuedLongRunning(transcript);
-      return;
-    }
-
-    if (isLong) {
-      console.log("[NEXUS] calling ackLongRunningQuery...");
-      await ackLongRunningQuery();
-      console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
-      // Track in-flight state for dedup + queue
+    if (isLongFinal && !isLongRunningInFlight()) {
+      // Track in-flight state for dedup + queue (ack already given above)
       setLongRunningInFlight(transcript, processNextQueuedCommand);
     }
     // Release captureInProgress BEFORE sendTranscript so subsequent voice
@@ -815,6 +828,43 @@ async function _finishCaptureFromVadInner(
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
 
+  // 2b. INSTANT ACK for long-running queries — BEFORE intent parsing.
+  //     The NLU server can take 3-4s to cold-start on first use, and the
+  //     user shouldn't wait in silence. isLongRunningQuery() is a pure
+  //     regex check (<1ms) that catches "analyse PR/repo/branch" patterns.
+  //     We give "On it sir" immediately, then parse + send in the background.
+  const isLong = isLongRunningQuery(transcript);
+  if (isLong) {
+    // Check dedup/queue BEFORE acking
+    if (isLongRunningInFlight()) {
+      captureInProgress = false;
+      await handleDuplicateOrQueuedLongRunning(transcript);
+      return;
+    }
+    // Immediate ack — fire and forget, don't block on TTS
+    console.log("[NEXUS] instant ack (before parsing): long-running query detected");
+    useAssistant.getState().setState("speaking");
+    useAssistant.getState().addAssistantMessage("On it sir.");
+    setLocalAckGiven(); // prevent server ack from double-speaking
+    void speak("On it sir").then(() => {
+      // After ack TTS finishes, hide the orb — it will reappear when
+      // the Worker response arrives (wsBridge result handler).
+      // Check both "speaking" (TTS just finished) and "thinking" (Rust
+      // already emitted thinking state while TTS was playing). In both
+      // cases, the orb should be hidden — the result handler will
+      // re-show it when the Worker responds.
+      const curState = useAssistant.getState().state;
+      if (curState === "speaking" || curState === "thinking") {
+        useAssistant.getState().setVisible(false);
+        setTimeout(() => useAssistant.getState().reset(), 550);
+        // Show the loading indicator — the orb (wakeup animation) is
+        // now hidden, so the user sees the loading animation at the
+        // top-right corner while NEXUS processes the request.
+        void showLoadingIndicator();
+      }
+    });
+  }
+
   // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
   //    (open app, open URL, search), execute it locally — no need to send
   //    to the remote backend. Only send to the backend if the intent is
@@ -900,27 +950,14 @@ async function _finishCaptureFromVadInner(
 
   // 4. Unknown intent (or analyse intent) — try the remote backend.
   try {
-    // For long-running queries (PR analysis, repo review), give an immediate
-    // "On it sir" ack and hide the orb. The result handler will show the
-    // sidebar + speak "Here is the analysis sir" when the response arrives.
-    const isLong = isLongRunningQuery(transcript) || isAnalyseIntent(intent);
-    console.log("[NEXUS] finishCaptureFromVad: intent=", intent.action, "isLongRunning=", isLong, "transcript=", transcript);
+    // isLong was already determined above (before intent parsing).
+    // If it's long-running, we already gave the instant ack and handled
+    // dedup/queue. Here we just need to set the in-flight flag and send.
+    const isLongFinal = isLong || isAnalyseIntent(intent);
+    console.log("[NEXUS] finishCaptureFromVad: intent=", intent.action, "isLongRunning=", isLongFinal, "transcript=", transcript);
 
-    // ─── Dedup + Queue for long-running queries ──────────────────────
-    // If a long-running query is already in flight:
-    //   - SAME command → say "on it sir" + hide, do NOT send again
-    //   - DIFFERENT command → say "on it sir" + hide, add to queue
-    if (isLong && isLongRunningInFlight()) {
-      captureInProgress = false;
-      await handleDuplicateOrQueuedLongRunning(transcript);
-      return;
-    }
-
-    if (isLong) {
-      console.log("[NEXUS] calling ackLongRunningQuery...");
-      await ackLongRunningQuery();
-      console.log("[NEXUS] ackLongRunningQuery done, calling sendTranscript...");
-      // Track in-flight state for dedup + queue
+    if (isLongFinal && !isLongRunningInFlight()) {
+      // Track in-flight state for dedup + queue (ack already given above)
       setLongRunningInFlight(transcript, processNextQueuedCommand);
     }
     // Release captureInProgress BEFORE sendTranscript so subsequent voice

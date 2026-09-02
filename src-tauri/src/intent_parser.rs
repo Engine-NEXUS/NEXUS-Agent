@@ -27,6 +27,10 @@ pub enum ParsedIntent {
     OpenApp { target: String },
     #[serde(rename = "open_url")]
     OpenUrl { target: String, url: String },
+    #[serde(rename = "close_app")]
+    CloseApp { target: String },
+    #[serde(rename = "whatsapp_chat")]
+    WhatsappChat { contact: String },
     #[serde(rename = "open_architect")]
     OpenArchitect,
     #[serde(rename = "search")]
@@ -124,9 +128,21 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
         return Some(result);
     }
 
+    // --- WhatsApp chat (must be BEFORE open command — "open chat with X" would match open) ---
+    // "open chat with lakshya", "message lakshya on whatsapp", "chat with mom"
+    if let Some(result) = parse_whatsapp_command(&text) {
+        return Some(result);
+    }
+
     // --- Open app / URL ---
     // "open whatsapp", "launch gemini", "start calculator", etc.
     if let Some(result) = parse_open_command(&text) {
+        return Some(result);
+    }
+
+    // --- Close app ---
+    // "close whatsapp", "quit chrome", "exit notepad"
+    if let Some(result) = parse_close_command(&text) {
         return Some(result);
     }
 
@@ -385,12 +401,23 @@ fn simple_phonetic(word: &str) -> String {
 /// - "analyse servx repo" / "analyse the repo servx" / "analyse repo servx"
 /// - "analyse servx" / "analyse owner/repo"
 /// - "analyse PR 23 owner/repo"
+/// - "deep analysis PR 24 in servx" / "deep analyse PR 24 in servx"
+/// - "analysis PR 24 in servx" (noun form)
 fn parse_analyse_command(text: &str) -> Option<ParseResult> {
-    // Must start with "analyse" or "analyze"
+    // Must start with "analyse", "analyze", "analysis", "deep analyse",
+    // "deep analyze", or "deep analysis"
     let analyse_text = if text.starts_with("analyse ") {
         &text[8..]
     } else if text.starts_with("analyze ") {
         &text[8..]
+    } else if text.starts_with("analysis ") {
+        &text[9..]
+    } else if text.starts_with("deep analyse ") {
+        &text[13..]
+    } else if text.starts_with("deep analyze ") {
+        &text[13..]
+    } else if text.starts_with("deep analysis ") {
+        &text[14..]
     } else {
         return None;
     };
@@ -598,6 +625,62 @@ fn clean_repo_name(text: &str) -> String {
         .or_else(|| text.strip_suffix(" codebase"))
         .unwrap_or(text);
     text.trim().to_string()
+}
+
+// ─── Close app command ──────────────────────────────────────────────────────
+
+const CLOSE_VERBS: &[&str] = &["close", "quit", "exit", "kill", "shut down", "shut"];
+
+fn parse_close_command(text: &str) -> Option<ParseResult> {
+    for verb in CLOSE_VERBS {
+        let prefix = format!("{} ", verb);
+        if text.starts_with(&prefix) {
+            let target = text[prefix.len()..].trim();
+            if !target.is_empty() && target != "nexus" && target != "the app" {
+                return Some(ParseResult {
+                    intent: ParsedIntent::CloseApp { target: target.to_string() },
+                    confidence: 1.0,
+                    source: "deterministic".to_string(),
+                });
+            }
+        }
+    }
+    None
+}
+
+// ─── WhatsApp chat command ──────────────────────────────────────────────────
+
+fn parse_whatsapp_command(text: &str) -> Option<ParseResult> {
+    // "open chat with lakshya", "chat with lakshya", "message lakshya"
+    // "open my chat with lakshya", "whatsapp lakshya"
+    let patterns: &[&str] = &[
+        "open chat with ",
+        "open my chat with ",
+        "chat with ",
+        "message ",
+        "whatsapp ",
+        "open whatsapp chat with ",
+        "send message to ",
+        "send whatsapp to ",
+    ];
+    for pat in patterns {
+        if text.starts_with(pat) {
+            let contact = text[pat.len()..].trim();
+            // Strip trailing "on whatsapp"
+            let contact = contact
+                .strip_suffix(" on whatsapp")
+                .or_else(|| text.strip_suffix(" on wa"))
+                .unwrap_or(contact);
+            if !contact.is_empty() {
+                return Some(ParseResult {
+                    intent: ParsedIntent::WhatsappChat { contact: contact.to_string() },
+                    confidence: 1.0,
+                    source: "deterministic".to_string(),
+                });
+            }
+        }
+    }
+    None
 }
 
 // ─── Search command ────────────────────────────────────────────────────────
@@ -1367,6 +1450,30 @@ mod tests {
                 cmd,
                 r.intent
             );
+        }
+    }
+
+    #[test]
+    fn test_deep_analysis_pr() {
+        // "deep analysis PR 24 in nexus-agent" — noun form with "deep" prefix
+        for cmd in &[
+            "deep analysis PR 24 in nexus-agent",
+            "deep analyse PR 24 in nexus-agent",
+            "deep analyze PR 24 in nexus-agent",
+            "analysis PR 24 in nexus-agent",
+        ] {
+            let result = parse_deterministic(cmd);
+            assert!(result.is_some(), "failed to parse: {}", cmd);
+            let r = result.unwrap();
+            if let ParsedIntent::AnalysePr {
+                repo, pr_number, ..
+            } = r.intent
+            {
+                assert_eq!(repo, "nexus-agent", "wrong repo for: {}", cmd);
+                assert_eq!(pr_number, 24, "wrong pr_number for: {}", cmd);
+            } else {
+                panic!("expected AnalysePr for: {}, got {:?}", cmd, r.intent);
+            }
         }
     }
 

@@ -26,6 +26,13 @@ database_id = "4bca5d1b-55e1-4a30-bbf9-ca28cf96e3ea"
 #   npx wrangler secret put GITHUB_CLIENT_ID
 #   npx wrangler secret put GITHUB_CLIENT_SECRET
 
+# ---- KV Namespace (edge caching) ----
+# Create first: npx wrangler kv namespace create CACHE
+# Then paste the id below.
+[[kv_namespaces]]
+binding = "CACHE"
+id = "2af54bd3039040969e2ffac4c745e443"
+
 # ---- Observability ----
 [observability]
 enabled = true

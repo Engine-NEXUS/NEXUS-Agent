@@ -290,11 +290,13 @@ fn check_oauth(worker_url: &str, user_id: &str) -> (ServiceStatus, ServiceStatus
 }
 
 /// Check TTS configuration.
+/// Kokoro is lazy-loaded on first speak_text call, so at boot it's "ready (lazy)"
+/// — the engine will load in ~1.7s on first TTS request.
 fn check_tts() -> ServiceStatus {
     ServiceStatus {
         name: "TTS (Kokoro 82M)".into(),
         connected: true,
-        detail: "In-process Rust ONNX engine ready (af_sky, am_adam, bf_emma)".into(),
+        detail: "Lazy-loaded — ready on first speak (~1.7s load, af_sky, am_adam, bf_emma)".into(),
         latency_ms: Some(0),
     }
 }

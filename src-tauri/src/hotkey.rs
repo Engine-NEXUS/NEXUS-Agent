@@ -40,17 +40,22 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         let handle = app.clone();
         if let Err(e) = app.global_shortcut().on_shortcut(sc, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
-                // Check if the sidebar is currently visible.
+                // Check if the sidebar or architect-sidebar is currently visible.
                 let sidebar_visible = handle
                     .get_webview_window("sidebar")
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false);
+                let architect_visible = handle
+                    .get_webview_window("architect-sidebar")
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false);
 
-                if sidebar_visible {
-                    // Sidebar is visible → close it only, do NOT wake NEXUS.
+                if sidebar_visible || architect_visible {
+                    // A sidebar is visible → close it only, do NOT wake NEXUS.
                     tracing::info!("hotkey ({}) → sidebar visible, closing sidebar only", hk);
-                    // Destroy the sidebar window to free ~250 MB of WebView2 processes.
+                    // Destroy whichever sidebar window(s) are open to free ~250 MB each.
                     let _ = crate::dyn_windows::destroy_window(&handle, "sidebar");
+                    let _ = crate::dyn_windows::destroy_window(&handle, "architect-sidebar");
                 } else {
                     // Sidebar is hidden → wake NEXUS, do NOT touch sidebar.
                     tracing::info!("hotkey ({}) → sidebar hidden, waking NEXUS", hk);
@@ -79,6 +84,28 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         } else {
             tracing::info!("Registered global hotkey handler: {hk}");
         }
+    }
+
+    // ── TEMPORARY DEBUG HOTKEY ──────────────────────────────────────
+    // Ctrl+Alt+A opens the architect sidebar directly, bypassing
+    // voice/STT entirely, so the blur backdrop can be verified without
+    // depending on wake-word/mic reliability. Remove once confirmed.
+    if let Ok(sc) = "CommandOrControl+Alt+A".parse::<Shortcut>() {
+        let handle = app.clone();
+        if let Err(e) = app.global_shortcut().on_shortcut(sc, move |app_handle, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                tracing::info!("debug hotkey (Ctrl+Alt+A) → opening architect sidebar directly");
+                let handle2 = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::architect::open_architect_window(handle2, None, None).await;
+                });
+            }
+        }) {
+            tracing::warn!("Failed to register debug hotkey Ctrl+Alt+A: {e}");
+        } else {
+            tracing::info!("Registered DEBUG hotkey: Ctrl+Alt+A (opens architect sidebar directly)");
+        }
+        let _ = handle; // silence unused warning if handle unused elsewhere
     }
 
     Ok(())

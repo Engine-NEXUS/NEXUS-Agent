@@ -23,7 +23,7 @@ mod tray;
 mod commands;
 mod command_executor;
 mod app_registry;
-mod intent_parser;
+pub mod intent_parser;
 mod nlu_client;
 mod lazy_nlu;
 mod lazy_stt;
@@ -391,51 +391,8 @@ pub fn run() {
             let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));
             let tts_state = tts::TtsState { engine: tts_engine_arc.clone() };
             app.manage(tts_state);
-            tauri::async_runtime::spawn(async move {
-                tracing::info!("tts: initializing Kokoro engine in background...");
-                let start_time = std::time::Instant::now();
-
-                // Set espeak-ng data path for kokoro-micro's espeak-rs dependency.
-                // espeak-rs bakes the build-time OUT_DIR path into the binary; on a
-                // different machine that path doesn't exist. We override it via env var
-                // to point at the bundled espeak-ng-data in the resources directory.
-                // Must be set BEFORE the first text_to_phonemes call (lazy init).
-                let mut custom_model_path: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
-                if let Ok(exe) = std::env::current_exe() {
-                    if let Some(exe_dir) = exe.parent() {
-                        let espeak_parent = exe_dir.join("resources");
-                        if espeak_parent.join("espeak-ng-data").exists() {
-                            std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
-                            tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
-                        }
-
-                        let res_model = exe_dir.join("resources").join("kokoro").join("0.onnx");
-                        let res_voices = exe_dir.join("resources").join("kokoro").join("0.bin");
-                        if res_model.exists() && res_voices.exists() {
-                            custom_model_path = Some((res_model, res_voices));
-                        }
-                    }
-                }
-
-                let engine_result = match custom_model_path {
-                    Some((m, v)) => {
-                        tracing::info!("tts: loading Kokoro models from resources: {}", m.display());
-                        kokoro_micro::TtsEngine::with_paths(
-                            m.to_str().unwrap_or("0.onnx"),
-                            v.to_str().unwrap_or("0.bin"),
-                        ).await
-                    }
-                    None => kokoro_micro::TtsEngine::new().await,
-                };
-
-                match engine_result {
-                    Ok(engine) => {
-                        *tts_engine_arc.lock().await = Some(engine);
-                        tracing::info!("tts: Kokoro engine ready in {:.2}s.", start_time.elapsed().as_secs_f32());
-                    }
-                    Err(e) => tracing::error!("tts: failed to init Kokoro: {}", e),
-                }
-            });
+            // Kokoro TTS is now lazy-loaded on first speak_text call (saves ~350 MB at idle).
+            // See tts::ensure_engine_loaded().
 
             // Wire the meeting state into the wake engine so the audio callback
             // can check `should_suppress_wake()` on every chunk.
@@ -522,6 +479,11 @@ pub fn run() {
             // Pre-index installed apps for instant launch (background thread).
             app_registry::init();
 
+            // NLU pre-warm is deferred — it will be started lazily on the first
+            // unparseable command via lazy_nlu::ensure_nlu_running(). This saves
+            // 50-100 MB RAM at idle. The deterministic parser handles most
+            // commands without NLU.
+
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
 
@@ -533,7 +495,7 @@ pub fn run() {
             // health check) for the entire duration.
             //
             // The hotkey still works immediately (registered above) — the
-            // user can press Ctrl+Shift+Space while the wake engine loads.
+            // user can press Ctrl+Space while the wake engine loads.
             let handle = app.handle().clone();
             std::thread::Builder::new()
                 .name("wake-engine".into())
@@ -554,6 +516,10 @@ pub fn run() {
                     tracing::error!("network bridge stopped: {e}");
                 }
             });
+
+            // Start STT idle monitor — kills the Python STT sidecar after 5 min
+            // of inactivity to reclaim ~340 MB RAM.
+            crate::lazy_stt::start_idle_monitor();
 
             // Listen for deep-link events (macOS emits these; Windows/Linux use single-instance).
             let handle = app.handle().clone();
@@ -710,6 +676,8 @@ pub fn run() {
             commands::show_sidebar_with_analysis,
             commands::hide_sidebar,
             commands::get_pending_sidebar_content,
+            commands::show_loading_indicator,
+            commands::hide_loading_indicator,
             commands::pause_wakeword,
             commands::resume_wakeword,
             stt::transcribe_audio,

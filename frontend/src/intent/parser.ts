@@ -27,6 +27,8 @@
 export type Intent =
   | { action: "open_app"; target: string }
   | { action: "open_url"; target: string; url: string }
+  | { action: "close_app"; target: string }
+  | { action: "whatsapp_chat"; contact: string }
   | { action: "open_architect" }
   | { action: "search"; query: string }
   | { action: "analyse_repo"; owner?: string; repo: string }
@@ -606,6 +608,28 @@ export function parseIntent(transcript: string): Intent {
     // Rust handles: running check → installed check → URL fallback.
     // This ensures native apps, Store apps, and PWAs are preferred over browser tabs.
     return { action: "open_app", target: corrected };
+  }
+
+  // --- "close <app>" / "quit <app>" / "exit <app>" ---
+  const closeMatch = text.match(
+    /^(?:close|quit|exit|kill|shut\s+down|shut)\s+(.+)$/i,
+  );
+  if (closeMatch) {
+    const target = closeMatch[1].trim();
+    if (target && !target.match(/^(nexus|the app)$/i)) {
+      return { action: "close_app", target };
+    }
+  }
+
+  // --- "open chat with <name>" / "message <name>" / "whatsapp <name>" ---
+  const whatsappMatch = text.match(
+    /^(?:open\s+(?:my\s+)?chat\s+with|chat\s+with|message|whatsapp|open\s+whatsapp\s+chat\s+with|send\s+message\s+to|send\s+whatsapp\s+to)\s+(.+?)(?:\s+on\s+whatsapp)?$/i,
+  );
+  if (whatsappMatch) {
+    const contact = whatsappMatch[1].trim();
+    if (contact) {
+      return { action: "whatsapp_chat", contact };
+    }
   }
 
   // --- "search for <query>" ---

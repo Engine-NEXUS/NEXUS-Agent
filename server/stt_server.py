@@ -198,8 +198,8 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
         initial_prompt = (
             "The user is giving voice commands to a desktop assistant. "
             "Common commands include: analyse PR 5 in servx, review PR 3 in servx, "
-            "open gmail, search youtube, close notepad. "
-            "Recognised names: servx, NEXUS, ULTRON, github, gmail."
+            "analyse PR 24 in ledger ai, open gmail, search youtube, close notepad. "
+            "Recognised names: servx, NEXUS, ULTRON, ledger ai, ledger-ai, github, gmail."
         )
         segments, _info = model.transcribe(
             audio_file,

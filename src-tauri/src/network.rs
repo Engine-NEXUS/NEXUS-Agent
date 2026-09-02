@@ -41,27 +41,35 @@ pub struct ServerEvent {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analysis: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog_state: Option<serde_json::Value>,
 }
 
 impl ServerEvent {
     fn state(s: &str) -> Self {
-        Self { kind: "state".into(), state: Some(s.into()), data: None, message: None, analysis: None }
+        Self { kind: "state".into(), state: Some(s.into()), data: None, message: None, analysis: None, dialog_state: None }
     }
     fn ack(text: &str) -> Self {
-        Self { kind: "ack".into(), state: None, data: Some(text.into()), message: None, analysis: None }
+        Self { kind: "ack".into(), state: None, data: Some(text.into()), message: None, analysis: None, dialog_state: None }
     }
     fn result(text: &str) -> Self {
-        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: None }
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: None, dialog_state: None }
     }
     fn result_with_analysis(text: &str, analysis: serde_json::Value) -> Self {
-        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: Some(analysis) }
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: Some(analysis), dialog_state: None }
+    }
+    fn result_with_dialog(text: &str, dialog_state: serde_json::Value) -> Self {
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: None, dialog_state: Some(dialog_state) }
+    }
+    fn result_with_analysis_and_dialog(text: &str, analysis: serde_json::Value, dialog_state: serde_json::Value) -> Self {
+        Self { kind: "result".into(), state: None, data: Some(text.into()), message: None, analysis: Some(analysis), dialog_state: Some(dialog_state) }
     }
     #[allow(dead_code)]
     fn done() -> Self {
-        Self { kind: "done".into(), state: None, data: None, message: None, analysis: None }
+        Self { kind: "done".into(), state: None, data: None, message: None, analysis: None, dialog_state: None }
     }
     fn error(msg: &str) -> Self {
-        Self { kind: "error".into(), state: None, data: None, message: Some(msg.into()), analysis: None }
+        Self { kind: "error".into(), state: None, data: None, message: Some(msg.into()), analysis: None, dialog_state: None }
     }
 }
 
@@ -168,6 +176,7 @@ pub fn get_session_info() -> Option<(String, String, String)> {
 pub async fn send_transcript<R: Runtime>(
     app: AppHandle<R>,
     text: String,
+    dialog_context: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let session_info = {
         let mut guard = SESSION.lock();
@@ -190,16 +199,25 @@ pub async fn send_transcript<R: Runtime>(
 
     // 3. Build the request payload
     let session_id = uuid_v4();
+    let task = if let Some(ctx) = &dialog_context {
+        serde_json::json!({
+            "type": "general",
+            "request": text,
+            "dialog_context": ctx,
+        })
+    } else {
+        serde_json::json!({
+            "type": "general",
+            "request": text,
+        })
+    };
     let payload = serde_json::json!({
         "request_id": session_id,
         "requester": {
             "id": user_id,
             "device_id": device_id,
         },
-        "task": {
-            "type": "general",
-            "request": text,
-        },
+        "task": task,
     });
 
     // 4. HTTP POST to the Worker
@@ -260,9 +278,15 @@ pub async fn send_transcript<R: Runtime>(
         .or(data["response"].as_str())
         .unwrap_or("I couldn't process that request.");
 
-    // Check if the Worker included structured analysis data
-    if let Some(analysis) = data.get("analysis") {
-        let _ = app.emit("assistant:server", ServerEvent::result_with_analysis(reply_text, analysis.clone()));
+    // Check if the Worker included structured analysis data and/or dialog state
+    let analysis = data.get("analysis");
+    let dialog_state = data.get("dialog_state");
+    if let (Some(a), Some(d)) = (analysis, dialog_state) {
+        let _ = app.emit("assistant:server", ServerEvent::result_with_analysis_and_dialog(reply_text, a.clone(), d.clone()));
+    } else if let Some(a) = analysis {
+        let _ = app.emit("assistant:server", ServerEvent::result_with_analysis(reply_text, a.clone()));
+    } else if let Some(d) = dialog_state {
+        let _ = app.emit("assistant:server", ServerEvent::result_with_dialog(reply_text, d.clone()));
     } else {
         let _ = app.emit("assistant:server", ServerEvent::result(reply_text));
     }

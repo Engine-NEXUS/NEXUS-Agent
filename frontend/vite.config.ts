@@ -15,6 +15,7 @@ import { resolve } from "path";
 //   setup     setup.html    ->  setup
 //   settings  settings.html ->  settings
 //   sidebar   sidebar.html  ->  sidebar
+//   loading   loading.html  ->  loading
 //
 // Silero VAD files (model + worklet) live in public/ so Vite serves them
 // as-is without any transformation. ONNX WASM runtime is loaded from CDN
@@ -42,6 +43,7 @@ export default defineConfig({
         settings: resolve(__dirname, "settings.html"),
         sidebar: resolve(__dirname, "sidebar.html"),
         architect: resolve(__dirname, "architect.html"),
+        loading: resolve(__dirname, "loading.html"),
       },
     },
   },

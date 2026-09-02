@@ -446,6 +446,25 @@ unsafe fn wasapi_check_inner() -> bool {
             continue;
         }
 
+        // Skip Windows system processes that have audio capture sessions
+        // but are NOT meeting apps. These can trigger false positives when
+        // the user has Settings, Search, or other system UI open.
+        const SYSTEM_PROCESS_EXCLUSIONS: &[&str] = &[
+            "SystemSettings.exe",        // Windows Settings (mic privacy page, etc.)
+            "SearchApp.exe",              // Windows Search
+            "ShellExperienceHost.exe",    // Windows Shell
+            "ApplicationFrameHost.exe",   // UWP app host
+            "RuntimeBroker.exe",          // UWP broker
+            "svchost.exe",                // Windows services
+            "dwm.exe",                    // Desktop Window Manager
+            "explorer.exe",               // Windows Explorer
+            "TextInputHost.exe",          // Text input (touch keyboard, etc.)
+            "WindowsInternal.ComposableShell.Experiences.TextInput.InputApp.exe",
+        ];
+        if SYSTEM_PROCESS_EXCLUSIONS.iter().any(|s| proc_name.eq_ignore_ascii_case(s)) {
+            continue;
+        }
+
         // Check if this session is actively capturing
         let state = match ctrl.GetState() {
             Ok(s) => s,

@@ -78,6 +78,32 @@ impl WindowConfig {
             focus: true, center: true, hidden_title: false,
         }
     }
+    /// Architect sidebar — 900px wide, transparent, undecorated, always-on-top.
+    /// Same liquid-glass styling as the response sidebar but wider, used for
+    /// the Architecture Mapper (Phase 1 layers, Phase 2 dependency graph,
+    /// hotspots, cycles, blast radius).
+    pub fn architect_sidebar() -> Self {
+        Self {
+            label: "architect-sidebar", title: "NEXUS Architecture Mapper", url: "architect.html",
+            width: 900., height: 1000., min_width: Some(900.), min_height: Some(1000.),
+            resizable: false, decorations: false, transparent: true,
+            always_on_top: true, skip_taskbar: true, shadow: false,
+            focus: false, center: false, hidden_title: true,
+        }
+    }
+    /// Loading indicator — small 80x80 transparent click-through window
+    /// at the top-right corner of the screen. Shows the loading.json Lottie
+    /// animation while NEXUS is processing a request (after "On it sir").
+    /// Destroyed when the response arrives to free ~250 MB WebView2 RAM.
+    pub fn loading_indicator() -> Self {
+        Self {
+            label: "loading-indicator", title: "NEXUS Loading", url: "loading.html",
+            width: 80., height: 80., min_width: Some(80.), min_height: Some(80.),
+            resizable: false, decorations: false, transparent: true,
+            always_on_top: true, skip_taskbar: true, shadow: false,
+            focus: false, center: false, hidden_title: true,
+        }
+    }
 }
 
 /// Get an existing window, or create it on-demand if it doesn't exist.
@@ -126,9 +152,9 @@ pub fn get_or_create_window<R: Runtime>(
     // Apply platform-specific effects
     #[cfg(target_os = "windows")]
     {
-        if config.label == "sidebar" {
+        if config.label == "sidebar" || config.label == "architect-sidebar" {
             crate::dwm_corners::round_corners(&win);
-            
+
             if let Ok(hwnd) = win.hwnd() {
                 use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WINDOW_DISPLAY_AFFINITY};
                 use windows::Win32::Foundation::HWND;
@@ -142,7 +168,9 @@ pub fn get_or_create_window<R: Runtime>(
 
     #[cfg(target_os = "macos")]
     {
-        if config.label == "sidebar" {
+        if config.label == "sidebar" || config.label == "architect-sidebar" {
+            // NOTE: loading-indicator deliberately does NOT get vibrancy —
+            // it must be fully transparent with no blur (per user spec).
             use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
             let _ = apply_vibrancy(
                 &win,

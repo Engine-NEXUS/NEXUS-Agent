@@ -26,11 +26,25 @@
  *   npx wrangler deploy
  */
 
+// ---- Module imports ----
+import { checkQuota, incrementUsage, getUsage, type UsageRow } from "./quota";
+import { cacheGet, cacheSet, contentHash, prAnalysisKey, searchKey } from "./cache";
+import { retrieve, retrieveCascade, buildSearchSynthesisPrompt, isSearchQuestion, searchWikipedia, type SearchResult } from "./research";
+import { synthesizeWithCascade, callGroq } from "./external_llm";
+import { dedupeSources, stripInjection, buildResponse, extractCaveats } from "./clean";
+import {
+  ANALYSIS_FALLBACK_CHAIN, DEEP_ANALYSIS_FALLBACK_CHAIN, SUMMARY_FALLBACK_CHAIN,
+  SEARCH_SYNTHESIS_FALLBACK_CHAIN, CHEAP_FALLBACK_MODEL,
+  selectAnalysisModel, selectSearchModel, selectSummaryModel,
+  truncateContext, FLASH_CONTEXT_LIMIT_CHARS,
+} from "./models";
+
 // ---- Types ----
 
 interface Env {
   AI: Ai;
   DB: D1Database;
+  CACHE?: KVNamespace;  // optional KV namespace for edge caching
   // Secrets (set via wrangler secret put)
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
@@ -56,31 +70,12 @@ const GOOGLE_SCOPES = [
 
 const GITHUB_SCOPES = "repo read:org workflow";
 
-// ---- Intent classification ----
-// Models confirmed available on Cloudflare Workers AI (Aug 2026).
-// Small model for fast intent classification, larger for summarization.
-// Two-tier PR analysis:
-//   Primary: GLM-4.7-Flash (cheap, 131K context, covers 95% of PRs)
-//   Deep:    GLM-5.3-Flash (1M context, for re-evaluation or large PRs)
-
+// ---- Model constants (re-exported from models.ts for backward compat) ----
 const INTENT_MODEL = "@cf/meta/llama-3.2-1b-instruct";
 const SUMMARY_MODEL = "@cf/mistral/mistral-small-3.1-24b-instruct";
 const SMALL_SUMMARY_MODEL = "@cf/meta/llama-3.2-3b-instruct";
-
-// Primary analysis model — 10x cheaper than GLM-5.2
-// $0.06/M input, $0.40/M output, 131K context, reasoning + function calling
 const ANALYSIS_MODEL = "@cf/zai-org/glm-4.7-flash";
-
-// Deep analysis model — for re-evaluation or PRs exceeding 131K context
-// $0.15/M input, $0.50/M output, 1M context, multimodal
 const DEEP_ANALYSIS_MODEL = "@cf/zai-org/glm-5.3-flash";
-
-// Repo analysis model — FREE on Workers Free plan, 131K context, reasoning
-// Used for rich repository analysis (languages, frameworks, databases, features)
-const REPO_ANALYSIS_MODEL = "@cf/zai-org/glm-4.7-flash";
-
-// Context threshold: if PR context exceeds this, use deep model (131K tokens ≈ 520K chars)
-const FLASH_CONTEXT_LIMIT_CHARS = 520000;
 
 // Track recent analyses to detect re-evaluation requests
 // Maps "user_id:repo:prNumber" → timestamp of last analysis
@@ -145,14 +140,15 @@ function keywordFallback(transcript: string): string {
   // Fast repo analyse — "analyse owner/repo", "analyze owner/repo"
   // This is DIFFERENT from the architecture mapper (which uses "analyze THIS repo")
   // and from PR analysis (which uses "analyse PR #123").
-  // Pattern: "analyse <owner>/<repo>" or "analyse <repo-name>"
+  // Pattern: "deep analyse <owner>/<repo>" or "deep analysis <owner>/<repo>"
+  // Also matches "deep scan"
   // Must NOT match: "analyse this repo", "analyse PR", "analyse branch"
-  if (/\b(deep\s+analy[sz]e|deep\s+scan)\b/.test(t)
+  if (/\b(deep\s+analy[sz]e|deep\s+analy[sz]is|deep\s+scan)\b/.test(t)
       && /\b([a-z0-9_.\-]+\/[a-z0-9_.\-]+|repo|repository)\b/.test(t)) {
     return "deep_analyse";
   }
 
-  if (/\b(analy[sz]e)\b/.test(t)
+  if (/\b(analy[sz]e|analy[sz]is)\b/.test(t)
       && !/\b(this|that|the)\s+repo\b/.test(t)
       && !/\bpr\s*#?\s*\d+\b/.test(t)
       && !/\bbranch\b/.test(t)
@@ -199,8 +195,8 @@ function keywordFallback(transcript: string): string {
     return "github_analyse";
   }
 
-  // Also catch "analyse the PR" / "review the PR" even without explicit github keyword
-  if (/\b(analy[sz]e|review|deep\s*dive|critique|evaluate|take\s+another\s+look)\b/.test(t)
+  // Also catch "analyse the PR" / "review the PR" / "analysis of the PR" even without explicit github keyword
+  if (/\b(analy[sz]e|analy[sz]is|review|deep\s*dive|critique|evaluate|take\s+another\s+look)\b/.test(t)
       && /\b(pr|pull\s*request)\b/.test(t)) {
     return "github_analyse";
   }
@@ -221,7 +217,7 @@ function keywordFallback(transcript: string): string {
 
   if (/\b(email|inbox|mail|message|gmail|send to)\b/.test(t)) return "gmail";
   if (/\b(calendar|schedule|meeting|event|appointment)\b/.test(t)) return "calendar";
-  if (/\b(search|google|look up|find|what is|who is|where is)\b/.test(t)) return "search";
+  if (/\b(search|google|look up|find|what is|who is|where is|research|look\s*up|tell me about|explain|define)\b/.test(t)) return "search";
   return "general";
 }
 
@@ -435,7 +431,7 @@ async function handleGitHub(req: NexusRequest, env: Env, token: string): Promise
       if (!repo.includes("/")) {
         // Try to resolve via user's repos
         const resolved = await resolveRepo(token, repo);
-        if (resolved) repo = resolved;
+        if (resolved.full_name) repo = resolved.full_name;
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNum}`, { headers });
@@ -457,7 +453,7 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
       let repo = extractRepo(listPrMatch) || "zync";
       if (!repo.includes("/")) {
         const resolved = await resolveRepo(token, repo);
-        if (resolved) repo = resolved;
+        if (resolved.full_name) repo = resolved.full_name;
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=open&per_page=10`, { headers });
@@ -479,7 +475,7 @@ Changes: +${pr["additions"]} -${pr["deletions"]} across ${pr["changed_files"]} f
       let repo = extractRepo(issueMatch) || "zync";
       if (!repo.includes("/")) {
         const resolved = await resolveRepo(token, repo);
-        if (resolved) repo = resolved;
+        if (resolved.full_name) repo = resolved.full_name;
       }
 
       const resp = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNum}`, { headers });
@@ -526,7 +522,8 @@ async function handleGitHubWrite(req: NexusRequest, env: Env, token: string): Pr
   } else {
     const repoMatch2 = transcript.match(/(?:in|from|on|of)\s+([a-zA-Z0-9_.\-]+)/i);
     if (repoMatch2) {
-      repo = await resolveRepo(token, repoMatch2[1]);
+      const resolved = await resolveRepo(token, repoMatch2[1]);
+      repo = resolved.full_name;
     }
   }
 
@@ -813,13 +810,13 @@ function parseBranchRequest(transcript: string): { branchName: string | null; re
  * If the name already contains "/", use it as-is.
  * Otherwise, search the user's repos for a case-insensitive match.
  */
-async function resolveRepo(token: string, repoName: string | null): Promise<string | null> {
+async function resolveRepo(token: string, repoName: string | null): Promise<{ full_name: string | null; availableRepos: string[] }> {
   if (!repoName) {
     // No repo specified — return null (caller will handle)
-    return null;
+    return { full_name: null, availableRepos: [] };
   }
   if (repoName.includes("/")) {
-    return repoName;
+    return { full_name: repoName, availableRepos: [] };
   }
 
   // Search user's repos for a case-insensitive match
@@ -828,21 +825,27 @@ async function resolveRepo(token: string, repoName: string | null): Promise<stri
       `https://api.github.com/user/repos?per_page=100&sort=updated`,
       { headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json", "User-Agent": "NEXUS-Worker" } },
     );
-    if (!resp.ok) return null;
+    if (!resp.ok) return { full_name: null, availableRepos: [] };
     const repos = await resp.json() as Array<Record<string, unknown>>;
+    // Collect available repo names for the error message
+    const availableRepos = repos
+      .map(r => (r["name"] as string) || "")
+      .filter(n => n.length > 0)
+      .slice(0, 15);  // top 15 most recently updated
+
     // Normalize: "ledger ai" → "ledger-ai" for matching (GitHub repos use hyphens)
     const target = repoName.toLowerCase().replace(/\s+/g, "-");
 
     // 1. Try exact match first
     const exact = repos.find(r => (r["name"] as string)?.toLowerCase() === target);
-    if (exact) return exact["full_name"] as string;
+    if (exact) return { full_name: exact["full_name"] as string, availableRepos };
 
     // 2. Try partial match (target is a substring of repo name, or vice versa)
     const partial = repos.find(r => {
       const name = (r["name"] as string)?.toLowerCase();
       return name && (name.includes(target) || target.includes(name));
     });
-    if (partial) return partial["full_name"] as string;
+    if (partial) return { full_name: partial["full_name"] as string, availableRepos };
 
     // 3. FUZZY MATCH: STT often mishears repo names (e.g. "servx" → "service",
     //    "weeks", "serve x"). Use Levenshtein distance + prefix matching to
@@ -880,13 +883,72 @@ async function resolveRepo(token: string, repoName: string | null): Promise<stri
 
     if (bestMatch) {
       const matched = repos.find(r => (r["name"] as string) === bestMatch);
-      if (matched) return matched["full_name"] as string;
+      if (matched) return { full_name: matched["full_name"] as string, availableRepos };
     }
 
-    return null;
+    // 4. PHONETIC MATCH: STT can mishear names so badly that Levenshtein fails
+    //    entirely (e.g. "ledgerAI" → "luxury" — no shared characters). Use a
+    //    simple phonetic encoding (first letter + consonant skeleton) to match
+    //    names that sound similar even if they're spelled completely differently.
+    const targetPhonetic = phoneticSkeleton(target);
+    let phoneticMatch: string | null = null;
+    let phoneticBestScore = Infinity;
+
+    for (const repoName_ of repoNames) {
+      const candidate = repoName_.toLowerCase().replace(/[^a-z]/g, "");
+      const candidatePhonetic = phoneticSkeleton(candidate);
+      // Compare phonetic skeletons using Levenshtein
+      const pDist = levenshtein(targetPhonetic, candidatePhonetic);
+      const pScore = pDist / Math.max(targetPhonetic.length, candidatePhonetic.length);
+      // Accept if phonetic distance < 0.5 (sounds similar)
+      if (pScore < 0.5 && pScore < phoneticBestScore) {
+        phoneticBestScore = pScore;
+        phoneticMatch = repoName_;
+      }
+    }
+
+    if (phoneticMatch) {
+      const matched = repos.find(r => (r["name"] as string) === phoneticMatch);
+      if (matched) return { full_name: matched["full_name"] as string, availableRepos };
+    }
+
+    return { full_name: null, availableRepos };
   } catch {
-    return null;
+    return { full_name: null, availableRepos: [] };
   }
+}
+
+/**
+ * Simple phonetic skeleton: extract the first letter + consonant sounds.
+ * This is a simplified Soundex-like encoding that groups similar-sounding
+ * consonants together. Used as a last-resort fallback when Levenshtein
+ * fuzzy matching fails (e.g. STT mishears "ledgerAI" as "luxury").
+ *
+ * Groups: b/p/f/v → 1, c/k/g/j/q/s/x/z → 2, d/t → 3, l → 4,
+ *         m/n → 5, r → 6, h/w/y → dropped, vowels → dropped
+ */
+function phoneticSkeleton(s: string): string {
+  if (!s) return "";
+  const map: Record<string, string> = {
+    b: "1", p: "1", f: "1", v: "1",
+    c: "2", k: "2", g: "2", j: "2", q: "2", s: "2", x: "2", z: "2",
+    d: "3", t: "3",
+    l: "4",
+    m: "5", n: "5",
+    r: "6",
+  };
+  const first = s[0];
+  let result = first;
+  let prevCode = map[first] || "";
+  for (let i = 1; i < s.length; i++) {
+    const c = s[i];
+    const code = map[c] || "";
+    if (code && code !== prevCode) {
+      result += code;
+    }
+    if (code) prevCode = code;
+  }
+  return result;
 }
 
 /**
@@ -1070,9 +1132,13 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
 
   try {
     // Resolve the repo name to a full owner/repo
-    const repo = await resolveRepo(token, repoName);
+    const repoResult = await resolveRepo(token, repoName);
+    const repo = repoResult.full_name;
     if (!repo) {
-      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse PR 24 in owner/repo".`;
+      const repoList = repoResult.availableRepos.length > 0
+        ? `\n\nYour available repositories: ${repoResult.availableRepos.join(", ")}`
+        : "";
+      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse PR 24 in owner/repo".${repoList}`;
     }
 
     let actualPrNumber = prNumber;
@@ -1130,16 +1196,36 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
       : "CODE REVIEW";
 
     // Build analysis prompt
-    const analysisPrompt = `You are a senior software engineer performing a thorough code review. Analyse this pull request and provide a detailed review.
+    const analysisPrompt = `You are a senior software engineer performing a thorough code review. Analyse this pull request and provide a structured review.
 
-Cover these areas:
-1. **Summary**: What does this PR do? (1-2 sentences)
-2. **Risk Assessment**: Are there bugs, security issues, or breaking changes?
-3. **Code Quality**: Is the code clean, well-structured, and maintainable?
-4. **Suggestions**: What would you improve before merging?
-5. **Verdict**: Is this safe to merge? (approve / request changes / block)
+Format your response EXACTLY as follows (use Markdown):
 
-Be specific — reference file names and line numbers when pointing out issues.
+## Description
+What does this PR do? (2-3 sentences explaining the changes)
+
+## How It Helps the Project
+Explain the impact and benefit of this PR to the project. (2-3 sentences)
+
+## Bugs Found
+
+| Severity | Description | Source File |
+|----------|-------------|-------------|
+| Critical | <bug description> | \`path/to/file.ext\` |
+| High | <bug description> | \`path/to/file.ext\` |
+| Medium | <bug description> | \`path/to/file.ext\` |
+| Low | <bug description> | \`path/to/file.ext\` |
+
+Rules for the bug table:
+- Severity column: use "Critical", "High", "Medium", or "Low" — sorted from most to least severe
+- Description column: concise explanation of the bug (1-2 sentences)
+- Source File column: the exact file path where the bug is found, in backticks
+- Only include bugs you are confident about — do not invent issues
+- If no bugs are found, write "No bugs found." instead of the table
+
+## Verdict
+Is this safe to merge? (Approve / Request Changes / Block) — one sentence explanation.
+
+Be specific — reference actual file names from the PR diff.
 If the PR is small or straightforward, keep the review concise.
 
 ${useDeepModel ? "Note: This is a DEEP review — be extra thorough. Check edge cases, error handling, test coverage gaps, and security implications that might be missed in a quick review." : ""}
@@ -1196,9 +1282,13 @@ async function handleBranchAnalyse(req: NexusRequest, env: Env, token: string): 
 
   try {
     // Resolve the repo name
-    const repo = await resolveRepo(token, repoName);
+    const repoResult = await resolveRepo(token, repoName);
+    const repo = repoResult.full_name;
     if (!repo) {
-      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse branch ${branchName} in owner/repo".`;
+      const repoList = repoResult.availableRepos.length > 0
+        ? `\n\nYour available repositories: ${repoResult.availableRepos.join(", ")}`
+        : "";
+      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "analyse branch ${branchName} in owner/repo".${repoList}`;
     }
 
     const headers: Record<string, string> = {
@@ -1398,14 +1488,104 @@ async function handleCalendar(req: NexusRequest, env: Env, token: string): Promi
 // ---- Search / General handlers ----
 
 async function handleSearch(req: NexusRequest, env: Env): Promise<string> {
-  return await summarize(`Answer this question concisely and accurately:\n\n${req.task.request}`, env);
+  const query = req.task.request;
+  const userId = req.requester.id;
+
+  // Check cache first
+  const cacheK = searchKey("en", query);
+  const cached = await cacheGet<string>(env, cacheK, 86400); // 24h TTL
+  if (cached) return cached;
+
+  // Multi-source cascade retrieval (Wikipedia → DDG → knowledgelib →
+  // SearchX → Tavily → Google → Serper, with Wolfram for math and
+  // Semantic Scholar for academic)
+  const retrievalResult = await retrieveCascade(query, env, 5);
+  const deduped = dedupeSources(retrievalResult.results);
+
+  if (deduped.length === 0) {
+    // No sources found — fall back to LLM with honest framing
+    const fallback = await summarize(
+      `Answer this question concisely. If you're not confident in the answer, say so:\n\n${query}`,
+      env
+    );
+    await incrementUsage(env, userId, { requests: 1, ai_neurons: 50, search_calls: 1 });
+    return fallback;
+  }
+
+  // Build synthesis prompt with sources + prompt-injection guard
+  const prompt = buildSearchSynthesisPrompt(query, { results: deduped, query, lang: "en" });
+
+  // ── Section 1: Research (Groq synthesis) ──
+  // Use Groq directly as the primary research synthesizer.
+  // Fall back to the full cascade (Gemini → Groq → CF) if Groq fails.
+  let synthesis = "";
+  let synthProvider = "fallback";
+  let synthModel = "raw";
+
+  const groqResult = await callGroq(prompt, env,
+    "You are NEXUS, a voice assistant. Answer the user's question directly and concisely using only the provided sources. Never show your reasoning, analysis steps, or thought process. Give only the final answer with citation numbers like [1], [2].",
+    500,
+  );
+  if (groqResult) {
+    synthesis = groqResult.text;
+    synthProvider = groqResult.provider;
+    synthModel = groqResult.model;
+  } else {
+    // Groq failed — fall back to the full cascade
+    const llmResult = await synthesizeWithCascade(prompt, env);
+    synthesis = llmResult?.text || "";
+    synthProvider = llmResult?.provider || "fallback";
+    synthModel = llmResult?.model || "raw";
+  }
+  console.log(`[search] synthesis via ${synthProvider} (${synthModel})`);
+
+  if (!synthesis) {
+    // All LLM providers failed — return the raw snippet from the best source
+    synthesis = `${deduped[0].snippet}\n\nSource: ${deduped[0].url}`;
+  }
+
+  // Build source list (exclude Wikipedia — it gets its own section)
+  const nonWikiSources = deduped.filter(r => r.source !== "wikipedia");
+  const sourceList = nonWikiSources.map((r, i) => `[${i + 1}] ${r.title} — ${r.url}`).join("\n");
+
+  // ── Section 2: Wikipedia (separate, verbatim extract) ──
+  // Always fetch Wikipedia directly for this section — the cascade may
+  // have skipped it (empty snippet) or returned it via SearchX/Tavily
+  // with a different `source` field. A direct fetch guarantees we get
+  // the full Wikipedia extract.
+  const wikiResult = await searchWikipedia(query, "en");
+
+  // ── Combine both sections ──
+  let fullReply = `## Research\n\n${synthesis}`;
+
+  if (sourceList) {
+    fullReply += `\n\nSources:\n${sourceList}`;
+  }
+
+  if (wikiResult && wikiResult.snippet) {
+    fullReply += `\n\n---\n\n## Wikipedia\n\n${wikiResult.snippet}\n\nRead more: ${wikiResult.url}`;
+  }
+
+  // Cache for 24 hours
+  await cacheSet(env, cacheK, fullReply, 86400);
+
+  // Track usage
+  await incrementUsage(env, userId, { requests: 1, ai_neurons: 100, search_calls: 1 });
+
+  return fullReply;
 }
 
 async function handleGeneral(req: NexusRequest, env: Env): Promise<string> {
-  return await summarize(
-    `You are NEXUS, a helpful personal assistant. Answer the user's request concisely and naturally, as if speaking aloud:\n\n${req.task.request}`,
-    env
+  const prompt = `You are NEXUS, a helpful personal assistant. Answer the user's request concisely and naturally, as if speaking aloud:\n\n${req.task.request}`;
+  const llmResult = await synthesizeWithCascade(
+    prompt,
+    env,
+    "You are NEXUS, a helpful personal assistant. Answer concisely and naturally, as if speaking aloud. Never show reasoning steps.",
+    500,
   );
+  if (llmResult) return llmResult.text;
+  // Fallback to Cloudflare summarize if cascade failed
+  return await summarize(prompt, env);
 }
 
 // ---- Request types ----
@@ -1413,7 +1593,21 @@ async function handleGeneral(req: NexusRequest, env: Env): Promise<string> {
 interface NexusRequest {
   request_id: string;
   requester: { id: string; device_id: string };
-  task: { type: string; request: string };
+  task: { type: string; request: string; dialog_context?: DialogContext };
+}
+
+/** Dialog context sent by the client on a follow-up turn. */
+interface DialogContext {
+  pending_intent: string;
+  original_request: string;
+  missing: string[];
+}
+
+/** Dialog state returned to the client when more info is needed. */
+interface DialogState {
+  expects_followup: boolean;
+  pending_intent: string;
+  context: DialogContext;
 }
 
 // ---- Main entry point ----
@@ -2044,14 +2238,45 @@ async function handleTranscript(
   const userId = req.requester?.id || "";
   if (!userId) return json({ error: "missing requester.id" }, 400);
 
+  // ─── Dialog context follow-up ──────────────────────────────────────
+  // If the client sent a dialog_context (from a previous follow-up question),
+  // combine the original request with the new input so the intent classifier
+  // sees the full command (e.g. "analyse" + "zync" → "analyse zync").
+  const dialogCtx = req.task.dialog_context;
+  if (dialogCtx && dialogCtx.pending_intent && dialogCtx.original_request) {
+    const combined = `${dialogCtx.original_request} ${req.task.request}`.trim();
+    console.log(`[dialog] follow-up: combining "${dialogCtx.original_request}" + "${req.task.request}" → "${combined}"`);
+    req.task.request = combined;
+  }
+
   // 1. Classify intent — but allow explicit intent override from the task
   // (e.g. architect sidebar sends intent="impact_narration" directly)
   const explicitIntent = (req.task as any)?.intent;
-  const intent = explicitIntent || await classifyIntent(req.task.request, env);
+  let intent = explicitIntent || await classifyIntent(req.task.request, env);
+
+  // 1b. If intent is "general" but the transcript looks like a factual question,
+  // route to "search" so it goes through Wikipedia/Wikidata retrieval
+  if (intent === "general" && isSearchQuestion(req.task.request)) {
+    intent = "search";
+  }
+
+  // 1c. Quota check — reject if user has exceeded daily limits
+  const isDeep = intent === "github_analyse" || intent === "deep_analyse";
+  const isSearch = intent === "search";
+  const quota = await checkQuota(env, userId, isDeep, isSearch);
+  if (!quota.allowed) {
+    return json({
+      request_id: req.request_id,
+      reply_text: quota.reason || "Daily limit reached.",
+      intent,
+      quota_exceeded: true,
+    });
+  }
 
   // 2. Get credentials from D1 based on intent
   let replyText: string;
   let analysisData: any = null;
+  let dialogState: DialogState | null = null;
 
   try {
     if (intent === "analyze_repo") {
@@ -2065,6 +2290,19 @@ async function handleTranscript(
         replyText = result.text;
         if (result.analysis) {
           analysisData = result.analysis;
+        }
+        // If the repo name was missing or couldn't be resolved, ask a follow-up
+        if (replyText.includes("Which repository would you like me to analyse?")
+            || (replyText.includes("couldn't find a repository matching") && !req.task.dialog_context)) {
+          dialogState = {
+            expects_followup: true,
+            pending_intent: "fast_analyse",
+            context: {
+              pending_intent: "fast_analyse",
+              original_request: req.task.request,
+              missing: ["repo"],
+            },
+          };
         }
       }
     } else if (intent === "deep_analyse") {
@@ -2080,6 +2318,19 @@ async function handleTranscript(
         replyText = "You haven't connected your GitHub account yet. Please connect it in the NEXUS setup to analyse PRs.";
       } else {
         replyText = await handleGitHubAnalyse(req, env, token);
+        // If the repo couldn't be resolved and the message asks for a repo,
+        // set dialog state for follow-up
+        if (replyText.includes("couldn't find a repository matching") && !req.task.dialog_context) {
+          dialogState = {
+            expects_followup: true,
+            pending_intent: "github_analyse",
+            context: {
+              pending_intent: "github_analyse",
+              original_request: req.task.request,
+              missing: ["repo"],
+            },
+          };
+        }
       }
     } else if (intent === "github") {
       const token = await getValidGithubToken(env, userId);
@@ -2118,10 +2369,25 @@ async function handleTranscript(
     replyText = `I ran into an error processing that request: ${(err as Error).message}`;
   }
 
+  // Track usage (non-blocking — don't fail the request if tracking fails)
+  try {
+    const neurons = isDeep ? 500 : isSearch ? 100 : 50;
+    await incrementUsage(env, userId, {
+      requests: 1,
+      ai_neurons: neurons,
+      deep_calls: isDeep ? 1 : 0,
+      search_calls: isSearch ? 1 : 0,
+    });
+  } catch { /* quota tracking is best-effort */ }
+
   if (analysisData) {
-    return json({ request_id: req.request_id, reply_text: replyText, intent, analysis: analysisData });
+    const resp: any = { request_id: req.request_id, reply_text: replyText, intent, analysis: analysisData };
+    if (dialogState) resp.dialog_state = dialogState;
+    return json(resp);
   }
-  return json({ request_id: req.request_id, reply_text: replyText, intent });
+  const resp: any = { request_id: req.request_id, reply_text: replyText, intent };
+  if (dialogState) resp.dialog_state = dialogState;
+  return json(resp);
 }
 
 // ---- Architecture Mapper Intent Handler ----
@@ -2196,13 +2462,16 @@ async function handleFastAnalyse(req: NexusRequest, env: Env, token: string): Pr
   let fullRepo = repoName;
   if (!repoName.includes("/")) {
     const resolved = await resolveRepo(token, repoName);
-    if (!resolved) {
+    if (!resolved.full_name) {
+      const repoList = resolved.availableRepos.length > 0
+        ? `\n\nYour available repositories: ${resolved.availableRepos.join(", ")}`
+        : "";
       return {
-        text: `I couldn't find a repository matching "${repoName}" in your GitHub account. Your GitHub token may have expired — please reconnect GitHub in the NEXUS setup. Alternatively, specify the full name like "analyse owner/${repoName}".`,
+        text: `I couldn't find a repository matching "${repoName}" in your GitHub account. Your GitHub token may have expired — please reconnect GitHub in the NEXUS setup. Alternatively, specify the full name like "analyse owner/${repoName}".${repoList}`,
         analysis: null,
       };
     }
-    fullRepo = resolved;
+    fullRepo = resolved.full_name;
   }
 
   try {

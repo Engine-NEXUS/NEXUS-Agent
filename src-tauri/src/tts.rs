@@ -10,6 +10,65 @@ pub struct TtsState {
     pub engine: Arc<Mutex<Option<TtsEngine>>>,
 }
 
+/// Lazily initialize the Kokoro TTS engine on first use.
+/// Called from `speak_text` when the engine is `None`.
+/// Saves ~350 MB RAM at idle by not loading Kokoro at boot.
+/// First TTS call takes ~1.7s extra (one-time model load); subsequent calls are instant.
+async fn ensure_engine_loaded(engine_arc: &Arc<Mutex<Option<TtsEngine>>>) -> Result<(), String> {
+    // Fast path: already loaded
+    if engine_arc.lock().await.is_some() {
+        return Ok(());
+    }
+
+    tracing::info!("tts: lazy-loading Kokoro engine on first speak...");
+    let start_time = std::time::Instant::now();
+
+    // Set espeak-ng data path for kokoro-micro's espeak-rs dependency.
+    let mut custom_model_path: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let espeak_parent = exe_dir.join("resources");
+            if espeak_parent.join("espeak-ng-data").exists() {
+                std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
+                tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
+            }
+
+            let res_model = exe_dir.join("resources").join("kokoro").join("0.onnx");
+            let res_voices = exe_dir.join("resources").join("kokoro").join("0.bin");
+            if res_model.exists() && res_voices.exists() {
+                custom_model_path = Some((res_model, res_voices));
+            }
+        }
+    }
+
+    let engine_result = match custom_model_path {
+        Some((m, v)) => {
+            tracing::info!("tts: loading Kokoro models from resources: {}", m.display());
+            kokoro_micro::TtsEngine::with_paths(
+                m.to_str().unwrap_or("0.onnx"),
+                v.to_str().unwrap_or("0.bin"),
+            )
+            .await
+        }
+        None => kokoro_micro::TtsEngine::new().await,
+    };
+
+    match engine_result {
+        Ok(engine) => {
+            *engine_arc.lock().await = Some(engine);
+            tracing::info!(
+                "tts: Kokoro engine lazy-loaded in {:.2}s",
+                start_time.elapsed().as_secs_f32()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("tts: failed to lazy-init Kokoro: {}", e);
+            Err(format!("TTS engine init failed: {}", e))
+        }
+    }
+}
+
 /// Global generation counter: incremented by `stop_tts` to signal the playback thread
 /// to stop the current audio immediately. Using a generation counter prevents race
 /// conditions where a new speech request clears a boolean flag before the previous
@@ -45,12 +104,10 @@ pub async fn speak_text(
     // the global generation will increment and we will abort playback.
     let my_generation = TTS_GENERATION.load(Ordering::SeqCst);
 
-    // 2. Synthesize audio on a blocking thread to avoid starving the tokio runtime.
-    // Note: kokoro-micro internally multiplies speed by 0.65 (SPEED_SCALE = 0.65), which
-    // causes normal speech (1.0 or 1.15) to sound drastically slowed down (0.65x - 0.75x speed).
-    // We compensate here by dividing the target speed by 0.65 so that the Kokoro
-    // neural network receives the true target speed (1.0 = normal, 1.15 = assistant).
+    // 2. Lazy-load Kokoro engine on first speak (saves ~350 MB at idle).
+    //    First call: ~1.7s model load. Subsequent calls: instant (fast path).
     let engine_arc = state.engine.clone();
+    ensure_engine_loaded(&engine_arc).await?;
     let voice_id = match voice.as_deref() {
         Some("default") | None => "af_sky".to_string(),
         Some(v) => v.to_string(),

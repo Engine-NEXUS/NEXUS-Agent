@@ -1,0 +1,52 @@
+/* ═══════════════════════════════════════════════════════════════
+   NEXUS Loading Indicator — Transparent Click-Through Overlay
+   Only the Lottie animation is visible. No background, no blur,
+   no border. Mouse events pass through to windows behind it.
+   ═══════════════════════════════════════════════════════════════ */
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  -webkit-user-select: none;
+  user-select: none;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#loading-app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  pointer-events: none;
+}
+
+.loading-animation-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  pointer-events: none;
+}
+
+/* Force Lottie SVG to fill its container — no border, no outline */
+.loading-animation-container svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+  border: none !important;
+  outline: none !important;
+}

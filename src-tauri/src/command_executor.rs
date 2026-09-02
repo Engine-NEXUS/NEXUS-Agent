@@ -26,6 +26,10 @@ pub enum Intent {
     OpenApp { target: String },
     #[serde(rename = "open_url")]
     OpenUrl { target: String, url: String },
+    #[serde(rename = "close_app")]
+    CloseApp { target: String },
+    #[serde(rename = "whatsapp_chat")]
+    WhatsappChat { contact: String },
     #[serde(rename = "search")]
     Search { query: String },
     // ── Type 2: Parameterized commands (acoustic trigger + STT parameter) ──
@@ -92,6 +96,8 @@ pub async fn execute_command(intent: Intent) -> Result<CommandResult, String> {
     match intent {
         Intent::OpenUrl { target, url } => open_url(&target, &url),
         Intent::OpenApp { target } => resolve_and_open_app(&target),
+        Intent::CloseApp { target } => close_app(&target),
+        Intent::WhatsappChat { contact } => whatsapp_chat(&contact),
         Intent::Search { query } => open_search(&query),
         // ── Type 2: Parameterized commands ──
         Intent::SpotifyPlay { query } => spotify_play(&query),
@@ -153,6 +159,145 @@ async fn execute_media_command(action: &str) -> Result<CommandResult, String> {
 }
 
 // ─── URL + Search ──────────────────────────────────────────────────────────
+
+/// Close an application by name. Uses taskkill on Windows, pkill on Unix.
+fn close_app(target: &str) -> Result<CommandResult, String> {
+    let app_name = app_registry::lookup(target)
+        .map(|a| a.display_name.clone())
+        .unwrap_or_else(|| target.to_string());
+
+    // Extract exe filename from the registry launch path if available
+    let exe_name = app_registry::lookup(target)
+        .and_then(|a| match &a.launch {
+            app_registry::LaunchMethod::Exe { path } => {
+                std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .map(|s| s.to_string())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| format!("{}.exe", target));
+
+    #[cfg(target_os = "windows")]
+    {
+        // Use taskkill /IM <exe> /F
+        let output = Command::new("taskkill")
+            .args(["/IM", &exe_name, "/F"])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                tracing::info!("closed app '{}' ({})", app_name, exe_name);
+                Ok(CommandResult {
+                    success: true,
+                    message: format!("Closed {}, sir.", capitalize(&app_name)),
+                })
+            }
+            _ => {
+                // Fallback: try by display name via wmic
+                let wmic_output = Command::new("wmic")
+                    .args(["process", "where", &format!("name like '%{}%'", exe_name.trim_end_matches(".exe")), "call", "terminate"])
+                    .output();
+                match wmic_output {
+                    Ok(o) if o.status.success() => {
+                        tracing::info!("closed app '{}' via wmic", app_name);
+                        Ok(CommandResult {
+                            success: true,
+                            message: format!("Closed {}, sir.", capitalize(&app_name)),
+                        })
+                    }
+                    _ => {
+                        tracing::error!("failed to close app '{}'", app_name);
+                        Ok(CommandResult {
+                            success: false,
+                            message: format!("I couldn't find {} running, sir.", capitalize(&app_name)),
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = Command::new("pkill").args(["-f", &app_name]).output();
+        match output {
+            Ok(o) if o.status.success() => {
+                tracing::info!("closed app '{}'", app_name);
+                Ok(CommandResult {
+                    success: true,
+                    message: format!("Closed {}, sir.", capitalize(&app_name)),
+                })
+            }
+            _ => Ok(CommandResult {
+                success: false,
+                message: format!("I couldn't find {} running, sir.", capitalize(&app_name)),
+            }),
+        }
+    }
+}
+
+/// Open a WhatsApp chat with a contact by name.
+/// Uses whatsapp:// deep link with phone number lookup from local contacts file.
+fn whatsapp_chat(contact: &str) -> Result<CommandResult, String> {
+    // Load contacts from nexus config dir
+    let contacts_path = dirs_next::config_dir()
+        .map(|d| d.join("com.nexus.assistant").join("contacts.json"))
+        .or_else(|| dirs_next::home_dir().map(|h| h.join(".nexus").join("contacts.json")));
+
+    // Try to find the contact in the local contacts file
+    if let Some(path) = &contacts_path {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(contacts) = serde_json::from_str::<serde_json::Value>(&content) {
+                let contact_lower = contact.to_lowercase();
+                if let Some(obj) = contacts.as_object() {
+                    // Exact match first
+                    for (name, number) in obj.iter() {
+                        if name.to_lowercase() == contact_lower {
+                            return whatsapp_launch(name, number.as_str().unwrap_or(""));
+                        }
+                    }
+                    // Fuzzy match
+                    for (name, number) in obj.iter() {
+                        if name.to_lowercase().contains(&contact_lower) || contact_lower.contains(&name.to_lowercase()) {
+                            return whatsapp_launch(name, number.as_str().unwrap_or(""));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // No contact found — open WhatsApp and let user pick
+    let _ = open::that("whatsapp://");
+    Ok(CommandResult {
+        success: true,
+        message: format!("I couldn't find {} in your contacts, sir. Opening WhatsApp so you can pick a chat.", capitalize(contact)),
+    })
+}
+
+fn whatsapp_launch(name: &str, phone: &str) -> Result<CommandResult, String> {
+    // Clean phone number (remove spaces, dashes, +)
+    let clean_phone: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let url = format!("whatsapp://send?phone={}", clean_phone);
+    match open::that(&url) {
+        Ok(()) => {
+            tracing::info!("opened whatsapp chat with '{}' ({})", name, clean_phone);
+            Ok(CommandResult {
+                success: true,
+                message: format!("Opening your chat with {}, sir.", name),
+            })
+        }
+        Err(e) => {
+            tracing::error!("failed to open whatsapp: {}", e);
+            Ok(CommandResult {
+                success: false,
+                message: "I couldn't open WhatsApp, sir. Make sure it's installed.".to_string(),
+            })
+        }
+    }
+}
 
 fn open_url(target: &str, url: &str) -> Result<CommandResult, String> {
     match open::that(url) {

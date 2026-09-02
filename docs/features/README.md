@@ -66,6 +66,23 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 | 23 | TTS Voice Research | [23-tts-voice-research-elevenlabs-vs-fish.md](23-tts-voice-research-elevenlabs-vs-fish.md) | ElevenLabs vs Fish Audio free tier analysis — Fish Audio s2.1-pro-free recommended (free API, ~100ms TTFA, voice cloning) |
 | 24 | TTS Deep Research (All Providers) | [24-tts-deep-research-all-providers.md](24-tts-deep-research-all-providers.md) | 10 TTS providers compared — Kokoro (self-host, Apache 2.0, unlimited), Fish Audio, Google Cloud, Polly, Piper, Azure, HuggingFace, Coqui, ElevenLabs, TTSMaker |
 | 25 | Rich Repo Analysis Dashboard | [25-rich-repo-analysis-dashboard.md](25-rich-repo-analysis-dashboard.md) | GLM-4.7-flash (free) + GitHub languages API + pie charts (languages/frameworks) + databases + features + top bar heading |
+| 26 | Wake-Word Training Guide | [26-wake-word-training-guide.md](26-wake-word-training-guide.md) | How to train a custom openWakeWord ONNX model for "nexus" with TTS samples + negative samples |
+| 27 | Loading Indicator Overlay | [27-loading-indicator-overlay.md](27-loading-indicator-overlay.md) | Transparent click-through Lottie animation at top-right corner, shown during Worker processing after "On it sir" |
+
+### Research System (2026-09-01)
+
+| # | Feature | File | Description |
+|---|---|---|---|
+| R01 | Research Sources | [research/01-research-sources.md](research/01-research-sources.md) | 9 ad-free research sources (Wikipedia, Wikidata, DDG, knowledgelib, SearchX, Tavily, Google CSE, Serper, Wolfram, Semantic Scholar) |
+| R02 | LLM Cascade | [research/02-llm-cascade.md](research/02-llm-cascade.md) | Gemini Flash Lite (1,500/day) → Groq Qwen 3.8 (14,400/day) → Cloudflare llama-3.2-3b (~200/day) |
+| R03 | API Keys & Secrets | [research/03-api-keys-and-secrets.md](research/03-api-keys-and-secrets.md) | Every API key, where to get it, free tier details, Cloudflare secret setup |
+| R04 | Cascade Architecture | [research/04-cascade-architecture.md](research/04-cascade-architecture.md) | Full retrieval + synthesis flow, decision trees, prompt construction |
+| R05 | Capacity Analysis | [research/05-capacity-analysis-10-users.md](research/05-capacity-analysis-10-users.md) | Whether each free tier survives 10 active users — 153x LLM headroom |
+| R06 | Latency Benchmarks | [research/06-latency-benchmarks.md](research/06-latency-benchmarks.md) | Measured end-to-end latency for every command type, from live tests |
+| R07 | Deployment Guide | [research/07-deployment-guide.md](research/07-deployment-guide.md) | Step-by-step deploy: secrets, D1 schema, KV namespace, wrangler config |
+| R08 | Testing Results | [research/08-testing-results.md](research/08-testing-results.md) | 13 live test queries with timings, provider routing, and output quality |
+| R09 | Intent Routing Fixes | [research/09-intent-routing-fixes.md](research/09-intent-routing-fixes.md) | Bug fixes: "research" keyword, isSearchQuestion, isAcademicQuery, reasoning leakage |
+| R10 | Future Improvements | [research/10-future-improvements.md](research/10-future-improvements.md) | Pending keys, streaming, parallel racing, cache versioning, scaling to 100+ users |
 
 ---
 

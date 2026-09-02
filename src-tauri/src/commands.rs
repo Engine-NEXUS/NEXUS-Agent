@@ -641,10 +641,14 @@ fn capture_backdrop<R: Runtime>(
         let monitor = win.current_monitor().ok()??;
         let scale = monitor.scale_factor();
         let screen = monitor.size();
-        let sidebar_w = 600i32;
-        let sidebar_h = 1000i32;
-        let phys_w = (sidebar_w as f64 * scale) as i32;
-        let phys_h = (sidebar_h as f64 * scale) as i32;
+        // Read the ACTUAL window size — the wide sidebar is 900px, not 600px.
+        let logical = win.inner_size().map(|s| s.to_logical::<f64>(scale)).unwrap_or(
+            tauri::LogicalSize::new(600.0, 1000.0)
+        );
+        let sidebar_w = logical.width;
+        let sidebar_h = logical.height;
+        let phys_w = (sidebar_w * scale) as i32;
+        let phys_h = (sidebar_h * scale) as i32;
         let taskbar = (48.0 * scale) as i32;
         let gap = (12.0 * scale) as i32;
         let x = screen.width as i32 - phys_w - gap;
@@ -678,14 +682,20 @@ fn show_sidebar_inner<R: Runtime>(
 ) -> Result<(), String> {
 
     // Position at bottom-right of the screen, above the taskbar.
+    // Read the ACTUAL window size (logical) instead of hardcoding 600x1000 —
+    // the wide sidebar is 900px and would otherwise be pushed off-screen.
     use tauri::PhysicalPosition;
     if let Ok(Some(monitor)) = win.current_monitor() {
         let scale = monitor.scale_factor();
         let screen = monitor.size();
-        let sidebar_w = 600i32;
-        let sidebar_h = 1000i32;
-        let phys_w = (sidebar_w as f64 * scale) as i32;
-        let phys_h = (sidebar_h as f64 * scale) as i32;
+        // Get the window's actual logical size; fall back to 600x1000 if unavailable
+        let logical = win.inner_size().map(|s| s.to_logical::<f64>(scale)).unwrap_or(
+            tauri::LogicalSize::new(600.0, 1000.0)
+        );
+        let sidebar_w = logical.width;
+        let sidebar_h = logical.height;
+        let phys_w = (sidebar_w * scale) as i32;
+        let phys_h = (sidebar_h * scale) as i32;
 
         #[cfg(target_os = "macos")]
         let taskbar = (70.0 * scale) as i32;
@@ -838,13 +848,71 @@ fn show_sidebar_inner<R: Runtime>(
 
 /// IPC: Hide the response sidebar window.
 /// Called after the server response has been spoken.
+/// Also destroys the architect-sidebar if it's open.
 #[tauri::command]
 pub fn hide_sidebar<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    // Destroy the sidebar window to free ~250 MB of WebView2 processes.
-    // It will be recreated on-demand next time show_sidebar is called.
+    // Destroy sidebar windows to free ~250 MB of WebView2 processes each.
     let _ = crate::dyn_windows::destroy_window(&app, "sidebar");
+    let _ = crate::dyn_windows::destroy_window(&app, "architect-sidebar");
+    Ok(())
+}
+
+// ─── Loading indicator window ────────────────────────────────────────
+
+/// IPC: Show the loading indicator window.
+/// Creates a small 80x80 transparent click-through window at the
+/// top-right corner of the screen. Shows the loading.json Lottie
+/// animation while NEXUS is processing a request (after "On it sir").
+/// The window is permanently click-through — mouse events pass through
+/// to whatever is behind it.
+///
+/// IMPORTANT: This command is async so it runs on a thread pool, NOT the
+/// main thread. A synchronous command would block the main thread during
+/// WebView2 window creation, which prevents Tauri events (like the Worker
+/// "result" event) from being delivered to the frontend — causing the
+/// response to never appear.
+#[tauri::command]
+pub async fn show_loading_indicator<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    // Create the window — WebviewWindowBuilder::build() dispatches to the
+    // main thread internally, so this is safe to call from a thread pool.
+    let win = crate::dyn_windows::get_or_create_window(
+        &app,
+        crate::dyn_windows::WindowConfig::loading_indicator(),
+    )?;
+
+    // Position at the top-right corner — 7px from right, 9px from top.
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let win_size = 80i32;
+        let phys_win = (win_size as f64 * scale) as i32;
+        let inset_x = (7.0 * scale) as i32;
+        let inset_y = (9.0 * scale) as i32;
+        let x = screen.width as i32 - phys_win - inset_x;
+        let y = inset_y;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+        tracing::debug!("loading-indicator positioned at ({x}, {y}) [scale={scale}]");
+    }
+
+    // Permanently click-through — mouse events pass through to windows behind.
+    win.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    tracing::info!("loading-indicator window shown");
+    Ok(())
+}
+
+/// IPC: Hide/destroy the loading indicator window.
+/// Called when the Worker response arrives. Destroys the window to
+/// free ~250 MB of WebView2 processes.
+#[tauri::command]
+pub async fn hide_loading_indicator<R: Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let _ = crate::dyn_windows::destroy_window(&app, "loading-indicator");
     Ok(())
 }
 

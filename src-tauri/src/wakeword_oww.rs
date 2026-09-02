@@ -1597,7 +1597,12 @@ fn start_audio_capture(
                     .and_then(|s| s.strip_suffix(")"))
                     .and_then(|s| s.parse::<f32>().ok())
                     .unwrap_or(0.0);
-                if rms > best_device.as_ref().map(|(_, r)| *r).unwrap_or(0.0) {
+                // Use >= (not >) so that even a device with RMS=0.0 is stored
+                // as the best device. Without this, when the Intel SST driver
+                // produces exactly 0.0 RMS, the comparison 0.0 > 0.0 fails,
+                // best_device stays None, and the try_device_silent fallback
+                // never runs — causing an infinite retry loop.
+                if best_device.is_none() || rms >= best_device.as_ref().map(|(_, r)| *r).unwrap_or(0.0) {
                     best_device = Some((device.clone(), rms));
                 }
                 tracing::warn!("audio: device '{}' failed: {}", dev_name, e);
