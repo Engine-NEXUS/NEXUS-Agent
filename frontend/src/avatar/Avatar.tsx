@@ -4,9 +4,9 @@ import { useAssistant, AssistantState } from "../store/assistant";
 
 /**
  * Lottie-driven floating orb avatar.
- * Uses loading.json for the animation.
+ * Uses wakeup.json for the animation.
  *
- * Animation segments (absolute frame numbers from loading.json):
+ * Animation segments (absolute frame numbers from wakeup.json):
  *   171-260 : loading circles (3 colored circles moving)
  *   261-316 : smile arrives (face transitions back, settles by frame 289)
  *   frame 300 : stable smile hold frame (face ctrl pos=[0,0,0], scale=[100,100,100])
@@ -33,7 +33,7 @@ export function Avatar() {
 
   // Load the Lottie JSON animation
   useEffect(() => {
-    fetch("/loading.json")
+    fetch("/wakeup.json")
       .then((res) => res.json())
       .then((data) => setAnimationData(data))
       .catch((err) => console.error("Failed to load lottie:", err));

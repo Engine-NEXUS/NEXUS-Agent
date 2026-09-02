@@ -1,6 +1,15 @@
 import { useAssistant } from "../store/assistant";
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * Frontend TTS generation counter — mirrors the Rust TTS_GENERATION counter.
+ *
+ * Every `stopTts()` increments this. Every `speak()` captures the current
+ * value and checks it before starting playback and before firing onEnd.
+ * This prevents stale Worker responses from speaking after a barge-in.
+ */
+let ttsGeneration = 0;
+
 export interface VoiceOption {
   id: string;
   name: string;
@@ -72,19 +81,36 @@ async function getSavedSettings(): Promise<any> {
   }
 }
 
-export async function playKokoro(text: string, voiceId: string, speed?: number, onEnd?: () => void): Promise<void> {
+export async function playKokoro(
+  text: string,
+  voiceId: string,
+  speed: number,
+  myGen: number,
+  onEnd?: () => void,
+): Promise<void> {
+  // Check if barge-in happened before we even start
+  if (ttsGeneration !== myGen) {
+    console.log("[TTS] skipped — barge-in before playback");
+    return;
+  }
+
   void emitTtsEvent("tts-started");
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     // speak_text handles its own thread for rodio playback
-    await invoke("speak_text", { text, voice: voiceId, speed: speed ?? 1.15 });
+    await invoke("speak_text", { text, voice: voiceId, speed });
   } catch (err) {
-    console.error("[TTS] Kokoro failed, falling back to Web Speech:", err);
-    // Fallback to Web Speech API if Kokoro/rodio fails
-    await speakWebSpeech(text, speed ?? 1.15);
+    // Only fall back to Web Speech if we haven't been barged in
+    if (ttsGeneration === myGen) {
+      console.error("[TTS] Kokoro failed, falling back to Web Speech:", err);
+      await speakWebSpeech(text, speed);
+    }
   } finally {
     void emitTtsEvent("tts-ended");
-    onEnd?.();
+    // Only fire onEnd if not barged in — prevents stale callbacks
+    if (ttsGeneration === myGen) {
+      onEnd?.();
+    }
   }
 }
 
@@ -120,7 +146,8 @@ export async function previewVoice(
 ): Promise<void> {
   stopTts();
   if (voice.provider === "kokoro") {
-    return playKokoro(voice.sampleText, voice.id, speed ?? 1.15, onEnd);
+    // After stopTts, capture the new generation (stopTts incremented it)
+    return playKokoro(voice.sampleText, voice.id, speed ?? 1.15, ttsGeneration, onEnd);
   }
 }
 
@@ -132,14 +159,27 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return;
   }
 
+  // Capture generation before any async awaits — if stopTts fires during
+  // the settings load, we'll detect it and skip playback.
+  const myGen = ttsGeneration;
+
   const settings = await getSavedSettings();
+  // Check if barge-in happened during the async getSavedSettings call
+  if (ttsGeneration !== myGen) {
+    console.log("[TTS] skipped — barge-in during setup");
+    return;
+  }
+
   const voiceId = settings?.ttsVoice || "af_sky";
   const speed = settings?.speechRate ?? 1.15;
-  
-  return playKokoro(text, voiceId, speed, onEnd);
+
+  return playKokoro(text, voiceId, speed, myGen, onEnd);
 }
 
 export function stopTts(): void {
+  // Increment frontend generation — any in-flight speak() calls will
+  // see the mismatch and skip playback / onEnd.
+  ttsGeneration++;
   // Tell Rust to stop the rodio playback immediately (barge-in).
   // Uses static import for instant invocation — no dynamic import delay.
   void invoke("stop_tts").catch((e: unknown) => console.warn("[TTS] stop_tts failed:", e));

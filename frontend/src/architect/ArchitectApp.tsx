@@ -154,15 +154,38 @@ export function ArchitectApp() {
     const unlisteners: (() => void)[] = [];
 
     // Fetch pending repo on mount — handles the fresh-window case.
-    invoke<{ owner: string; repo: string } | null>("get_pending_architect_repo")
+    // Also fetches the screenshot backdrop for the liquid-glass effect.
+    // NOTE: `pending` is now ALWAYS returned (non-null) once the window has
+    // been opened via open_architect_window, even when no active GitHub
+    // repo was auto-detected — this ensures the backdrop always reaches the
+    // frontend. `owner`/`repo` may independently be null in that case, so
+    // they're checked separately from the backdrop.
+    invoke<{ owner: string | null; repo: string | null; backdrop?: string | null } | null>("get_pending_architect_repo")
       .then((pending) => {
-        if (pending) {
+        if (!pending) return;
+        // Set the backdrop image for the liquid-glass card
+        if (pending.backdrop) {
+          document.documentElement.style.setProperty(
+            "--sidebar-backdrop-image",
+            `url(${pending.backdrop})`
+          );
+        }
+        // Only auto-start analysis if an active repo was actually detected
+        if (pending.owner && pending.repo) {
           setRepo(pending.owner, pending.repo);
           setInputRepo(`${pending.owner}/${pending.repo}`);
           void triggerAnalysis(pending.owner, pending.repo);
         }
       })
       .catch((e) => console.warn("[architect] get_pending_architect_repo failed:", e));
+
+    // Listen for backdrop updates (live blur loop + window reuse)
+    listen<string>("sidebar:backdrop", (event) => {
+      document.documentElement.style.setProperty(
+        "--sidebar-backdrop-image",
+        `url(${event.payload})`
+      );
+    }).then((u) => unlisteners.push(u));
 
     listen<{ owner: string; repo: string }>("architect:set-repo", (event) => {
       setRepo(event.payload.owner, event.payload.repo);

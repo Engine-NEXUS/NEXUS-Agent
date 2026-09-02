@@ -1,5 +1,76 @@
 # NEXUS — Project Notes
 
+## Multi-Worker Optimization — Cloud-First Architecture (2026-09-01)
+
+**Single Worker, internally modularized.** No separate Workers — one deploy,
+no cross-Worker latency. The monolithic `index.ts` is split into modules:
+
+- `src/quota.ts` — per-user daily usage tracking + cost control (D1 `usage_log`)
+- `src/cache.ts` — edge caching (KV namespace, D1 fallback)
+- `src/models.ts` — model constants + fallback chains + truncation
+- `src/research.ts` — ad-free search (Wikipedia REST + Wikidata, no API key)
+- `src/clean.ts` — result cleaning, dedup, prompt-injection guard
+
+**New D1 tables:** `usage_log` (per-user daily quotas), `cache_entries`
+(D1 cache fallback when KV not bound).
+
+**New KV namespace:** `CACHE` (edge cache for search results, PR analysis,
+repo metadata). Create with `npx wrangler kv namespace create CACHE` and
+paste the ID in `wrangler.toml`.
+
+**Quota limits (per user/day):** 500 requests, 3000 neurons, 10 deep
+analyses, 100 searches. Global neuron budget: warn at 8000, hard reject
+deep at 9500.
+
+**Search routing:** `isSearchQuestion()` detects factual questions
+("what is X", "who is Y") and routes them to Wikipedia/Wikidata retrieval
+with citations, instead of blind LLM answering.
+
+**Offline local commands (new):**
+- `close <app>` — taskkill on Windows, pkill on Unix
+- `open chat with <name>` / `message <name>` / `chat with <name>` —
+  WhatsApp deep links with local contacts file lookup at
+  `%APPDATA%/com.nexus.assistant/contacts.json`
+- Both work offline, zero internet, zero RAM overhead
+
+**NLU pre-warm removed.** NLU server now only starts on first
+unparseable command (lazy). Saves 50-100 MB at idle.
+
+**STT idle monitor wired but disabled.** `lazy_stt::start_idle_monitor()`
+is called from `lib.rs` but `STT_KEEP_ALIVE=true` means STT is never killed.
+The idle cost is only ~128 MB (model loaded, not transcribing) and killing
+it adds 10-15s delay on the next command (cold model load). The monitor
+thread runs for future use but is a no-op. Peak STT RAM during active
+transcription is ~340 MB.
+
+**Lazy Kokoro TTS (2026-09-01).** Kokoro is no longer loaded at boot.
+`speak_text` calls `ensure_engine_loaded()` on first use — loads in ~1.7s
+(one-time), then stays loaded. Saves ~350 MB at idle. See `tts.rs`.
+
+**WebView2 low-memory mode (2026-09-01).** The orb window sets
+`MemoryUsageTargetLevel::Low` via `ICoreWebView2_23::SetMemoryUsageTargetLevel`
+at creation time. WebView2 drops cached data and swaps to disk. Saves ~40 MB.
+See `mic_permissions.rs::set_low_memory_mode()`.
+
+**Idle RAM (2026-09-01): ~104 MB** (before first transcription) or
+**~232 MB** (after first transcription, STT model loaded).
+
+| Component | Before first transcription | After first transcription |
+|---|---|---|
+| nexus.exe (Rust + wake word, NO Kokoro) | 47.8 MB | 47.8 MB |
+| WebView2 (orb, low-mem mode) | 35.8 MB | 35.8 MB |
+| STT Python (model not yet loaded) | 20.6 MB | 128.6 MB |
+| **TOTAL idle** | **104.2 MB** | **232.2 MB** |
+
+After first TTS speak, Kokoro loads and stays loaded: **+350 MB → ~582 MB**.
+This is the active state, not idle.
+
+**Worker test suite:** `npm test` in `server/worker/` runs 23 vitest
+tests covering quota, cache keys, search question detection, and dedup.
+
+**Rust test suite:** `cargo test --test offline_commands` runs 10 tests
+for close_app and whatsapp_chat parsing.
+
 ## STT Architecture — faster-whisper Python Sidecar (2026-08-31)
 
 **STT uses faster-whisper tiny.en via a lazy-started Python sidecar.**

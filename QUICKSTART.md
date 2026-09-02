@@ -79,6 +79,6 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 
 | Issue | Solution |
 | :--- | :--- |
-| **Microphone is silent or blocked** | Press **`Ctrl+Shift+Space`** to trigger listening directly. Ensure Windows *Settings → Privacy → Microphone* allows desktop apps. |
+| **Microphone is silent or blocked** | Press **`Ctrl+Space`** to trigger listening directly. Ensure Windows *Settings → Privacy → Microphone* allows desktop apps. |
 | **Want to change voice settings** | Right-click the **NEXUS tray icon** (near Windows clock) → **Settings** → **Audio & Voice**. |
 | **Need diagnostics report** | Right-click the tray icon → **Diagnostics** (checks STT, TTS, Worker, and OAuth connections). |

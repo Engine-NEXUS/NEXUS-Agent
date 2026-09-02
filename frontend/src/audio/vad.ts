@@ -43,10 +43,11 @@ const ORT_CDN_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION
 const POSITIVE_SPEECH_THRESHOLD = 0.5;  // Above this = speech detected
 const NEGATIVE_SPEECH_THRESHOLD = 0.35; // Below this = silence detected
 // Grace period before declaring speech end. This is pure end-to-end latency:
-// nothing happens until it expires. 1500ms was far longer than a natural
-// inter-word gap (<200ms) and dominated the ~2.4s command latency.
-// 500ms still comfortably absorbs normal pauses inside a short command.
-const REDEMPTION_MS = 500;
+// nothing happens until it expires. 2000ms absorbs natural pauses between
+// words in longer commands (e.g. "deep analysis for the PR 24 in nexus-agent")
+// without cutting off mid-sentence. The previous 500ms was too aggressive —
+// it fired onSpeechEnd during inter-word gaps, sending incomplete transcripts.
+const REDEMPTION_MS = 2000;
 const PRE_SPEECH_PAD_MS = 500;          // Audio to prepend before speech start
 const MIN_SPEECH_MS = 500;              // Discard segments shorter than this
 
@@ -182,7 +183,7 @@ function takeSpeculation(): Promise<string> | null {
 
 // ---- RMS fallback state (used only if Silero fails to load) ----
 const VAD_FALLBACK_RMS = 0.015;
-const SILENCE_MS = 1500;
+const SILENCE_MS = 2000;
 const MAX_UTTERANCE_MS = 12000;
 const MIN_LISTEN_MS = 2000;
 let rmsCtx: AudioContext | null = null;

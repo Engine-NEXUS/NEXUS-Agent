@@ -24,13 +24,12 @@ interface RepoAnalysis {
 /**
  * Rich repository analysis dashboard.
  * Renders in the NEXUS sidebar when the user says "analyse owner/repo".
- * Shows pie charts for languages and frameworks, database info,
- * features list, and architecture summary.
+ * Minimalist design without colorful charts or emojis in headings.
  */
 export function AnalysisDashboard({ data }: { data: RepoAnalysis }) {
   return (
     <div className="analysis-dashboard">
-      {/* ── Overview Card ─────────────────────────────────── */}
+      {/* ── Overview Card ── */}
       <div className="analysis-card analysis-overview">
         <div className="analysis-card-icon">📦</div>
         <div className="analysis-overview-stats">
@@ -44,52 +43,52 @@ export function AnalysisDashboard({ data }: { data: RepoAnalysis }) {
         </div>
       </div>
 
-      {/* ── Description ───────────────────────────────────── */}
+      {/* ── Description ── */}
       {data.description && data.description !== "No description provided." && (
         <div className="analysis-card">
-          <div className="analysis-card-title">📝 Description</div>
+          <div className="analysis-card-title">DESCRIPTION</div>
           <p className="analysis-description">{data.description}</p>
         </div>
       )}
 
-      {/* ── Languages (half donut chart) ─────────────────── */}
+      {/* ── Languages ── */}
       {data.languages && data.languages.length > 0 && (
         <div className="analysis-card">
-          <div className="analysis-card-title">🏗️ Languages</div>
+          <div className="analysis-card-title">LANGUAGES</div>
           <LanguageChart languages={data.languages} />
         </div>
       )}
 
-      {/* ── Frameworks (donut chart) ─────────────────────── */}
+      {/* ── Frameworks ── */}
       {data.frameworks && data.frameworks.length > 0 && (
         <div className="analysis-card">
-          <div className="analysis-card-title">⚡ Frameworks & Tools</div>
+          <div className="analysis-card-title">FRAMEWORKS & TOOLS</div>
           <FrameworkChart frameworks={data.frameworks} />
         </div>
       )}
 
-      {/* ── Databases ─────────────────────────────────────── */}
+      {/* ── Databases ── */}
       {data.databases && data.databases.length > 0 && (
         <div className="analysis-card">
-          <div className="analysis-card-title">🗄️ Databases</div>
-          <div className="analysis-databases">
+          <div className="analysis-card-title">DATABASES</div>
+          <div className="minimal-list">
             {data.databases.map((db) => (
-              <div key={db.name} className="analysis-database-item">
-                <span className="analysis-database-name">{db.name}</span>
-                <span className="analysis-database-evidence">{db.evidence}</span>
+              <div key={db.name} className="minimal-list-item">
+                <span className="minimal-list-name">{db.name}</span>
+                <span className="minimal-list-sub">{db.evidence}</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* ── Features ──────────────────────────────────────── */}
+      {/* ── Features ── */}
       {data.features && data.features.length > 0 && (
         <div className="analysis-card">
-          <div className="analysis-card-title">✨ Features</div>
-          <ul className="analysis-features">
+          <div className="analysis-card-title">FEATURES</div>
+          <ul className="analysis-features-minimal">
             {data.features.map((feature, i) => (
-              <li key={i} className="analysis-feature-item">
+              <li key={i} className="analysis-feature-item-minimal">
                 {feature}
               </li>
             ))}
@@ -97,29 +96,29 @@ export function AnalysisDashboard({ data }: { data: RepoAnalysis }) {
         </div>
       )}
 
-      {/* ── Architecture ──────────────────────────────────── */}
+      {/* ── Architecture ── */}
       {data.architecture && (
         <div className="analysis-card">
-          <div className="analysis-card-title">🏗️ Architecture</div>
+          <div className="analysis-card-title">ARCHITECTURE</div>
           <p className="analysis-architecture">{data.architecture}</p>
         </div>
       )}
 
-      {/* ── Activity / Quality ────────────────────────────── */}
+      {/* ── Activity / Quality ── */}
       <div className="analysis-card analysis-activity">
-        <div className="analysis-card-title">📊 Quality & CI</div>
-        <div className="analysis-activity-grid">
-          <div className={`analysis-activity-item ${data.tests ? "yes" : "no"}`}>
-            <span className="analysis-activity-icon">{data.tests ? "✅" : "❌"}</span>
-            <span className="analysis-activity-label">Tests</span>
+        <div className="analysis-card-title">QUALITY & CI</div>
+        <div className="minimal-list">
+          <div className="minimal-list-item">
+            <span className="minimal-list-name">Tests</span>
+            <span className="minimal-list-value">{data.tests ? "Yes" : "No"}</span>
           </div>
-          <div className={`analysis-activity-item ${data.ci !== "none" ? "yes" : "no"}`}>
-            <span className="analysis-activity-icon">{data.ci !== "none" ? "✅" : "❌"}</span>
-            <span className="analysis-activity-label">{data.ci !== "none" ? data.ci : "No CI"}</span>
+          <div className="minimal-list-item">
+            <span className="minimal-list-name">CI</span>
+            <span className="minimal-list-value">{data.ci !== "none" ? data.ci : "None"}</span>
           </div>
-          <div className={`analysis-activity-item ${data.docker ? "yes" : "no"}`}>
-            <span className="analysis-activity-icon">{data.docker ? "✅" : "❌"}</span>
-            <span className="analysis-activity-label">Docker</span>
+          <div className="minimal-list-item">
+            <span className="minimal-list-name">Docker</span>
+            <span className="minimal-list-value">{data.docker ? "Yes" : "No"}</span>
           </div>
         </div>
       </div>

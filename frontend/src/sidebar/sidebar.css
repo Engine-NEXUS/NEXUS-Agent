@@ -692,6 +692,10 @@ html, body, #root {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  /* Natural horizontal scroll for wide tables (e.g. 3-column bug tables) */
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
 }
 
 .nexus-table-wrapper::-webkit-scrollbar {
@@ -704,6 +708,7 @@ html, body, #root {
 
 .nexus-table {
   width: 100%;
+  min-width: 500px; /* Prevents columns from collapsing too narrow; enables horizontal scroll */
   border-collapse: collapse;
   font-size: var(--sidebar-base-font);
   text-align: left;
@@ -1291,4 +1296,46 @@ html, body, #root {
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+}
+/* ── Minimalist Analysis Dashboard ── */
+.minimal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.minimal-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--apple-text-primary, #e8e8e8);
+}
+.minimal-list-name {
+  font-weight: 500;
+}
+.minimal-list-value {
+  color: var(--apple-text-secondary, #a1a1aa);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+.minimal-list-sub {
+  color: var(--apple-text-secondary, #a1a1aa);
+  font-size: 11px;
+}
+.analysis-features-minimal {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analysis-feature-item-minimal {
+  font-size: 13px;
+  color: var(--apple-text-primary, #e8e8e8);
+}
+.analysis-feature-item-minimal::before {
+  content: "•";
+  color: var(--apple-text-secondary, #a1a1aa);
+  margin-right: 8px;
 }

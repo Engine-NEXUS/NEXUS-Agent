@@ -18,7 +18,8 @@ static STT_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static STT_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
-const STT_IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+const STT_IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes (unused — STT kept alive permanently)
+const STT_KEEP_ALIVE: bool = true; // Never kill STT — 128 MB idle cost is worth 0.5s response
 const STT_PORT: u16 = 39217;
 
 /// Get the STT server script path.
@@ -250,8 +251,15 @@ pub fn mark_stt_request() {
 
 /// Check if the STT server has been idle for too long and kill it.
 /// Called periodically from a background thread.
-#[allow(dead_code)]
+/// NOTE: STT is now kept alive permanently (STT_KEEP_ALIVE=true) because
+/// the idle cost is only ~128 MB and killing it adds 10-15s delay on the
+/// next command (cold model load). The monitor thread still runs for
+/// future use but is a no-op.
 pub fn check_stt_idle() {
+    if STT_KEEP_ALIVE {
+        return; // Never kill — keep STT always ready for zero delay
+    }
+
     if !STT_RUNNING.load(Ordering::Relaxed) {
         return;
     }
@@ -277,7 +285,6 @@ pub fn check_stt_idle() {
 }
 
 /// Start a background thread that periodically checks if STT should be killed.
-#[allow(dead_code)]
 pub fn start_idle_monitor() {
     std::thread::spawn(move || {
         loop {

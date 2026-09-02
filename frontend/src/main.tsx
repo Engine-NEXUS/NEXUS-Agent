@@ -21,6 +21,23 @@ import { preloadSileroVad, preloadMicVad, startVad, stopVad, setSpeechStartCallb
 import { captureUntilSilence, abortCapture } from "./audio/recorder";
 import { stopTts } from "./audio/ttsPlayer";
 import { useAssistant } from "./store/assistant";
+import { setBargedIn, clearBargedIn, clearDialogContext } from "./net/wsBridge";
+import { hideLoadingIndicator } from "./loading/loadingController";
+
+/** Set to true when the wake is triggered automatically by a follow-up
+ * question (not by the user pressing Ctrl+Space). When true, startListening
+ * does NOT set the bargedIn flag — the follow-up response should be heard. */
+let autoReopenFromFollowup = false;
+
+/** Called by wsBridge when a follow-up question finishes speaking and
+ * the mic should auto-reopen without requiring the user to press Ctrl+Space. */
+export function triggerFollowupListen(): void {
+  autoReopenFromFollowup = true;
+  const w = window as any;
+  if (w.__NEXUS_WAKE__) {
+    w.__NEXUS_WAKE__();
+  }
+}
 
 let micStream: MediaStream | null = null;
 
@@ -47,6 +64,8 @@ function startNoSpeechWatchdog(): void {
     stopVad();
     void abortCapture().catch(() => {});
     setSpeechStartCallback(null);
+    // Clear any pending dialog context — the follow-up is abandoned
+    clearDialogContext();
     useAssistant.getState().setVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
   }, NO_SPEECH_TIMEOUT_MS);
@@ -129,9 +148,21 @@ async function startListening() {
   // in progress and can't be cancelled. The dedup/queue logic in
   // recorder.ts handles the new command instead.
   const wasSpeaking = s.state === "speaking";
+  const isAutoReopen = autoReopenFromFollowup;
+  autoReopenFromFollowup = false; // consume the flag
   const { isLongRunningInFlight } = await import("./net/wsBridge");
   const longRunningActive = isLongRunningInFlight();
   if (wasSpeaking || s.state === "thinking") {
+    // If this is an auto-reopen from a follow-up question, do NOT set bargedIn —
+    // the follow-up response should be heard, not discarded.
+    if (!isAutoReopen) {
+      setBargedIn();
+      // User barge-in: clear any pending dialog context — they're starting fresh
+      clearDialogContext();
+    } else {
+      console.log("[NEXUS] auto-reopen from follow-up — NOT setting bargedIn");
+      clearBargedIn();
+    }
     if (longRunningActive) {
       console.log("[NEXUS] barge-in: long-running query in flight — NOT closing session (dedup/queue will handle)");
       stopTts();
@@ -143,14 +174,26 @@ async function startListening() {
       stopVad();
       await abortCapture().catch(() => {});
     }
-    if (wasSpeaking) {
+    if (wasSpeaking && !isAutoReopen) {
       // Dual-Phase Post-TTS Mute Gate: 300ms delay to allow DAC audio buffers and room acoustics to clear
       await new Promise((r) => setTimeout(r, 300));
     }
+  } else {
+    // Fresh wake (no barge-in) — clear the flag for the new turn
+    clearBargedIn();
   }
+
+  // Hide the loading indicator — the orb is showing again, so the
+  // loading animation at the top-right corner is no longer needed.
+  // This covers the barge-in case where the user presses Ctrl+Space
+  // while a long-running query is in flight and the loading indicator
+  // is still visible.
+  void hideLoadingIndicator();
 
   s.setVisible(true);
   s.setState("listening");
+  // Clear barge-in flag now that we're starting a fresh listening session
+  clearBargedIn();
 
   // ─── Approach A: Hot Mic ───────────────────────────────────────────
   // If the mic stream is already warm (acquired at startup), reuse it.
@@ -410,6 +453,8 @@ void setupCommandDetectionListener();
   if (micStream) {
     micStream.getTracks().forEach((t) => (t.enabled = false));
   }
+  // Hide the loading indicator if it was showing.
+  void hideLoadingIndicator();
   useAssistant.getState().reset();
   useAssistant.getState().setVisible(false);
 };

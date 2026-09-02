@@ -352,6 +352,8 @@ export function ArchitectureMap() {
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.15}
         maxZoom={2.2}
+        colorMode="dark"
+        style={{ background: "transparent" }}
       >
         <Background color="rgba(255, 255, 255, 0.05)" gap={20} size={1} />
         <Controls className="architect-flow-controls" />

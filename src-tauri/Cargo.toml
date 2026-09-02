@@ -50,10 +50,6 @@ sherpa-onnx = { version = "1.13.4", optional = true }
 # Used for openWakeWord KWS pipeline: melspectrogram → embedding → classifier
 tract-onnx = "0.23"
 circular-buffer = "1.2"
-# Opus encoder for streaming mic to server — OPTIONAL (requires CMake on the build machine).
-# The recorder streams raw 16 kHz PCM by default; enable `opus-encode` to compress upstream.
-opus = { version = "0.3", optional = true }
-
 # HTTP client for diagnostics
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -131,11 +127,9 @@ default = ["wakeword-oww"]
 # It is intentionally NOT in `default` — `tauri dev` needs it OFF so the Vite
 # dev server and hot reload keep working.
 custom-protocol = ["tauri/custom-protocol"]
-wakeword-porcupine = []          # legacy: bundle libpv_porcupine + .ppn at runtime
 wakeword-sherpa = ["dep:sherpa-onnx"]  # sherpa-onnx VAD + ASR + speaker verification (old)
 wakeword-oww = []                # openWakeWord via tract-onnx (new, default)
 mock-wake = []                   # CI: skip native lib, emit fake wake on hotkey only
-opus-encode = ["dep:opus"]       # enable Opus upstream compression (needs CMake)
 
 [profile.dev]
 opt-level = 0

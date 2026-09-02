@@ -47,7 +47,8 @@ pub fn init<R: Runtime>(_app: &tauri::App<R>) {
             let res = win.with_webview(move |webview| {
                 #[cfg(target_os = "windows")]
                 unsafe {
-                    register_media_permission_handler(&webview, &label_owned)
+                    register_media_permission_handler(&webview, &label_owned);
+                    set_low_memory_mode(&webview, &label_owned);
                 }
                 #[cfg(not(target_os = "windows"))]
                 let _ = (webview, &label_owned);
@@ -123,5 +124,42 @@ unsafe fn register_media_permission_handler(
     match result {
         Ok(()) => tracing::info!("permissions: mic/camera auto-allow registered on '{label}'"),
         Err(e) => tracing::warn!("permissions: add_PermissionRequested failed on '{label}': {e}"),
+    }
+}
+
+/// Set WebView2 to low-memory mode so it drops cached data and swaps to disk.
+/// Saves ~40 MB on the orb window when idle. The window is still responsive —
+/// WebView2 ramps back up automatically when the user interacts.
+#[cfg(target_os = "windows")]
+unsafe fn set_low_memory_mode(
+    webview: &tauri::webview::PlatformWebview,
+    label: &str,
+) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_23, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    };
+    use windows_core::Interface;
+
+    let controller = webview.controller();
+    let core = match controller.CoreWebView2() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("webview-mem: CoreWebView2 unavailable on '{label}': {e}");
+            return;
+        }
+    };
+
+    // Cast to ICoreWebView2_23 to access SetMemoryUsageTargetLevel
+    let core23: ICoreWebView2_23 = match core.cast() {
+        Ok(c) => c,
+        Err(_) => {
+            tracing::debug!("webview-mem: ICoreWebView2_23 not available on '{label}' (older runtime)");
+            return;
+        }
+    };
+
+    match core23.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW) {
+        Ok(()) => tracing::info!("webview-mem: low-memory mode set on '{label}'"),
+        Err(e) => tracing::debug!("webview-mem: SetMemoryUsageTargetLevel failed on '{label}': {e}"),
     }
 }

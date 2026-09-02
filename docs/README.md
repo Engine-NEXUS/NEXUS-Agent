@@ -219,7 +219,7 @@ The wake word system went through a major architectural change. These 20 documen
 | 3-stage KWS pipeline | WORKING | mel → embedding → classifier |
 | Audio capture (cpal) | WORKING | 48kHz stereo → 16kHz mono |
 | Rust integration (tract-onnx) | WORKING | Pure Rust ONNX inference |
-| Hotkey wake (Ctrl+Shift+Space) | WORKING | Preserved from before |
+| Hotkey wake (Ctrl+Space) | WORKING | Preserved from before |
 | Spoken wake ("nexus") | WORKING | 7 detections in ~3 min |
 | Speaker verification | PENDING | Ring buffer + verification not yet implemented |
 | Tier 3: Command classifiers (Rust) | IMPLEMENTED | Multi-classifier support in wakeword_oww.rs |

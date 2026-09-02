@@ -1,11 +1,12 @@
 import { useAssistant, transition } from "../store/assistant";
 import { speak, stopTts } from "../audio/ttsPlayer";
+import { hideLoadingIndicator } from "../loading/loadingController";
 
 /**
  * Sidebar event helpers — emit events to the sidebar window.
  * The sidebar only shows for server responses (n8n/Ollama/Hermes),
  * NOT for local commands. It slides in WITH the response already rendered
- * (no "Thinking…" state) and stays until dismissed via Ctrl+Shift+Space.
+ * (no "Thinking…" state) and stays until dismissed via Ctrl+Space.
  */
 async function emitSidebarShow(query: string, text: string): Promise<void> {
   if (!isTauri()) return;
@@ -160,6 +161,26 @@ let longRunningResultCb: LongRunningResultCallback | null = null;
  *  suppressed to avoid double-speak. */
 let localAckGiven = false;
 
+/** Track whether we've already spoken "Here is the analysis, sir" for the
+ *  current result. Prevents duplicate announcements if the result event
+ *  fires more than once. Reset when a new turn starts. */
+let analysisAnnounced = false;
+
+/** Barge-in flag: set when the user presses Ctrl+Space while NEXUS is
+ *  speaking or thinking. When true, any Worker response that arrives
+ *  is discarded instead of being spoken. Cleared when a new turn starts. */
+let bargedIn = false;
+
+/** Called by main.tsx when the user barges in (Ctrl+Space during TTS). */
+export function setBargedIn(): void {
+  bargedIn = true;
+}
+
+/** Called by main.tsx when a new turn starts (recording begins). */
+export function clearBargedIn(): void {
+  bargedIn = false;
+}
+
 /** Called by recorder.ts when it gives a local "On it sir" ack via
  *  ackLongRunningQuery(). The wsBridge ack handler checks this flag. */
 export function setLocalAckGiven(): void {
@@ -167,9 +188,10 @@ export function setLocalAckGiven(): void {
 }
 
 /** Reset the local ack flag — called when a new query starts or when
- *  the result arrives. */
+ *  the result arrives. Also resets the analysis-announced guard. */
 function resetLocalAck(): void {
   localAckGiven = false;
+  analysisAnnounced = false;
 }
 
 /** Called by recorder.ts before sending a long-running query. */
@@ -187,6 +209,7 @@ export function setLongRunningInFlight(transcript: string, onResult: LongRunning
     longRunningInFlight = false;
     lastSentTranscript = "";
     longRunningResultCb = null;
+    void hideLoadingIndicator();
   }, 60_000);
 }
 
@@ -311,6 +334,29 @@ export function hasSession(): boolean {
   return sessionOpen;
 }
 
+/** Pending dialog context from a previous follow-up question.
+ * When non-null, the next sendTranscript call will include this context
+ * so the Worker can combine it with the new input. */
+let pendingDialogContext: { pending_intent: string; original_request: string; missing: string[] } | null = null;
+
+/** Returns the pending dialog context (if any) and clears it.
+ * Called by recorder.ts before sending a follow-up transcript. */
+export function consumeDialogContext(): { pending_intent: string; original_request: string; missing: string[] } | null {
+  const ctx = pendingDialogContext;
+  pendingDialogContext = null;
+  return ctx;
+}
+
+/** Returns true if there is a pending dialog context (follow-up expected). */
+export function hasDialogContext(): boolean {
+  return pendingDialogContext !== null;
+}
+
+/** Clears the pending dialog context (e.g. on timeout or cancel). */
+export function clearDialogContext(): void {
+  pendingDialogContext = null;
+}
+
 /** Send the transcribed text to the server for processing.
  * Throws if no session is open so the caller can handle the local-only case.
  * Does NOT show the sidebar — the sidebar appears only when the response
@@ -321,7 +367,15 @@ export async function sendTranscript(text: string): Promise<void> {
     throw new Error("no backend session — local-only mode");
   }
   pendingQuery = text;
-  await tauriInvoke("send_transcript", { text });
+  // If there's a pending dialog context, pass it to the Worker so it can
+  // combine the original request with this follow-up input.
+  const ctx = consumeDialogContext();
+  if (ctx) {
+    console.log("[NEXUS] sendTranscript: including dialog_context", ctx);
+    await tauriInvoke("send_transcript", { text, dialogContext: ctx });
+  } else {
+    await tauriInvoke("send_transcript", { text });
+  }
 }
 
 /** Cancel the current turn. */
@@ -342,6 +396,15 @@ interface ServerEvent {
   data?: string | null;
   message?: string | null;
   analysis?: any;
+  dialogState?: {
+    expects_followup: boolean;
+    pending_intent: string;
+    context: {
+      pending_intent: string;
+      original_request: string;
+      missing: string[];
+    };
+  } | null;
 }
 
 async function handle(ev: ServerEvent): Promise<void> {
@@ -361,6 +424,11 @@ async function handle(ev: ServerEvent): Promise<void> {
         console.log("[NEXUS] server ack suppressed — local ack already given");
         break;
       }
+      // Skip if user barged in — they don't want to hear the ack
+      if (bargedIn) {
+        console.log("[NEXUS] server ack suppressed — user barged in");
+        break;
+      }
       if (ev.data) {
         store.addAssistantMessage(ev.data);
         store.setState("speaking");
@@ -375,8 +443,32 @@ async function handle(ev: ServerEvent): Promise<void> {
     case "result":
       // Final result text from the Worker.
       try {
-        console.log("[NEXUS] handle result: pendingQuery=" + pendingQuery + " dataLen=" + (ev.data?.length || 0) + " hasAnalysis=" + ((ev as any).analysis !== undefined));
+        // Hide the loading indicator immediately (non-blocking). The
+        // destroy is dispatched to a thread pool (async Rust command)
+        // so it won't block the result handler or the main thread.
+        // We add a small delay before showing the sidebar/orb to give
+        // the OS compositor time to remove the loading window from the
+        // screen, ensuring the loading animation is gone before the
+        // response appears — no visual overlap or divergence.
+        void hideLoadingIndicator();
+        await new Promise((r) => setTimeout(r, 120));
+        console.log("[NEXUS] handle result: pendingQuery=" + pendingQuery + " dataLen=" + (ev.data?.length || 0) + " hasAnalysis=" + ((ev as any).analysis !== undefined) + " hasDialogState=" + (ev.dialogState !== undefined && ev.dialogState !== null));
+        // Capture whether this was a long-running query BEFORE clearing the flag.
+        // Used to decide whether to say "Here is the analysis, sir" prefix.
+        const wasLongRunning = longRunningInFlight;
         clearLongRunningInFlight();
+        // If the user barged in (pressed Ctrl+Space) while the Worker was
+        // processing, discard the result — they've moved on to a new command.
+        if (bargedIn) {
+          console.log("[NEXUS] result discarded — user barged in");
+          sessionOpen = false;
+          break;
+        }
+        // Store dialog state for follow-up if the Worker expects more info
+        if (ev.dialogState && ev.dialogState.expects_followup) {
+          console.log("[NEXUS] dialog state: follow-up expected, pending_intent=" + ev.dialogState.pending_intent);
+          pendingDialogContext = ev.dialogState.context;
+        }
         if (ev.data) {
           store.addAssistantMessage(ev.data);
           // If pendingQuery is empty (e.g. session was opened externally),
@@ -387,8 +479,13 @@ async function handle(ev: ServerEvent): Promise<void> {
             ev.data.includes("Ok sir,") && ev.data.includes("/")
               ? "analyse" : ""
           );
-          const isArchitectQuery = /\b(analy[sz]e|map|understand|explore|create|build|show|generate|architecture|what breaks|blast radius)\b/i.test(query)
-            && /\b(repo|repository|codebase|project|architecture|code)\b/i.test(query);
+          const isArchitectQuery =
+            // Check the Worker's intent field directly (most reliable)
+            (ev as any).intent === "analyze_repo" ||
+            (ev as any).intent === "deep_analyse" ||
+            // Fallback: check the query text for architect keywords
+            (/\b(analy[sz]e|map|understand|explore|create|build|show|generate|architecture|what breaks|blast radius)\b/i.test(query)
+              && /\b(repo|repository|codebase|project|architecture|code)\b/i.test(query));
 
           if (isArchitectQuery && isTauri()) {
             // Detect the active GitHub repo from the foreground window and
@@ -408,8 +505,12 @@ async function handle(ev: ServerEvent): Promise<void> {
           }
 
           const showSidebar = shouldShowSidebar(query, ev.data) || ((ev as any).analysis !== undefined);
-          console.log("[NEXUS] handle result: query=" + query + " showSidebar=" + showSidebar);
-          if (showSidebar) {
+          // For long-running queries that don't trigger the sidebar heuristic,
+          // still show the sidebar if the response is substantial — the user
+          // said "On it sir" and expects "Here is the analysis, sir" back.
+          const isLongRunningResult = wasLongRunning || (ev.data && ev.data.length > 200);
+          console.log("[NEXUS] handle result: query=" + query + " showSidebar=" + showSidebar + " wasLongRunning=" + wasLongRunning + " isLongRunningResult=" + isLongRunningResult);
+          if (showSidebar || isLongRunningResult) {
           // If the Worker included structured analysis data, use the
           // show_sidebar_with_analysis command which stores the analysis
           // in the pending content (race-free for fresh sidebar windows)
@@ -433,21 +534,48 @@ async function handle(ev: ServerEvent): Promise<void> {
           // so the user sees NEXUS is speaking the confirmation.
           store.setVisible(true);
           store.setState("speaking");
-          void speak("Here is the analysis, sir", () => {
+          // Guard against duplicate "Here is the analysis" announcements.
+          // The result handler should only fire once per turn, but this
+          // prevents double-speak if the event is emitted twice.
+          if (!analysisAnnounced) {
+            analysisAnnounced = true;
+            void speak("Here is the analysis, sir", () => {
+              sessionOpen = false;
+              store.reset();
+              // Auto-close the orb after the short confirmation
+              store.setVisible(false);
+            });
+          } else {
+            console.log("[NEXUS] 'Here is the analysis' already announced — skipping duplicate");
             sessionOpen = false;
             store.reset();
-            // Auto-close the orb after the short confirmation
             store.setVisible(false);
-          });
+          }
         } else {
           // Short response — speak it aloud and auto-close
           // The orb may have been hidden — show it for the response.
           store.setVisible(true);
           store.setState("speaking");
+          // Check if this is a follow-up question — if so, auto-reopen the mic
+          const expectsFollowup = !!(ev.dialogState && ev.dialogState.expects_followup);
           void speak(ev.data, () => {
-            sessionOpen = false;
-            store.reset();
-            store.setVisible(false);
+            if (expectsFollowup && !bargedIn) {
+              // Follow-up expected: auto-reopen the mic for the user's response
+              console.log("[NEXUS] follow-up: auto-reopening mic after TTS");
+              // Import and call triggerFollowupListen from main.tsx
+              import("../main").then(({ triggerFollowupListen }) => {
+                triggerFollowupListen();
+              }).catch((e) => {
+                console.warn("[NEXUS] failed to trigger follow-up listen:", e);
+                sessionOpen = false;
+                store.reset();
+                store.setVisible(false);
+              });
+            } else {
+              sessionOpen = false;
+              store.reset();
+              store.setVisible(false);
+            }
           });
         }
       }
@@ -460,11 +588,13 @@ async function handle(ev: ServerEvent): Promise<void> {
       // Normal flow: the "result" handler above emits done after TTS.
       clearLongRunningInFlight();
       sessionOpen = false;
+      void hideLoadingIndicator();
       store.reset();
       break;
     case "error":
       clearLongRunningInFlight();
       sessionOpen = false;
+      void hideLoadingIndicator();
       console.error("server error:", ev.message);
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       stopTts();

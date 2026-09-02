@@ -40,7 +40,7 @@ interface Settings {
 
 const DEFAULT_SETTINGS: Settings = {
   autostart: true,
-  hotkey: "Ctrl+Shift+Space",
+  hotkey: "Ctrl+Space",
   autoHideDelay: 8,
   wakeWordEnabled: true,
   wakePhrase: "NEXUS",

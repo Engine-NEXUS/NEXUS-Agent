@@ -24,8 +24,17 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 // receive Tauri events. Instead of emitting `architect:set-repo` with a
 // fragile delay, we store the repo here and let the frontend fetch it
 // on mount via `get_pending_architect_repo`.
+//
+// Extended to also carry the screenshot backdrop data URI for the
+// liquid-glass effect (same as the response sidebar).
 
-static PENDING_ARCHITECT_REPO: Mutex<Option<(String, String)>> = Mutex::new(None);
+struct PendingArchitect {
+    owner: Option<String>,
+    repo: Option<String>,
+    backdrop: Option<String>,
+}
+
+static PENDING_ARCHITECT_REPO: Mutex<Option<PendingArchitect>> = Mutex::new(None);
 
 // ─── Data Models ──────────────────────────────────────────────────
 
@@ -233,61 +242,334 @@ fn is_valid_github_slug(s: &str) -> bool {
 
 // ─── Window Management ────────────────────────────────────────────
 
-/// IPC: Open the dedicated Architect window and focus it.
-/// If the window was closed, recreate it from the config URL.
-///
-/// When owner/repo is provided, the repo is stored in a pending static.
-/// The frontend calls `get_pending_architect_repo` on mount, which returns
-/// and clears the pending data. This is race-free regardless of how long
-/// the WebView takes to load. If the window already exists (React loaded),
-/// we also emit the `architect:set-repo` event as a fast path.
+/// IPC: Open the Architect sidebar window (900px, transparent, always-on-top).
+/// EXACT carbon copy of the response sidebar's show logic:
+///   1. Pre-position at bottom-right BEFORE capture (so monitor detection works)
+///   2. Capture desktop backdrop via GDI BitBlt + fast_blur (before show)
+///   3. Store pending data (repo + backdrop) for frontend to fetch on mount
+///   4. Call show_architect_sidebar_inner which:
+///      a. Re-positions at bottom-right
+///      b. Captures backdrop again if not already done (fallback)
+///      c. Calls win.show()
+///      d. Starts live blur loop (1 FPS + change detection)
+///   5. Emit fast-path events for existing windows
 #[tauri::command]
 pub async fn open_architect_window<R: Runtime>(
     app: AppHandle<R>,
     owner: Option<String>,
     repo: Option<String>,
 ) -> Result<(), String> {
-    let window_existed = app.get_webview_window("architect").is_some();
+    let window_existed = app.get_webview_window("architect-sidebar").is_some();
 
-    // Use dynamic window creation — creates on-demand if not exists
-    let win = crate::dyn_windows::get_or_create_window(&app, crate::dyn_windows::WindowConfig::architect())?;
-    win.show().map_err(|e| e.to_string())?;
-    win.set_focus().map_err(|e| e.to_string())?;
+    // Use the sidebar-style architect window (900px, transparent, undecorated)
+    let win = crate::dyn_windows::get_or_create_window(
+        &app,
+        crate::dyn_windows::WindowConfig::architect_sidebar(),
+    )?;
 
-    if let (Some(o), Some(r)) = (owner, repo) {
-        // Store in pending static for the frontend to fetch on mount.
-        {
-            let mut pending = PENDING_ARCHITECT_REPO.lock().unwrap();
-            *pending = Some((o.clone(), r.clone()));
-        }
+    // ── Step 1: Pre-position at bottom-right BEFORE capture ──
+    // A freshly-created window sits at physical (0, 0). On Windows, a window
+    // at (0, 0) may be partially off-screen or on the wrong monitor, which
+    // causes `win.current_monitor()` inside `capture_backdrop` to return None,
+    // silently aborting the capture. We run the same positioning math used by
+    // `show_sidebar_inner` here first, so the window is in its final position
+    // on the correct monitor before we call `BitBlt`. This is safe to do even
+    // before `win.show()` — `set_position` works on hidden windows.
+    if let Ok(Some(monitor)) = win.current_monitor().or_else(|_| {
+        win.primary_monitor()
+    }) {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let sidebar_w = 900i32;
+        let sidebar_h = 1000i32;
+        let phys_w = (sidebar_w as f64 * scale) as i32;
+        let phys_h = (sidebar_h as f64 * scale) as i32;
+        #[cfg(target_os = "windows")]
+        let taskbar = (48.0 * scale) as i32;
+        #[cfg(not(target_os = "windows"))]
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+        let x = screen.width as i32 - phys_w - gap;
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    }
 
-        // If the window already existed (React already loaded), also emit
-        // the event as a fast path — the listener will handle it immediately.
-        if window_existed {
-            let _ = app.emit_to(
-                "architect",
-                "architect:set-repo",
+    // ── Step 2: Capture backdrop BEFORE show (liquid glass) ──
+    // Skip if window is already visible (would capture ourselves).
+    let backdrop = if window_existed && win.is_visible().unwrap_or(false) {
+        None
+    } else {
+        capture_architect_backdrop(&app, &win)
+    };
+
+    // ── Step 3: Store pending data ──
+    // ALWAYS store, even if owner/repo are None — otherwise the backdrop
+    // (captured above) would be silently dropped whenever no active GitHub
+    // repo is detected (the common case: user isn't looking at a github.com
+    // tab), leaving the frontend with no backdrop until the live blur loop's
+    // first tick ~1s later. This mirrors PENDING_SIDEBAR in commands.rs,
+    // which always writes regardless of content.
+    {
+        let mut pending = PENDING_ARCHITECT_REPO.lock().unwrap();
+        *pending = Some(PendingArchitect {
+            owner: owner.clone(),
+            repo: repo.clone(),
+            backdrop: backdrop.clone(),
+        });
+    }
+
+    // ── Step 4: Show window via show_architect_sidebar_inner ──
+    // This re-positions, captures backdrop if not already done, calls
+    // win.show(), and starts the live blur loop — exactly like the sidebar.
+    show_architect_sidebar_inner(&app, &win, backdrop.is_some())?;
+
+    // ── Step 5: Fast-path events for existing windows ──
+    if window_existed {
+        if let (Some(o), Some(r)) = (owner.as_ref(), repo.as_ref()) {
+            let _ = app.emit("architect:set-repo",
                 serde_json::json!({ "owner": o, "repo": r }),
             );
         }
+        if let Some(ref uri) = backdrop {
+            let _ = app.emit("sidebar:backdrop", uri.clone());
+        }
+    }
 
-        tracing::info!("architect: set-repo for {}/{} (window_existed={})", o, r, window_existed);
+    // Unconditional logging (previously gated behind owner/repo, which
+    // meant NOTHING was logged when no repo was detected — making this
+    // bug invisible in the logs).
+    tracing::info!(
+        "architect-sidebar: open (owner={:?}, repo={:?}, window_existed={}, has_backdrop={})",
+        owner, repo, window_existed, backdrop.is_some()
+    );
+
+    Ok(())
+}
+
+/// Capture the desktop region behind the architect sidebar window (Windows only).
+/// Must be called BEFORE `win.show()` so we don't capture the sidebar itself.
+/// Returns the blurred backdrop as a `data:image/png;base64,...` URI, or None.
+/// EXACT copy of `capture_backdrop` in commands.rs.
+fn capture_architect_backdrop<R: Runtime>(
+    _app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let monitor = win.current_monitor().ok()??;
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let logical = win.inner_size().map(|s| s.to_logical::<f64>(scale)).unwrap_or(
+            tauri::LogicalSize::new(900.0, 1000.0)
+        );
+        let sidebar_w = logical.width;
+        let sidebar_h = logical.height;
+        let phys_w = (sidebar_w * scale) as i32;
+        let phys_h = (sidebar_h * scale) as i32;
+        let taskbar = (48.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+        let x = screen.width as i32 - phys_w - gap;
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+
+        match crate::sidebar_backdrop::capture_and_blur(x, y, phys_w, phys_h, 32.0) {
+            Some(data_uri) => {
+                tracing::info!("architect-sidebar: backdrop captured ({} bytes)", data_uri.len());
+                Some(data_uri)
+            }
+            None => {
+                tracing::warn!("architect-sidebar: backdrop capture failed (x={x}, y={y}, w={phys_w}, h={phys_h})");
+                None
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// Shared inner logic for showing the architect sidebar — EXACT carbon copy of
+/// `show_sidebar_inner` in commands.rs.
+/// `backdrop_already_captured`: if true, skip the backdrop capture (it was
+/// already done by the caller and stored in the pending content). This prevents
+/// re-capturing the window itself when the window is already visible.
+fn show_architect_sidebar_inner<R: Runtime>(
+    _app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+    backdrop_already_captured: bool,
+) -> Result<(), String> {
+    // Position at bottom-right of the screen, above the taskbar.
+    // Read the ACTUAL window size (logical) instead of hardcoding.
+    use tauri::PhysicalPosition;
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let logical = win.inner_size().map(|s| s.to_logical::<f64>(scale)).unwrap_or(
+            tauri::LogicalSize::new(900.0, 1000.0)
+        );
+        let sidebar_w = logical.width;
+        let sidebar_h = logical.height;
+        let phys_w = (sidebar_w * scale) as i32;
+        let phys_h = (sidebar_h * scale) as i32;
+
+        #[cfg(target_os = "macos")]
+        let taskbar = (70.0 * scale) as i32;
+        #[cfg(target_os = "windows")]
+        let taskbar = (48.0 * scale) as i32;
+        #[cfg(target_os = "linux")]
+        let taskbar = (36.0 * scale) as i32;
+        let gap = (12.0 * scale) as i32;
+
+        let x = screen.width as i32 - phys_w - gap;
+        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+    }
+
+    // ─── "Fake blur" backdrop capture (Windows only) ───────────────
+    // Only capture if the caller hasn't already done so. This prevents
+    // capturing the sidebar itself when the window is already visible.
+    if !backdrop_already_captured {
+        if let Some(data_uri) = capture_architect_backdrop(_app, win) {
+            let _ = _app.emit("sidebar:backdrop", data_uri);
+        }
+    }
+
+    win.show().map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::PhysicalPosition;
+        if let Ok(Some(monitor)) = win.current_monitor() {
+            let scale = monitor.scale_factor();
+            let screen = monitor.size();
+            let sidebar_w = 900i32;
+            let sidebar_h = 1000i32;
+            let phys_w = (sidebar_w as f64 * scale) as i32;
+            let phys_h = (sidebar_h as f64 * scale) as i32;
+            let taskbar = (36.0 * scale) as i32;
+            let gap = (12.0 * scale) as i32;
+            let x = screen.width as i32 - phys_w - gap;
+            let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+            let _ = win.set_position(PhysicalPosition::new(x, y));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // No window-vibrancy re-apply here — see the detailed comment in
+        // lib.rs's setup hook for why this window intentionally never calls
+        // apply_blur/apply_acrylic/apply_mica. The window's transparency
+        // comes from tao's own material-free DWM registration (done once at
+        // window creation) and does not need re-applying on every show.
+        //
+        // Corner rounding is a plain window-shape attribute (not a material)
+        // so it's safe/cheap to re-assert on every show in case it was lost.
+        crate::dwm_corners::round_corners(&win);
+
+        // ── Live blur: 1 FPS + change detection ──────────────────────
+        // Carbon copy of the sidebar's live blur loop in commands.rs.
+        static ARCH_LIVE_BLUR_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static ARCH_LAST_FRAME_HASH: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+        if !ARCH_LIVE_BLUR_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+            ARCH_LIVE_BLUR_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+            // Reset hash so the first frame after show always emits
+            *ARCH_LAST_FRAME_HASH.lock().unwrap() = None;
+
+            let win_clone = win.clone();
+            let app_clone = _app.clone();
+            tauri::async_runtime::spawn(async move {
+                // Wait for window to fully appear
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                while win_clone.is_visible().unwrap_or(false) {
+                    // 1 FPS — 1000ms between captures
+                    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+                    if !win_clone.is_visible().unwrap_or(false) {
+                        break;
+                    }
+
+                    if let Ok(Some(monitor)) = win_clone.current_monitor() {
+                        let scale = monitor.scale_factor();
+                        let screen = monitor.size();
+                        let sidebar_w = 900i32;
+                        let sidebar_h = 1000i32;
+                        let phys_w = (sidebar_w as f64 * scale) as i32;
+                        let phys_h = (sidebar_h as f64 * scale) as i32;
+                        let taskbar = (48.0 * scale) as i32;
+                        let gap = (12.0 * scale) as i32;
+                        let x = screen.width as i32 - phys_w - gap;
+                        let y = (screen.height as i32 - phys_h - taskbar - gap).max(0);
+
+                        // Step 1: cheap raw capture for hashing (~1ms)
+                        let raw_bgra = match crate::sidebar_backdrop::capture_region_bgra_public(x, y, phys_w, phys_h) {
+                            Some(bgra) => bgra,
+                            None => continue,
+                        };
+
+                        // Step 2: hash and compare to previous frame
+                        let current_hash = crate::sidebar_backdrop::frame_hash(&raw_bgra);
+                        let mut prev_hash_guard = ARCH_LAST_FRAME_HASH.lock().unwrap();
+                        let should_emit = match *prev_hash_guard {
+                            Some(prev) => prev != current_hash,
+                            None => true, // First frame after show — always emit
+                        };
+                        *prev_hash_guard = Some(current_hash);
+                        drop(prev_hash_guard);
+
+                        // Step 3: only run the expensive pipeline if changed
+                        if should_emit {
+                            // We already have the raw BGRA — blur + encode it
+                            // without re-capturing (reuse the bytes we have).
+                            if let Some(data_uri) = crate::sidebar_backdrop::blur_bgra_to_jpeg(&raw_bgra, phys_w, phys_h, 32.0) {
+                                tracing::debug!("architect-sidebar: live blur frame changed, emitting ({} bytes)", data_uri.len());
+                                let _ = app_clone.emit("sidebar:backdrop", data_uri);
+                            }
+                        }
+                    } else {
+                        tracing::debug!("architect-sidebar: live blur loop tick — current_monitor() returned None, skipping");
+                    }
+                }
+
+                tracing::info!("architect-sidebar: live blur loop exiting (window no longer visible)");
+                // Clean up: reset hash so next show captures fresh
+                *ARCH_LAST_FRAME_HASH.lock().unwrap() = None;
+                ARCH_LIVE_BLUR_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Re-apply vibrancy after show — the effect can be lost if the
+        // window was hidden for a long time or the app was backgrounded.
+        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+        let _ = apply_vibrancy(
+            win,
+            NSVisualEffectMaterial::Sidebar,
+            Some(NSVisualEffectState::Active),
+            Some(20.0),
+        );
     }
 
     Ok(())
 }
 
 /// IPC: Fetch pending architect repo (called by the frontend on mount).
-/// Returns { owner, repo } if a repo was passed to open_architect_window,
+/// Returns { owner, repo, backdrop } if a repo was passed to open_architect_window,
 /// or null if no repo is pending. Clears the pending data after returning.
 #[tauri::command]
 pub fn get_pending_architect_repo() -> Result<Option<serde_json::Value>, String> {
     let mut pending = PENDING_ARCHITECT_REPO.lock().unwrap();
     let data = pending.take();
     match data {
-        Some((owner, repo)) => {
-            tracing::info!("architect: pending repo fetched ({}/{})", owner, repo);
-            Ok(Some(serde_json::json!({ "owner": owner, "repo": repo })))
+        Some(p) => {
+            tracing::info!("architect-sidebar: pending content fetched (owner={:?}, repo={:?}, has_backdrop={})", p.owner, p.repo, p.backdrop.is_some());
+            Ok(Some(serde_json::json!({
+                "owner": p.owner,
+                "repo": p.repo,
+                "backdrop": p.backdrop,
+            })))
         }
         None => Ok(None),
     }

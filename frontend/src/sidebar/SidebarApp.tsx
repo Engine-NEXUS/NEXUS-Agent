@@ -36,23 +36,32 @@ export function SidebarApp() {
 
   const responseScrollRef = useRef<HTMLDivElement>(null);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  // Track whether the sidebar was previously visible — prevents the
+  // initial-mount useEffect (visible starts as false) from calling
+  // stopTts() and killing "Here is the analysis, sir" before it plays.
+  const wasVisibleRef = useRef(false);
 
-  // Format the query as a heading: "analyse zync" → "Analysis: zync-meet/Zync"
+  // Format the query as a heading:
+  //   PR analysis  → "PR Analysis"
+  //   Repo analysis → "Repository Analysis"
   const heading = useMemo(() => {
     if (!query) return "";
-    // If we have analysis data, use the resolved repo name
-    if (analysisData?.repo) {
-      return `Analysis: ${analysisData.repo}`;
+    const q = query.trim().toLowerCase();
+    // PR analysis: "analyse PR #5 in repo", "review PR 12", "analyse pull request"
+    if (/\bpr\b|\bpull\s*request\b/.test(q)) {
+      return "PR Analysis";
     }
-    // Otherwise format the raw query
-    const q = query.trim();
-    if (/analy[sz]e/i.test(q)) {
-      // Extract repo name from "analyse owner/repo" or "analyse repo"
-      const match = q.match(/analy[sz]e\s+(.+)/i);
+    // Repo analysis: "analyse repo", "analyse owner/repo", structured analysis data
+    if (analysisData?.repo || /\banaly[sz]e\s+(?!pr\b|pull\b)/.test(q)) {
+      return "Repository Analysis";
+    }
+    // Fallback: format the raw query
+    const raw = query.trim();
+    if (/analy[sz]e/i.test(raw)) {
+      const match = raw.match(/analy[sz]e\s+(.+)/i);
       if (match) return `Analysis: ${match[1]}`;
     }
-    // Capitalize first letter
-    return q.charAt(0).toUpperCase() + q.slice(1);
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
   }, [query, analysisData]);
 
   // Render markdown to sanitized HTML with custom enhancements
@@ -148,21 +157,17 @@ export function SidebarApp() {
     };
   }, [show, hide]);
 
-  // Keyboard shortcut: Escape to close
+  // Keyboard shortcut: Escape only closes the image lightbox (not the sidebar).
+  // The sidebar itself is closed via Ctrl+Space (the global hotkey).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (activeImage) {
-          setActiveImage(null);
-        } else {
-          stopTts();
-          hide();
-        }
+      if (e.key === "Escape" && activeImage) {
+        setActiveImage(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [hide, activeImage, setActiveImage]);
+  }, [activeImage, setActiveImage]);
 
   // Scroll to top when new response arrives
   useEffect(() => {
@@ -182,11 +187,22 @@ export function SidebarApp() {
   // The sidebar window is shown by Rust (show_sidebar_with_content) before
   // this React app even loads, so we do NOT call invoke("show_sidebar") here.
   // We only need to call hide_sidebar when the user dismisses the sidebar.
+  //
+  // CRITICAL: only call stopTts() when visible transitions true→false
+  // (user dismissed the sidebar). On initial mount, visible starts as
+  // false — if we call stopTts() there, it kills "Here is the analysis,
+  // sir" which wsBridge speaks right before the pending content arrives.
   useEffect(() => {
     if (!visible) {
-      stopTts();
-      const t = setTimeout(() => invoke("hide_sidebar").catch(() => {}), 400);
-      return () => clearTimeout(t);
+      if (wasVisibleRef.current) {
+        // User dismissed the sidebar → stop TTS and destroy the window
+        stopTts();
+        const t = setTimeout(() => invoke("hide_sidebar").catch(() => {}), 400);
+        return () => clearTimeout(t);
+      }
+      // Initial mount (wasVisibleRef is false) → do nothing, don't kill TTS
+    } else {
+      wasVisibleRef.current = true;
     }
   }, [visible]);
 
@@ -329,7 +345,7 @@ export function SidebarApp() {
         {/* ── Footer Status Bar ──────────────────────────────────────── */}
         <footer className="sidebar-footer">
           <div className="sidebar-footer-hint">
-            <kbd className="sidebar-kbd">Esc</kbd> or <kbd className="sidebar-kbd">Ctrl+Shift+Space</kbd> to close
+            <kbd className="sidebar-kbd">Ctrl+Space</kbd> to close
           </div>
         </footer>
       </div>
