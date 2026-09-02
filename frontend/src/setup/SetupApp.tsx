@@ -493,7 +493,7 @@ export function SetupApp() {
                   color: "var(--nx-text-secondary)",
                 }}>
                   <strong style={{ color: "var(--nx-text-primary)" }}>Privacy:</strong> All speech recognition
-                  runs locally via Moonshine ONNX. Audio is never sent to the cloud. Only the transcribed
+                  runs locally via faster-whisper. Audio is never sent to the cloud. Only the transcribed
                   text is sent to the NEXUS Worker for intent processing.
                 </div>
               </section>

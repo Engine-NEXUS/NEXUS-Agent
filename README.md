@@ -43,7 +43,7 @@ Modern developers juggle dozens of tools. NEXUS aims to unify them through a sin
 [NEXUS Desktop (Rust + Tauri v2)] ──(HTTP POST)──► [Cloudflare Worker (Edge)]
           │                                              │
           ├──► Local Wake Word (Tract-ONNX)              ├──► D1 SQLite (OAuth & Quotas)
-          ├──► Local STT (Moonshine ONNX)                └──► Workers AI (Mistral 24B Intent/Reasoning)
+          ├──► Local STT (faster-whisper)                └──► Workers AI (Mistral 24B Intent/Reasoning)
           └──► Local TTS (Kokoro 82M)
 ```
 
