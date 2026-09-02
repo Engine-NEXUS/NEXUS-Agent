@@ -60,7 +60,7 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 * **Health Check:** [`https://nexus-worker.chitkullakshya.workers.dev/health`](https://nexus-worker.chitkullakshya.workers.dev/health) (Returns `{"ok":true,"serverless":true}`)
 * **Local In-Process AI:**
   * Wake Word: `openWakeWord` (Tract-ONNX in Rust)
-  * STT: `Moonshine Tiny/Base` (In-process Rust ONNX)
+  * STT: `faster-whisper tiny.en` (Local Python Sidecar)
   * TTS: `Kokoro 82M` (In-process Rust ONNX + Rodio native playback)
 
 ---
