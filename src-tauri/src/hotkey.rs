@@ -14,9 +14,12 @@
 //!   - The hotkey never does both at once — it's one or the other based on
 //!     the current sidebar visibility state.
 
+#[cfg(not(target_os = "linux"))]
 use tauri::{AppHandle, Manager, Runtime};
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+#[cfg(not(target_os = "linux"))]
 const HOTKEYS: &[&str] = &[
     "CommandOrControl+Space",
     "CommandOrControl+Alt+Space",
@@ -27,6 +30,7 @@ const HOTKEYS: &[&str] = &[
     // flash open/close because the system menu event was being swallowed.
 ];
 
+#[cfg(not(target_os = "linux"))]
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     for &hk in HOTKEYS {
         let sc: Shortcut = match hk.parse() {
@@ -108,5 +112,11 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         let _ = handle; // silence unused warning if handle unused elsewhere
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn init<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
+    tracing::info!("Global shortcuts are disabled on Linux (Wayland compatibility). Use `nexus --wake`.");
     Ok(())
 }
