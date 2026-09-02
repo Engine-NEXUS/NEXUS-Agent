@@ -671,8 +671,6 @@ pub fn run() {
             commands::show_sidebar_with_analysis,
             commands::hide_sidebar,
             commands::get_pending_sidebar_content,
-            commands::show_loading_indicator,
-            commands::hide_loading_indicator,
             commands::pause_wakeword,
             commands::resume_wakeword,
             stt::transcribe_audio,

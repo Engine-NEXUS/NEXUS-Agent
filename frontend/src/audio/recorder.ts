@@ -8,7 +8,6 @@ import {
   isLongRunningInFlight,
   isDuplicateLongRunning,
 } from "../net/wsBridge";
-import { showLoadingIndicator } from "../loading/loadingController";
 import { transcribeAudio } from "./stt";
 import { speak } from "./ttsPlayer";
 import { parseIntent, type Intent } from "../intent/parser";
@@ -84,9 +83,7 @@ function processNextQueuedCommand(): void {
   // Send it — the session should still be open from the previous command.
   setLongRunningInFlight(next, processNextQueuedCommand);
   // The orb is already hidden from the previous command's "On it sir".
-  // Re-show the loading indicator for this queued command.
-  void showLoadingIndicator();
-  void sendTranscript(next).then(() => {
+  // Re-show the loading indicator for this queued command.  void sendTranscript(next).then(() => {
     console.log(`[NEXUS] queue: sent "${next}" to worker`);
   }).catch((e) => {
     console.warn(`[NEXUS] queue: failed to send "${next}":`, e);
@@ -563,9 +560,7 @@ export async function finishCapture(): Promise<void> {
         setTimeout(() => useAssistant.getState().reset(), 550);
         // Show the loading indicator — the orb (wakeup animation) is
         // now hidden, so the user sees the loading animation at the
-        // top-right corner while NEXUS processes the request.
-        void showLoadingIndicator();
-      }
+        // top-right corner while NEXUS processes the request.      }
     });
   }
 
@@ -859,9 +854,7 @@ async function _finishCaptureFromVadInner(
         setTimeout(() => useAssistant.getState().reset(), 550);
         // Show the loading indicator — the orb (wakeup animation) is
         // now hidden, so the user sees the loading animation at the
-        // top-right corner while NEXUS processes the request.
-        void showLoadingIndicator();
-      }
+        // top-right corner while NEXUS processes the request.      }
     });
   }
 

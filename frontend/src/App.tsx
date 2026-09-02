@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Avatar } from "./avatar/Avatar";
+import { LoadingAnimation } from "./LoadingAnimation";
 import { useAssistant } from "./store/assistant";
 
 function isTauri(): boolean {
@@ -83,7 +84,7 @@ export default function App() {
   return (
     <div id="app" className={visible ? "app--visible" : "app--hidden"}>
       <div className="avatar-section" data-interactive>
-        <Avatar />
+        {state === "thinking" ? <LoadingAnimation /> : <Avatar />}
       </div>
     </div>
   );

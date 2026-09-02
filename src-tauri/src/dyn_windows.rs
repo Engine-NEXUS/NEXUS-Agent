@@ -95,15 +95,7 @@ impl WindowConfig {
     /// at the top-right corner of the screen. Shows the loading.json Lottie
     /// animation while NEXUS is processing a request (after "On it sir").
     /// Destroyed when the response arrives to free ~250 MB WebView2 RAM.
-    pub fn loading_indicator() -> Self {
-        Self {
-            label: "loading-indicator", title: "NEXUS Loading", url: "loading.html",
-            width: 80., height: 80., min_width: Some(80.), min_height: Some(80.),
-            resizable: false, decorations: false, transparent: true,
-            always_on_top: true, skip_taskbar: true, shadow: false,
-            focus: false, center: false, hidden_title: true,
-        }
-    }
+
 }
 
 /// Get an existing window, or create it on-demand if it doesn't exist.

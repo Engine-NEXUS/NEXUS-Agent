@@ -1,6 +1,5 @@
 import { useAssistant, transition } from "../store/assistant";
 import { speak, stopTts } from "../audio/ttsPlayer";
-import { hideLoadingIndicator } from "../loading/loadingController";
 
 /**
  * Sidebar event helpers — emit events to the sidebar window.
@@ -208,9 +207,7 @@ export function setLongRunningInFlight(transcript: string, onResult: LongRunning
     console.warn("[NEXUS] long-running query timeout — auto-clearing in-flight flag");
     longRunningInFlight = false;
     lastSentTranscript = "";
-    longRunningResultCb = null;
-    void hideLoadingIndicator();
-  }, 60_000);
+    longRunningResultCb = null;  }, 60_000);
 }
 
 /** Called by recorder.ts to check if a long-running query is in flight. */
@@ -449,9 +446,7 @@ async function handle(ev: ServerEvent): Promise<void> {
         // We add a small delay before showing the sidebar/orb to give
         // the OS compositor time to remove the loading window from the
         // screen, ensuring the loading animation is gone before the
-        // response appears — no visual overlap or divergence.
-        void hideLoadingIndicator();
-        await new Promise((r) => setTimeout(r, 120));
+        // response appears — no visual overlap or divergence.        await new Promise((r) => setTimeout(r, 120));
         console.log("[NEXUS] handle result: pendingQuery=" + pendingQuery + " dataLen=" + (ev.data?.length || 0) + " hasAnalysis=" + ((ev as any).analysis !== undefined) + " hasDialogState=" + (ev.dialogState !== undefined && ev.dialogState !== null));
         // Capture whether this was a long-running query BEFORE clearing the flag.
         // Used to decide whether to say "Here is the analysis, sir" prefix.
@@ -587,15 +582,11 @@ async function handle(ev: ServerEvent): Promise<void> {
       // "done" from Rust is now only emitted on error/cancel paths.
       // Normal flow: the "result" handler above emits done after TTS.
       clearLongRunningInFlight();
-      sessionOpen = false;
-      void hideLoadingIndicator();
-      store.reset();
+      sessionOpen = false;      store.reset();
       break;
     case "error":
       clearLongRunningInFlight();
-      sessionOpen = false;
-      void hideLoadingIndicator();
-      console.error("server error:", ev.message);
+      sessionOpen = false;      console.error("server error:", ev.message);
       if (ev.message) store.addAssistantMessage(`Error: ${ev.message}`);
       stopTts();
       store.reset();
