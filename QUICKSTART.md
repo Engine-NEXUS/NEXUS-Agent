@@ -1,14 +1,4 @@
-# ⚡ NEXUS — Hackathon Quick Start Guide
-
-**Event:** Citta RISE (Idea2Agent Edition) — 29 Aug 2026  
-**Problem Statement 05:** Architecture Mapper (*"Not a diagram. A consequence engine."*)  
-**Team Name:** V-Max (Team #5)  
-**Team Leader:** Prem Sai Kota ([@prem22k](https://github.com/prem22k))  
-**Team Members:**
-* Lakshya Chitkul ([@chitkullakshya](https://github.com/chitkullakshya))
-* Ajith Kumar ([@ajithhhak](https://github.com/ajithhhak))
-
----
+# ⚡ NEXUS — Quick Start Guide
 
 ## 🎯 The Core Problem Solved
 > *"If I change this piece of code, what else could be affected — and why?"*
@@ -34,9 +24,9 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 
 ---
 
-## 🧪 3. Key Test Scenarios for Hackathon Judges
+## 🧪 3. Key Test Scenarios
 
-### Scenario A: Autonomous Codebase Architecture Mapper *(Core Hackathon Feature)*
+### Scenario A: Autonomous Codebase Architecture Mapper *(Core Feature)*
 1. Trigger NEXUS (`Ctrl+Space`) and say:
    > *"Open architecture mapper"*
 2. **Result:** It will automatically detect the repository URL (e.g. your currently active project) and render an interactive dependency diagram. 

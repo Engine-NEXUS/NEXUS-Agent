@@ -20,7 +20,7 @@
 | Branch | `main` (merged directly, no PR) |
 
 The commit adds a comprehensive feature specification for the **Architecture
-Mapper** — the Citta RISE Hackathon Problem 05 solution. It describes a
+Mapper**. It describes a
 three-phase progressive architecture for turning an unfamiliar repository into
 an explorable map of architecture and dependencies, with impact analysis and
 an agentic chat interface, built into NEXUS.
@@ -103,8 +103,8 @@ Phase 3 (always) → Voice/text agentic chat → reverse BFS impact analysis →
 
 | # | Issue | Severity | Detail |
 |---|---|---|---|
-| 1 | No tree-sitter — regex import extraction only | Medium | The spec uses regex patterns for import extraction (lines 211-218). Regex will miss dynamic imports, re-exports, barrel files, and complex patterns. Tree-sitter is the proven approach for AST-level extraction. The spec acknowledges this as "V2" but it's a real limitation for the hackathon. |
-| 2 | No code implemented — spec only | High | This is a 586-line markdown file. Zero Rust, zero TypeScript, zero React. The hackathon needs a working demo, not a spec. |
+| 1 | No tree-sitter — regex import extraction only | Medium | The spec uses regex patterns for import extraction (lines 211-218). Regex will miss dynamic imports, re-exports, barrel files, and complex patterns. Tree-sitter is the proven approach for AST-level extraction. The spec acknowledges this as "V2" but it's a real limitation. |
+| 2 | No code implemented — spec only | High | This is a 586-line markdown file. Zero Rust, zero TypeScript, zero React. It needs a working demo, not a spec. |
 | 3 | `petgraph 0.6` is outdated | Low | Current version is 0.8.x. Minor but shows the spec wasn't verified against actual crate versions. |
 | 4 | ReactFlow ported from "Zync" | Medium | Line 422: "Source: `Zync/src/components/zlam/ArchitectureMap.tsx`" — this references an external project that may not exist in this repo. Needs verification. |
 | 5 | No function/method-level analysis | Medium | Spec admits file-level only. The problem statement explicitly lists "Function calls, Method calls" as expected relationships. Judges may dock points. |
@@ -175,7 +175,7 @@ The three-phase progressive architecture is genuinely clever — immediate
 value (Phase 1) → silent deepening (Phase 2) → interactive exploration
 (Phase 3) is a better UX than any competitor approach researched.
 
-**However, it is a document, not a product.** The hackathon judges will want
+**However, it is a document, not a product.** Users will want
 to see a working demo. The spec needs:
 
 1. **Implementation** — 586 lines of markdown → needs ~2000+ lines of Rust +
@@ -191,7 +191,7 @@ to see a working demo. The spec needs:
 
 ## 9. Recommended Next Steps
 
-The spec is a good **blueprint**. To win the hackathon, it needs to be built.
+The spec is a good **blueprint**. To be useful, it needs to be built.
 Priority order:
 
 1. **Phase 2 Rust core** (clone + import extraction + petgraph) — this is the
@@ -213,7 +213,7 @@ Priority order:
 | Does it cover all criteria? | Mostly — missing DB, events, function-level |
 | Is the architecture sound? | Yes — three-phase progressive is smart |
 | Is it implemented? | No — documentation only |
-| Can it win the hackathon as-is? | No — needs working code |
+| Is it ready for production as-is? | No — needs working code |
 | Is it a good starting point? | Yes — strong blueprint for implementation |
 
 **Approval status:** Approved as a planning document. Needs implementation

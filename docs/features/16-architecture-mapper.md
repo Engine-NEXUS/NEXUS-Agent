@@ -1,6 +1,6 @@
 # 16 — Architecture Mapper
 
-**Feature:** Voice-triggered, two-phase repository architecture analysis with real dependency graphing, impact analysis, and an agentic chat interface — built into NEXUS for the Citta RISE Hackathon, Problem 05.
+**Feature:** Voice-triggered, two-phase repository architecture analysis with real dependency graphing, impact analysis, and an agentic chat interface — built into NEXUS.
 
 ---
 
@@ -10,7 +10,7 @@
 >
 > Core objective: Transform an unfamiliar codebase into an understandable map of architecture and relationships, so developers can explore impact before they change anything.
 
-The key constraints the judges enforce:
+The key constraints:
 
 > *"A folder tree is not architecture."*
 > *"Impact analysis must be explainable — show dependency paths, not just a list of affected files."*
@@ -498,7 +498,7 @@ petgraph = "0.6"   # DFS, BFS, cycle detection, centrality
 
 ---
 
-## Demo Script (Hackathon)
+## Demo Script
 
 ```
 [Judge observes]

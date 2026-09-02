@@ -165,7 +165,7 @@ Source: cleanup inventory subagent.
   `server/nlu/model/` are copied manually into `src-tauri/resources/server/`.
 - **Stale docs:** many docs still reference faster-whisper on port 8000 (now
   39217), n8n, Ollama, `whisper.cpp`, `porcupine`, `moonshine`.
-- **Dead root files:** `Autonomous_Codebase_Architecture_Mapper_Hackathon.pdf`,
+- **Dead root files:** `Autonomous_Codebase_Architecture_Mapper.pdf`,
   `CHANGELOG_PREM22K.md`, possibly `install.sh`.
 
 ---
