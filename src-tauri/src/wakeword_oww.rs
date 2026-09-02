@@ -321,11 +321,7 @@ mod engine {
     pub struct WakeEngine {
         pub classifier: ModelType,
         pub audio_features: AudioFeatures,
-        #[cfg(feature = "wakeword-sherpa")]
-        pub speaker: Option<crate::voice_profile::SpeakerVerifier>,
-        #[cfg(not(feature = "wakeword-sherpa"))]
-        #[allow(dead_code)]
-        pub speaker: (),  // placeholder — speaker verification not compiled in default builds
+
         pub sample_rate: i32,
         pub chunk_buffer: Vec<f32>,
         pub threshold: f32,
@@ -444,36 +440,7 @@ mod engine {
             tracing::info!("Loading audio feature extractors from: {}", oww_dir.display());
             let audio_features = AudioFeatures::new(&oww_dir)?;
 
-            // --- Speaker verifier (optional, wakeword-sherpa only) ---
-            #[cfg(feature = "wakeword-sherpa")]
-            let speaker = {
-                let speaker_model_path = oww_dir.join("speaker_model.onnx");
-                let speaker_model_path = if speaker_model_path.exists() {
-                    speaker_model_path
-                } else {
-                    let alt = resource_dir.join("sherpa").join("speaker_model.onnx");
-                    if alt.exists() { alt } else { speaker_model_path }
-                };
-                if speaker_model_path.exists() {
-                    let profile_path = crate::voice_profile::resolve_profile_path(&app_data_dir);
-                    match crate::voice_profile::SpeakerVerifier::new(speaker_model_path, profile_path) {
-                        Ok(v) => {
-                            if v.has_profile() {
-                                tracing::info!("Speaker verification enabled (voice profile loaded)");
-                            } else {
-                                tracing::info!("Speaker verification open (no profile enrolled)");
-                            }
-                            Some(v)
-                        }
-                        Err(e) => { tracing::warn!("Failed to init speaker verifier: {e}"); None }
-                    }
-                } else {
-                    tracing::warn!("Speaker model not found — speaker verification disabled");
-                    None
-                }
-            };
-            #[cfg(not(feature = "wakeword-sherpa"))]
-            let speaker = ();
+
 
             let threshold = 0.35f32;
             tracing::info!(
@@ -910,21 +877,6 @@ mod engine {
                 }
 
                 if detected && !self.confirmation_active {
-                    // --- Speaker verification ---
-                    #[cfg(feature = "wakeword-sherpa")]
-                    let accepted = if let Some(ref verifier) = self.speaker {
-                        if verifier.has_profile() {
-                            tracing::debug!(
-                                "Speaker verification: using KWS-only (audio buffer TODO)"
-                            );
-                            true
-                        } else {
-                            true // open mode
-                        }
-                    } else {
-                        true
-                    };
-                    #[cfg(not(feature = "wakeword-sherpa"))]
                     let accepted = true;
 
                     if accepted {

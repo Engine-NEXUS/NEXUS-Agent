@@ -45,7 +45,6 @@ cpal = "0.15"
 # The default wake engine is openWakeWord (wakeword-oww / tract-onnx).
 # sherpa-onnx pulls in a large C++ ONNX Runtime build step — gating it
 # behind a feature flag shaves ~5-8 min off cold builds for the default config.
-sherpa-onnx = { version = "1.13.4", optional = true }
 # tract-onnx: pure-Rust ONNX inference (no native ONNX Runtime dependency)
 # Used for openWakeWord KWS pipeline: melspectrogram → embedding → classifier
 tract-onnx = "0.23"
@@ -127,7 +126,6 @@ default = ["wakeword-oww"]
 # It is intentionally NOT in `default` — `tauri dev` needs it OFF so the Vite
 # dev server and hot reload keep working.
 custom-protocol = ["tauri/custom-protocol"]
-wakeword-sherpa = ["dep:sherpa-onnx"]  # sherpa-onnx VAD + ASR + speaker verification (old)
 wakeword-oww = []                # openWakeWord via tract-onnx (new, default)
 mock-wake = []                   # CI: skip native lib, emit fake wake on hotkey only
 

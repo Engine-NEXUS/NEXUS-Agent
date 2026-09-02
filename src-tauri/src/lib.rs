@@ -15,8 +15,6 @@ mod wakeword_oww;
 mod wakeword {
     pub use crate::wakeword_oww::*;
 }
-// wakeword-sherpa (opt-in): old VAD+ASR pipeline using sherpa-onnx C++ runtime
-#[cfg(all(not(feature = "wakeword-oww"), feature = "wakeword-sherpa"))]
 mod wakeword;
 mod network;
 mod tray;
@@ -29,10 +27,7 @@ mod lazy_nlu;
 mod lazy_stt;
 mod stt;
 mod tts;
-// voice_profile: speaker embedding via sherpa-onnx — only needed with wakeword-sherpa.
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
-#[cfg(feature = "wakeword-sherpa")]
-mod voice_profile;
 mod meeting_detect;
 mod mic_permissions;
 mod mpris;
