@@ -113,10 +113,10 @@ jobs:
           with open('src-tauri/tauri.conf.json', 'w') as f:
             json.dump(cfg, f, indent=2)
           "
-          # Build just the .app bundle (skip .dmg which requires codesigning)
+          # Build just the .app bundle — do NOT set APPLE_SIGNING_IDENTITY env var
+          # (setting it to empty string still triggers codesign; must be unset entirely)
+          unset APPLE_SIGNING_IDENTITY 2>/dev/null || true
           npx --yes @tauri-apps/cli build --bundles app
-        env:
-          APPLE_SIGNING_IDENTITY: ""
 
       - name: Verify .app was created
         run: |
