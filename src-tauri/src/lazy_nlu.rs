@@ -19,7 +19,7 @@ static NLU_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static NLU_RUNNING: AtomicBool = AtomicBool::new(false);
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
-const NLU_IDLE_TIMEOUT: Duration = Duration::from_secs(60); // 1 minute
+const NLU_IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes (was 60s)
 const NLU_PORT: u16 = 39218;
 
 /// Get the NLU server script path.
@@ -184,8 +184,10 @@ pub fn ensure_nlu_running() {
             *NLU_CHILD.lock().unwrap() = Some(c);
             NLU_RUNNING.store(true, Ordering::Relaxed);
             tracing::info!("[lazy_nlu] NLU server spawned, waiting for it to be ready...");
-            // Wait for the server to be responsive (up to 15 seconds)
-            for _ in 0..30 {
+            // Wait for the server to be responsive (up to 30 seconds).
+            // The BERT-Mini ONNX model + transformers tokenizer can take ~18s
+            // to load on first spawn, so we wait 30s to be safe.
+            for _ in 0..60 {
                 std::thread::sleep(Duration::from_millis(500));
                 if is_nlu_responsive() {
                     tracing::info!("[lazy_nlu] NLU server is ready");
@@ -194,7 +196,7 @@ pub fn ensure_nlu_running() {
                     return;
                 }
             }
-            tracing::warn!("[lazy_nlu] NLU server did not become responsive in 15s");
+            tracing::warn!("[lazy_nlu] NLU server did not become responsive in 30s");
             NLU_RUNNING.store(false, Ordering::Relaxed);
         }
         Err(e) => {

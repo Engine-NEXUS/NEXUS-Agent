@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 
 static STT_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 static STT_RUNNING: AtomicBool = AtomicBool::new(false);
+/// Guard against concurrent ensure_stt_running calls — set to true atomically
+/// before spawning, so a second caller sees it and returns immediately.
+static STT_STARTING: AtomicBool = AtomicBool::new(false);
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 
 const STT_IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes (unused — STT kept alive permanently)
@@ -177,15 +180,24 @@ pub fn find_python() -> Option<String> {
 
 /// Start the STT server if it's not already running.
 /// Called when the wake word fires or when a transcription is needed.
+/// Uses STT_STARTING as a compare-and-swap guard to prevent two concurrent
+/// callers from both spawning a child process.
 pub fn ensure_stt_running() {
     // Already running?
     if STT_RUNNING.load(Ordering::Relaxed) {
         return;
     }
 
+    // Atomically claim the "starting" slot — prevents concurrent spawns
+    if STT_STARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        tracing::debug!("lazy_stt: another thread is already starting STT, skipping");
+        return;
+    }
+
     // Check if an external STT server is already running (e.g. started by run.ps1)
     if is_stt_responsive() {
         STT_RUNNING.store(true, Ordering::Relaxed);
+        STT_STARTING.store(false, Ordering::SeqCst);
         tracing::info!("lazy_stt: external STT server already running on port {STT_PORT}");
         return;
     }
@@ -194,6 +206,7 @@ pub fn ensure_stt_running() {
     let script = match stt_script_path() {
         Some(p) => p,
         None => {
+            STT_STARTING.store(false, Ordering::SeqCst);
             tracing::warn!("lazy_stt: stt_server.py not found — skipping (external server may be used)");
             return;
         }
@@ -204,6 +217,7 @@ pub fn ensure_stt_running() {
     let python_cmd = match find_python() {
         Some(cmd) => cmd,
         None => {
+            STT_STARTING.store(false, Ordering::SeqCst);
             tracing::error!(
                 "lazy_stt: no Python interpreter found. Install Python 3.12+ and run: \
                  pip install faster-whisper fastapi uvicorn python-multipart"
@@ -223,6 +237,7 @@ pub fn ensure_stt_running() {
             let pid = c.id();
             *STT_CHILD.lock().unwrap() = Some(c);
             STT_RUNNING.store(true, Ordering::Relaxed);
+            STT_STARTING.store(false, Ordering::SeqCst);
             *LAST_REQUEST.lock().unwrap() = Some(Instant::now());
             tracing::info!("lazy_stt: STT server started (PID {pid})");
 
@@ -239,6 +254,7 @@ pub fn ensure_stt_running() {
             });
         }
         Err(e) => {
+            STT_STARTING.store(false, Ordering::SeqCst);
             tracing::error!("lazy_stt: failed to start STT server: {e}");
         }
     }

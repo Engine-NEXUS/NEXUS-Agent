@@ -14,23 +14,13 @@
 //!   - The hotkey never does both at once — it's one or the other based on
 //!     the current sidebar visibility state.
 
-#[cfg(not(target_os = "linux"))]
 use tauri::{AppHandle, Manager, Runtime};
-#[cfg(not(target_os = "linux"))]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-#[cfg(not(target_os = "linux"))]
 const HOTKEYS: &[&str] = &[
     "CommandOrControl+Space",
-    "CommandOrControl+Alt+Space",
-    // NOTE: "Alt+Space" was removed — it conflicts with the Windows system
-    // menu shortcut (Restore/Move/Size/Minimize/Maximize/Close). Registering
-    // it as a global hotkey intercepts ALL Alt+Space events system-wide,
-    // which caused WhatsApp (and other apps) to glitch — windows would
-    // flash open/close because the system menu event was being swallowed.
 ];
 
-#[cfg(not(target_os = "linux"))]
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     for &hk in HOTKEYS {
         let sc: Shortcut = match hk.parse() {
@@ -90,33 +80,5 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         }
     }
 
-    // ── TEMPORARY DEBUG HOTKEY ──────────────────────────────────────
-    // Ctrl+Alt+A opens the architect sidebar directly, bypassing
-    // voice/STT entirely, so the blur backdrop can be verified without
-    // depending on wake-word/mic reliability. Remove once confirmed.
-    if let Ok(sc) = "CommandOrControl+Alt+A".parse::<Shortcut>() {
-        let handle = app.clone();
-        if let Err(e) = app.global_shortcut().on_shortcut(sc, move |app_handle, _shortcut, event| {
-            if event.state() == ShortcutState::Pressed {
-                tracing::info!("debug hotkey (Ctrl+Alt+A) → opening architect sidebar directly");
-                let handle2 = app_handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = crate::architect::open_architect_window(handle2, None, None).await;
-                });
-            }
-        }) {
-            tracing::warn!("Failed to register debug hotkey Ctrl+Alt+A: {e}");
-        } else {
-            tracing::info!("Registered DEBUG hotkey: Ctrl+Alt+A (opens architect sidebar directly)");
-        }
-        let _ = handle; // silence unused warning if handle unused elsewhere
-    }
-
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-pub fn init<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Result<(), String> {
-    tracing::info!("Global shortcuts are disabled on Linux (Wayland compatibility). Use `nexus --wake`.");
     Ok(())
 }

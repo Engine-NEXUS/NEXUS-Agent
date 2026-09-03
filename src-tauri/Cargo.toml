@@ -53,9 +53,8 @@ circular-buffer = "1.2"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
-# TTS engine (in-process Kokoro)
-# TTS engine (Piper — lightweight neural TTS, ~80 MB RAM, 85ms load)
-piper-rs = "0.2"
+# TTS engine (in-process Kokoro — 82M params, ~350 MB RAM, 1.7s lazy load)
+kokoro-micro = "1.0"
 rodio = "0.19"
 
 # Cross-platform app/URL launching (open::that, open::with)
@@ -80,6 +79,16 @@ sysinfo = "0.32"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 
+# AST-aware symbol extraction for the Architecture Mapper (tree-sitter)
+tree-sitter = "0.25"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+# SHA-256 for content hashing in symbol extraction
+sha2 = "0.10"
+
 
 # Windows-specific: EnumWindows + SetForegroundWindow + ShellExecuteW
 [target.'cfg(windows)'.dependencies]
@@ -94,10 +103,13 @@ windows = { version = "0.36", features = [
     "Win32_System_ProcessStatus",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
     "Win32_Graphics_Gdi",
 ] }
 # Registry access for App Paths + Uninstall keys (app discovery)
 winreg = "0.55"
+# UI Automation for active browser URL detection (Architecture Mapper)
+uiautomation = "0.25"
 # WebView2 COM bindings for the PermissionRequested handler (auto-approve mic
 # permission so the prompt never re-appears). Version pinned to match wry's.
 webview2-com = "0.38"

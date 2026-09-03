@@ -27,11 +27,14 @@ mod lazy_stt;
 mod stt;
 mod stt_learning;
 mod tts;
+mod volume;
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
 mod meeting_detect;
 mod mic_permissions;
 mod mpris;
 mod architect;
+mod browser_url;
+mod symbol_extractor;
 mod dyn_windows;
 mod diagnostics;
 #[cfg(target_os = "windows")]
@@ -380,15 +383,19 @@ pub fn run() {
             app.manage(meeting_state.clone());
 
             // ─── STT / TTS Local Engine State ──────────────────────────
-            let stt_state = stt::SttState { _placeholder: std::sync::Arc::new(tokio::sync::Mutex::new(())) };
+            let stt_state = stt::SttState::new();
             app.manage(stt_state);
+
+            // ─── Architect Cancellation Registry ──────────────────────
+            // Required by analyze_repo_deep and cancel_architect_analysis.
+            // Without this, Phase 2 deep scan invoke fails silently.
+            app.manage(architect::ArchitectCancels::new());
 
             let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));
             let tts_cache_arc = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-            let tts_sample_rate_arc = std::sync::Arc::new(tokio::sync::Mutex::new(22050u32));
-            let tts_state = tts::TtsState { engine: tts_engine_arc.clone(), cache: tts_cache_arc.clone(), sample_rate: tts_sample_rate_arc.clone() };
+            let tts_state = tts::TtsState { engine: tts_engine_arc.clone(), cache: tts_cache_arc.clone() };
             app.manage(tts_state);
-            // Piper TTS is lazy-loaded on first speak_text call (saves ~80 MB at idle).
+            // Kokoro TTS is lazy-loaded on first speak_text call (saves ~350 MB at idle).
             // See tts::ensure_engine_loaded().
 
             // ─── STT Self-Learning State ──────────────────────────────
@@ -479,10 +486,52 @@ pub fn run() {
             // Pre-index installed apps for instant launch (background thread).
             app_registry::init();
 
-            // NLU pre-warm is deferred — it will be started lazily on the first
-            // unparseable command via lazy_nlu::ensure_nlu_running(). This saves
-            // 50-100 MB RAM at idle. The deterministic parser handles most
-            // commands without NLU.
+            // ─── Pre-warm TTS + STT + NLU at startup (Phase 1) ──────────
+            // Eliminates ~31.7s of cold-start latency on the first voice command.
+            //
+            // RAM cost: +600 MB idle (TTS ~350 MB + STT ~150 MB + NLU ~100 MB)
+            // Latency saved: ~31.7s on first command (TTS 5.7s + STT 8s + NLU 18s)
+            //
+            // Priority order: TTS first (needed for "On it sir" ack),
+            // then STT (needed for transcription), then NLU (needed for
+            // ambiguous commands — deterministic parser handles most).
+            //
+            // TTS pre-warm: load Kokoro engine + pre-synthesize ack phrases
+            // in a background async task. The orb appears immediately; the
+            // engine loads while the user sees the idle orb.
+            let prewarm_engine = tts_engine_arc.clone();
+            let prewarm_cache = tts_cache_arc.clone();
+            tauri::async_runtime::spawn(async move {
+                tracing::info!("tts: startup pre-warm starting...");
+                if let Err(e) = tts::ensure_engine_loaded(&prewarm_engine, &prewarm_cache).await {
+                    tracing::warn!("tts: startup pre-warm failed: {}", e);
+                } else {
+                    tracing::info!("tts: startup pre-warm complete — engine ready for instant ack");
+                }
+            });
+
+            // STT pre-warm: start the faster-whisper Python sidecar in a
+            // background thread so the model is loaded before the first
+            // wake-word detection. This eliminates the ~8s cold-start.
+            std::thread::spawn(|| {
+                tracing::info!("stt: startup pre-warm starting...");
+                lazy_stt::ensure_stt_running();
+                tracing::info!("stt: startup pre-warm complete — model loading in background");
+            });
+
+            // NLU pre-warm: start the BERT-Mini NLU server in a background
+            // thread. The deterministic parser handles most commands, but
+            // for ambiguous ones the NLU adds ~18s cold-start. Pre-warming
+            // eliminates this. The NLU idle timeout is 300s (5 min), so it
+            // stays resident through a typical voice session.
+            std::thread::spawn(|| {
+                tracing::info!("nlu: startup pre-warm starting...");
+                lazy_nlu::ensure_nlu_running();
+                // Mark a request so the idle killer doesn't immediately kill
+                // the server (it kills if LAST_REQUEST is None on first check).
+                lazy_nlu::mark_nlu_request();
+                tracing::info!("nlu: startup pre-warm complete — model loading in background");
+            });
 
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;
@@ -676,6 +725,8 @@ pub fn run() {
             commands::show_sidebar_with_analysis,
             commands::hide_sidebar,
             commands::get_pending_sidebar_content,
+            commands::show_loading_indicator,
+            commands::hide_loading_indicator,
             commands::pause_wakeword,
             commands::resume_wakeword,
             stt::transcribe_audio,
@@ -691,7 +742,9 @@ pub fn run() {
             intent_parser::parse_transcript,
             architect::get_active_repo_url,
             architect::open_architect_window,
+            architect::open_architect_with_auto_detect,
             architect::get_pending_architect_repo,
+            architect::cancel_architect_analysis,
             architect::analyze_repo_phase1,
             architect::analyze_repo_deep,
             architect::query_impact,

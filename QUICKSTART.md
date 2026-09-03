@@ -70,5 +70,7 @@ Enterprise codebases span thousands of files where architecture evolves faster t
 | Issue | Solution |
 | :--- | :--- |
 | **Microphone is silent or blocked** | Press **`Ctrl+Space`** to trigger listening directly. Ensure Windows *Settings → Privacy → Microphone* allows desktop apps. |
+| **Intel SST mic goes silent (RMS=0.000000)** | The Intel Smart Sound Technology driver stops delivering audio after 2-25 min. Fix: **Device Manager → Sound, video and game controllers → Intel Smart Sound Technology for Digital Microphones → right-click → Disable → Enable**. Or run `Restart-Service -Name "Audiosrv" -Force` in PowerShell (Admin). Updating to the latest HP driver may also help. |
+| **STT returns truncated transcripts ("open-")** | This is caused by the Intel SST mic silence bug (above). NEXUS has built-in recovery: "open-" is auto-corrected to "open architecture mapper". If other commands are truncated, restart the audio service. |
 | **Want to change voice settings** | Right-click the **NEXUS tray icon** (near Windows clock) → **Settings** → **Audio & Voice**. |
 | **Need diagnostics report** | Right-click the tray icon → **Diagnostics** (checks STT, TTS, Worker, and OAuth connections). |

@@ -64,7 +64,8 @@ export const useSidebar = create<SidebarState>((set) => ({
   collapsedQuery: false,
   analysisData: null,
 
-  show: (query: string, text: string) =>
+  show: (query: string, text: string) => {
+    console.log("[sidebarStore] show called: query=", query?.substring(0, 50), "text=", text?.substring(0, 50));
     set({
       visible: true,
       query,
@@ -73,9 +74,11 @@ export const useSidebar = create<SidebarState>((set) => ({
       speaking: false,
       activeImage: null,
       analysisData: null,
-    }),
+    });
+  },
 
-  showAnalysis: (query: string, text: string, analysis: RepoAnalysis) =>
+  showAnalysis: (query: string, text: string, analysis: RepoAnalysis) => {
+    console.log("[sidebarStore] showAnalysis called: query=", query?.substring(0, 50), "text=", text?.substring(0, 50));
     set({
       visible: true,
       query,
@@ -84,7 +87,8 @@ export const useSidebar = create<SidebarState>((set) => ({
       speaking: false,
       activeImage: null,
       analysisData: analysis,
-    }),
+    });
+  },
 
   hide: () =>
     set({

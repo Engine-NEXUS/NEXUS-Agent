@@ -68,6 +68,8 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 | 25 | Rich Repo Analysis Dashboard | [25-rich-repo-analysis-dashboard.md](25-rich-repo-analysis-dashboard.md) | GLM-4.7-flash (free) + GitHub languages API + pie charts (languages/frameworks) + databases + features + top bar heading |
 | 26 | Wake-Word Training Guide | [26-wake-word-training-guide.md](26-wake-word-training-guide.md) | How to train a custom openWakeWord ONNX model for "nexus" with TTS samples + negative samples |
 | 27 | Loading Indicator Overlay | [27-loading-indicator-overlay.md](27-loading-indicator-overlay.md) | Transparent click-through Lottie animation at top-right corner, shown during Worker processing after "On it sir" |
+| 28 | System Volume Control Research | [28-system-volume-control-research.md](28-system-volume-control-research.md) | Deep research on programmatic volume control across Windows (Core Audio COM), macOS (CoreAudio), and Linux (PipeWire/PulseAudio/ALSA) — permissions, APIs, Rust integration |
+| 29 | TTS Auto-Volume Plan | [29-tts-auto-volume-plan.md](29-tts-auto-volume-plan.md) | Plan: before NEXUS speaks, set system volume to configured level (default 75%), restore after TTS completes — Windows COM, macOS CoreAudio, Linux shell |
 
 ### Research System (2026-09-01)
 
@@ -121,35 +123,11 @@ branches, forming the basis of PR #7 (merge of both branches into `main`).
 - Audio volume RMS tracking + multi-turn VAD resume + "didn't catch that" retry
 - STT server missing `__main__` block fix + wake word reliability assessment
 
----
-
-## Architecture Evolution Documents (2026-09-02 to 2026-09-03)
-
-These documents trace the architectural shifts in NEXUS — what changed,
-why it changed, what the previous approach was, and what we learned.
-Created for future reference so contributors understand the rationale
-behind current architectural decisions.
+### Architecture Mapper Polish (2026-09-02)
 
 | # | Feature | File | Description |
-|---|---------|------|-------------|
-| 36 | TTS Engine Evolution | [36-tts-engine-evolution.md](36-tts-engine-evolution.md) | Kokoro (350 MB) → Piper (80 MB) — 270 MB RAM reduction, 20x faster load |
-| 37 | STT Engine Evolution | [37-stt-engine-evolution.md](37-stt-engine-evolution.md) | Moonshine (failed, garbage transcripts) → faster-whisper (restored) + self-learning |
-| 38 | Loading Indicator Evolution | [38-loading-indicator-evolution.md](38-loading-indicator-evolution.md) | Separate Tauri window (Wayland bugs, 40 MB) → in-orb rendering (0 MB, no bugs) |
-| 39 | Voice Ack Pipeline Evolution | [39-voice-ack-pipeline-evolution.md](39-voice-ack-pipeline-evolution.md) | Always-ack (250ms) → validate-first + cached TTS (5ms, 67x faster) |
-| 40 | Self-Learning STT | [40-self-learning-stt.md](40-self-learning-stt.md) | Static corrections (manual) → self-learning from user repetition (automatic) |
-| 41 | CI/CD Evolution | [41-ci-cd-evolution.md](41-ci-cd-evolution.md) | No CI → cross-platform installer pipeline (Windows .exe/.msi + macOS .app) |
-| 42 | RAM Optimization Journey | [42-ram-optimization-journey.md](42-ram-optimization-journey.md) | 1,644 MB → 104 MB idle (94% reduction) — lazy loading, window destruction, Piper |
-| 43 | Architectural Timeline | [43-architectural-timeline.md](43-architectural-timeline.md) | Master overview of all architectural shifts and key decisions |
+|---|---|---|---|
+| 33 | Architecture Mapper Voice → Loading Flow | [33-architecture-mapper-voice-loading-flow.md](33-architecture-mapper-voice-loading-flow.md) | "Open architecture mapper" → immediate "On it sir" → orb hides → loading.json at top-right → background analysis → window opens when ready |
+| 34 | Architecture Mapper Layout Redesign | [34-architecture-mapper-layout-redesign.md](34-architecture-mapper-layout-redesign.md) | 3 view tabs (Files/Hotspots/Cycles) in header, full-width map, 2-row bottom section (file inspector + analytics) |
+| 35 | Custom-Protocol Build Requirement | [35-custom-protocol-build-requirement.md](35-custom-protocol-build-requirement.md) | Frontend changes require Rust binary rebuild (`cargo build --release --features custom-protocol`) — frontend is embedded in the binary |
 
-### Key Architectural Decisions (Summarized)
-
-1. **Python STT sidecar** (not in-process Rust) — accuracy > elegance
-2. **Piper TTS** (not Kokoro) — 270 MB RAM savings, 20x faster load
-3. **In-orb loading** (not separate window) — Wayland fix, 40 MB savings
-4. **Self-learning STT** (not static corrections) — scales per user
-5. **Validate before ack** (not always ack) — don't acknowledge garbage
-6. **Cached TTS** (not synthesize each time) — 5ms vs 250ms for "On it sir"
-7. **GitHub Actions macOS** (not physical Mac) — free, real Apple hardware
-8. **Unsigned .app** (not signed .dmg) — no Apple Developer cert yet
-9. **Single Worker** (not multiple) — no cross-Worker latency
-10. **No window-vibrancy on sidebar** — DWM renders solid on non-activating windows

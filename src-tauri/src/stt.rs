@@ -5,12 +5,21 @@
 //! This module sends Int16 PCM audio via HTTP POST and returns the transcript.
 
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tauri::State;
 
 pub struct SttState {
-    /// Reserved for future use (e.g. connection pooling). Currently unused.
-    pub _placeholder: Arc<Mutex<()>>,
+    /// Reused HTTP client — avoids building a new reqwest::Client per transcription.
+    pub client: Arc<reqwest::Client>,
+}
+
+impl SttState {
+    pub fn new() -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("failed to build STT HTTP client");
+        Self { client: Arc::new(client) }
+    }
 }
 
 const STT_URL: &str = "http://127.0.0.1:39217/transcribe";
@@ -22,7 +31,7 @@ const STT_URL: &str = "http://127.0.0.1:39217/transcribe";
 #[tauri::command]
 pub async fn transcribe_audio(
     samples: Vec<i16>,
-    _state: State<'_, SttState>,
+    state: State<'_, SttState>,
 ) -> Result<String, String> {
     tracing::info!("stt: received {} samples for faster-whisper transcription", samples.len());
 
@@ -30,11 +39,8 @@ pub async fn transcribe_audio(
     crate::lazy_stt::ensure_stt_running();
     crate::lazy_stt::mark_stt_request();
 
-    // Wait for the STT server to be ready (it takes ~10-15s to load Whisper on first call)
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    // Reuse the long-lived client from SttState (no per-call Client::build)
+    let client = &state.client;
 
     let mut ready = false;
     for attempt in 0..40 {
@@ -116,14 +122,10 @@ pub async fn transcribe_audio(
 
 /// Check if the STT server is reachable.
 #[tauri::command]
-pub async fn stt_status() -> Result<bool, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
+pub async fn stt_status(state: State<'_, SttState>) -> Result<bool, String> {
+    let resp = state.client
         .get("http://127.0.0.1:39217/health")
+        .timeout(std::time::Duration::from_secs(3))
         .send()
         .await;
 

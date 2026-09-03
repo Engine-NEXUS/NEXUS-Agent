@@ -187,6 +187,7 @@ async function startListening() {
   // This covers the barge-in case where the user presses Ctrl+Space
   // while a long-running query is in flight and the loading indicator
   // is still visible.
+  useAssistant.getState().setLoadingVisible(false);
   s.setVisible(true);
   s.setState("listening");
   // Clear barge-in flag now that we're starting a fresh listening session
@@ -450,7 +451,9 @@ void setupCommandDetectionListener();
   if (micStream) {
     micStream.getTracks().forEach((t) => (t.enabled = false));
   }
-  // Hide the loading indicator if it was showing.  useAssistant.getState().reset();
+  // Hide the loading indicator if it was showing.
+  useAssistant.getState().setLoadingVisible(false);
+  useAssistant.getState().reset();
   useAssistant.getState().setVisible(false);
 };
 

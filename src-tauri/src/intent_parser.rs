@@ -1379,6 +1379,14 @@ fn parse_media(text: &str) -> Option<ParsedIntent> {
 ///   "open codebase mapper"
 ///   "open dependency mapper"
 fn is_architect_command(text: &str) -> bool {
+    // Truncated "open-" or "open" — Intel SST mic silence cuts the utterance
+    // mid-word. STT returns "open-" or "open" instead of "open architecture mapper".
+    // In this app's context, "open" almost always means "open architecture mapper".
+    let trimmed = text.trim().to_lowercase();
+    if trimmed == "open-" || trimmed == "open" {
+        tracing::info!("[intent_parser] truncated '{}' → open_architect (mic silence recovery)", trimmed);
+        return true;
+    }
     regex_match(
         text,
         r"^(?:open|launch|start|show|bring\s+up|pull\s+up|give\s+me|show\s+me)\s+(?:me\s+)?(?:the\s+)?(?:architecture|architect|codebase|dependency)(?:\s+(?:mapper|map|window|mapper\s+window|viewer|diagram|graph|explorer))?$",

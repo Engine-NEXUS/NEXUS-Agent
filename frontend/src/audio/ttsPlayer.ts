@@ -13,7 +13,7 @@ let ttsGeneration = 0;
 export interface VoiceOption {
   id: string;
   name: string;
-  provider: "piper" | "system";
+  provider: "kokoro" | "system";
   accent: string;
   description: string;
   locale: string;
@@ -23,14 +23,24 @@ export interface VoiceOption {
 
 export const CURATED_VOICES: VoiceOption[] = [
   {
-    id: "en_US-amy-medium",
-    name: "Amy (Piper)",
-    provider: "piper",
+    id: "af_sky",
+    name: "Sky (Kokoro)",
+    provider: "kokoro",
     accent: "American",
-    description: "Clear, natural female voice. Runs 100% locally with ultra-low latency (~85ms load, ~80MB RAM).",
+    description: "Warm, natural female voice. Runs 100% locally with low latency (~1.7s load, ~350MB RAM).",
     locale: "en-US",
     gender: "female",
-    sampleText: "Hello, I am Amy. All systems are operational.",
+    sampleText: "Hello, I am Sky. All systems are operational.",
+  },
+  {
+    id: "am_adam",
+    name: "Adam (Kokoro)",
+    provider: "kokoro",
+    accent: "American",
+    description: "Deep, clear male voice. Runs 100% locally.",
+    locale: "en-US",
+    gender: "male",
+    sampleText: "Hello, I am Adam. All systems are operational.",
   },
 ];
 
@@ -125,7 +135,7 @@ export async function previewVoice(
   speed?: number,
 ): Promise<void> {
   stopTts();
-  if (voice.provider === "piper") {
+  if (voice.provider === "kokoro") {
     // After stopTts, capture the new generation (stopTts incremented it)
     return playKokoro(voice.sampleText, voice.id, speed ?? 1.15, ttsGeneration, onEnd);
   }
@@ -139,8 +149,14 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return;
   }
 
-  // Capture generation before any async awaits — if stopTts fires during
-  // the settings load, we'll detect it and skip playback.
+  // Stop any currently-playing TTS before starting new playback.
+  // This prevents overlapping audio when the server ack and result
+  // arrive in quick succession (especially during first-load when
+  // the Kokoro engine takes ~7s to initialize).
+  stopTts();
+
+  // Capture generation after stopTts — any in-flight speak() calls
+  // from a previous turn will see the mismatch and skip playback.
   const myGen = ttsGeneration;
 
   const settings = await getSavedSettings();
@@ -150,7 +166,7 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return;
   }
 
-  const voiceId = settings?.ttsVoice || "en_US-amy-medium";
+  const voiceId = settings?.ttsVoice || "af_sky";
   const speed = settings?.speechRate ?? 1.15;
 
   return playKokoro(text, voiceId, speed, myGen, onEnd);
@@ -168,6 +184,9 @@ export async function speakCached(phrase: string, onEnd?: () => void): Promise<v
     onEnd?.();
     return;
   }
+
+  // Stop any currently-playing TTS before starting new playback.
+  stopTts();
 
   const myGen = ttsGeneration;
   try {

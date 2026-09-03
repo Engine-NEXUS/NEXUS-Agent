@@ -32,6 +32,7 @@ interface Settings {
   deviceId: string;
   ttsVoice: string;
   speechRate: number;
+  ttsVolume?: number;
   ttsProvider?: string;
   elevenlabsApiKey?: string;
   fishAudioApiKey?: string;
@@ -54,6 +55,7 @@ const DEFAULT_SETTINGS: Settings = {
   deviceId: "local-device",
   ttsVoice: "af_sky",
   speechRate: 1.15,
+  ttsVolume: 75,
   ttsProvider: "kokoro",
 };
 
@@ -313,6 +315,24 @@ function AudioTab({ settings, update }: { settings: Settings; update: <K extends
             step={0.1}
             value={settings.speechRate}
             onChange={(e) => update("speechRate", parseFloat(e.target.value))}
+          />
+        </div>
+
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">TTS Volume</span>
+            <span className="nx-row-hint">
+              NEXUS sets system volume to {(settings.ttsVolume ?? 75)}% while speaking, then restores it
+            </span>
+          </div>
+          <input
+            type="range"
+            className="nx-slider"
+            min={0}
+            max={100}
+            step={5}
+            value={settings.ttsVolume ?? 75}
+            onChange={(e) => update("ttsVolume", parseInt(e.target.value))}
           />
         </div>
       </section>

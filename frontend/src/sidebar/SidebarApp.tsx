@@ -104,8 +104,10 @@ export function SidebarApp() {
       "get_pending_sidebar_content"
     )
       .then((pending) => {
+        console.log("[sidebar] get_pending_sidebar_content result:", pending ? `query=${pending.query?.length}chars text=${pending.text?.length}chars` : "null");
         if (pending) {
           if (pending.backdrop) {
+            console.log("[sidebar] setting backdrop image");
             document.documentElement.style.setProperty(
               "--sidebar-backdrop-image",
               `url(${pending.backdrop})`
@@ -113,13 +115,17 @@ export function SidebarApp() {
           }
           // If analysis data is present, use the rich dashboard view
           if (pending.analysis) {
+            console.log("[sidebar] showing with analysis data");
             useSidebar.getState().showAnalysis(pending.query, pending.text, pending.analysis);
           } else {
+            console.log("[sidebar] showing with plain text");
             show(pending.query, pending.text);
           }
+        } else {
+          console.warn("[sidebar] no pending content — sidebar will be empty");
         }
       })
-      .catch((e) => console.warn("[sidebar] get_pending_sidebar_content failed:", e));
+      .catch((e) => console.error("[sidebar] get_pending_sidebar_content FAILED:", e));
 
     listen<{ query: string; text: string }>("sidebar:show", (event) => {
       show(event.payload.query, event.payload.text);

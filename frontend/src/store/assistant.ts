@@ -11,6 +11,10 @@ interface TranscriptEntry {
 interface AssistantStore {
   state: AssistantState;
   visible: boolean;
+  /** Whether the loading animation overlay (top-right corner) is showing.
+   *  Set to true when "On it sir" is spoken (command validated as long-running).
+   *  Set to false when the result arrives or the orb re-shows. */
+  loadingVisible: boolean;
   /** Conversation transcript for display in the sidebar. */
   transcript: TranscriptEntry[];
   /** Index of the TTS chunk currently playing (for avatar mouth animation). */
@@ -19,6 +23,7 @@ interface AssistantStore {
   audioVolume: number;
   setState: (s: AssistantState) => void;
   setVisible: (v: boolean) => void;
+  setLoadingVisible: (v: boolean) => void;
   setAudioVolume: (v: number) => void;
   addUserMessage: (text: string) => void;
   addAssistantMessage: (text: string) => void;
@@ -32,11 +37,13 @@ interface AssistantStore {
 export const useAssistant = create<AssistantStore>((set) => ({
   state: "idle",
   visible: false,
+  loadingVisible: false,
   transcript: [],
   speakSeq: null,
   audioVolume: 0,
   setState: (s) => set({ state: s }),
   setVisible: (v) => set({ visible: v }),
+  setLoadingVisible: (v) => set({ loadingVisible: v }),
   setAudioVolume: (v) => set({ audioVolume: v }),
   addUserMessage: (text) =>
     set((st) => ({

@@ -80,6 +80,11 @@ _DEFAULT_HOTWORDS = [
     # Analysis commands (improves recognition of NEXUS commands)
     "analyse", "analyze", "analysis", "review", "pull request", "PR",
     "branch", "commit", "merge", "diff",
+    # Architecture mapper commands — comprehensive coverage
+    "architecture", "architect", "mapper", "codebase", "dependency",
+    "dependencies", "diagram", "graph", "viewer", "explorer",
+    "architecture mapper", "architect mapper", "architecture map",
+    "codebase mapper", "dependency mapper", "architecture diagram",
     # Known user repos (add more via stt_hotwords.txt)
     "servx", "NEXUS", "ULTRON", "zync", "ledger ai", "ledger-ai",
 ]
@@ -196,10 +201,16 @@ async def transcribe(audio: UploadFile = File(...)) -> JSONResponse:
         # with hotwords alone. The prompt biases the decoder toward recognised
         # words like "servx", "analyse", "PR" without forcing them.
         initial_prompt = (
-            "The user is giving voice commands to a desktop assistant. "
-            "Common commands include: analyse PR 5 in servx, review PR 3 in servx, "
-            "analyse PR 24 in ledger ai, open gmail, search youtube, close notepad. "
-            "Recognised names: servx, NEXUS, ULTRON, ledger ai, ledger-ai, github, gmail."
+            "The user is giving voice commands to a desktop assistant called NEXUS. "
+            "Common commands include: open architecture mapper, open the architecture mapper, "
+            "show architecture, show me the architecture, launch architecture mapper, "
+            "open architect, open codebase mapper, open dependency mapper, "
+            "open architecture diagram, open architecture graph, "
+            "analyse PR 5 in servx, review PR 3 in servx, "
+            "analyse PR 24 in ledger ai, open gmail, "
+            "search youtube, close notepad, open architect mapper. "
+            "Recognised names: servx, NEXUS, ULTRON, ledger ai, ledger-ai, github, gmail, "
+            "architecture, architect, mapper, codebase, dependency, diagram, graph."
         )
         segments, _info = model.transcribe(
             audio_file,

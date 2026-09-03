@@ -10,6 +10,8 @@ use tauri::{Emitter, Manager, Runtime};
 #[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 
+#[cfg(feature = "wakeword-sherpa")]
+use crate::voice_profile;
 use crate::app_registry;
 
 // ─── Pending sidebar content ───────────────────────────────────────
@@ -145,6 +147,229 @@ pub fn get_server_config<R: Runtime>(
 // Speaker enrollment uses sherpa-onnx for embedding extraction. When using the
 // default wakeword-oww engine, verification is not yet wired (see AGENTS.md),
 // so these commands are compiled out to avoid pulling in sherpa-onnx C++ deps.
+#[cfg(feature = "wakeword-sherpa")]
+pub use voice_profile_commands::*;
+#[cfg(feature = "wakeword-sherpa")]
+mod voice_profile_commands {
+    use super::*;
+
+    /// IPC: Get the current voice profile status (enrolled or not, number of clips, threshold).
+    #[tauri::command]
+    pub fn get_voice_profile_status<R: Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<voice_profile::VoiceProfileStatus, String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let profile_path = voice_profile::resolve_profile_path(&dir);
+
+        let sound_alikes: Vec<String> = voice_profile::SOUND_ALIKES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        if !profile_path.exists() {
+            return Ok(voice_profile::VoiceProfileStatus {
+                enrolled: false,
+                num_clips: 0,
+                threshold: voice_profile::DEFAULT_THRESHOLD,
+                created_at: 0,
+                updated_at: 0,
+                wake_variants: vec!["nexus".to_string()],
+                sound_alikes,
+            });
+        }
+
+        let profile = voice_profile::VoiceProfile::load(&profile_path)
+            .map_err(|e| e.to_string())?;
+        Ok(voice_profile::VoiceProfileStatus {
+            enrolled: true,
+            num_clips: profile.num_clips,
+            threshold: profile.threshold,
+            created_at: profile.created_at,
+            updated_at: profile.updated_at,
+            wake_variants: profile.wake_variants,
+            sound_alikes,
+        })
+    }
+
+    /// Resolve the sherpa resource directory (handles dev + production paths).
+    pub fn resolve_sherpa_dir(resource_dir: &Path) -> Option<PathBuf> {
+        // Production: resource_dir/resources/sherpa (Tauri v2 on Windows: resource_dir() = exe_dir)
+        let sherpa = resource_dir.join("resources").join("sherpa");
+        if sherpa.exists() {
+            return Some(sherpa);
+        }
+        // Fallback: resource_dir/sherpa (some Tauri versions may return resources/ directly)
+        let sherpa_alt = resource_dir.join("sherpa");
+        if sherpa_alt.exists() {
+            return Some(sherpa_alt);
+        }
+        if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let dev = PathBuf::from(manifest).join("resources").join("sherpa");
+            if dev.exists() {
+                return Some(dev);
+            }
+        }
+        // Fallback: exe_dir/../resources/sherpa
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let p = parent.join("../resources/sherpa");
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    /// Run ASR on enrollment clips to capture wake-word variants.
+    /// Returns the list of ASR transcripts (one per clip, may be empty/garbage).
+    pub fn transcribe_enrollment_clips(
+        sherpa_dir: &Path,
+        clips: &[Vec<f32>],
+    ) -> Result<Vec<String>, String> {
+        use sherpa_onnx::{
+            OnlineModelConfig, OnlineRecognizer, OnlineRecognizerConfig, OnlineTransducerModelConfig,
+        };
+
+        let kws_dir = sherpa_dir.join("kws");
+
+        // Prefer int8 (quantized) models, fall back to fp32
+        let encoder = kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let encoder = if encoder.exists() { encoder } else { kws_dir.join("encoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let decoder = kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let decoder = if decoder.exists() { decoder } else { kws_dir.join("decoder-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let joiner = kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+        let joiner = if joiner.exists() { joiner } else { kws_dir.join("joiner-epoch-12-avg-2-chunk-16-left-64.onnx") };
+        let tokens = kws_dir.join("tokens.txt");
+
+        for (name, path) in [
+            ("encoder", &encoder),
+            ("decoder", &decoder),
+            ("joiner", &joiner),
+            ("tokens", &tokens),
+        ] {
+            if !path.exists() {
+                return Err(format!("ASR model file '{}' not found at: {}", name, path.display()));
+            }
+        }
+
+        let config = OnlineRecognizerConfig {
+            model_config: OnlineModelConfig {
+                transducer: OnlineTransducerModelConfig {
+                    encoder: Some(encoder.to_string_lossy().to_string()),
+                    decoder: Some(decoder.to_string_lossy().to_string()),
+                    joiner: Some(joiner.to_string_lossy().to_string()),
+                },
+                tokens: Some(tokens.to_string_lossy().to_string()),
+                num_threads: 1,
+                provider: Some("cpu".to_string()),
+                ..Default::default()
+            },
+            decoding_method: Some("greedy_search".to_string()),
+            enable_endpoint: false,
+            ..Default::default()
+        };
+
+        let recognizer = OnlineRecognizer::create(&config)
+            .ok_or_else(|| "Failed to create OnlineRecognizer for enrollment".to_string())?;
+
+        let mut variants = Vec::with_capacity(clips.len());
+
+        for (i, clip) in clips.iter().enumerate() {
+            if clip.is_empty() {
+                variants.push(String::new());
+                continue;
+            }
+
+            let stream = recognizer.create_stream();
+
+            // Feed the clip + 0.5s tail padding
+            stream.accept_waveform(16000, clip);
+            let tail = vec![0.0f32; 8000];
+            stream.accept_waveform(16000, &tail);
+            stream.input_finished();
+
+            while recognizer.is_ready(&stream) {
+                recognizer.decode(&stream);
+            }
+
+            let text = if let Some(result) = recognizer.get_result(&stream) {
+                result.text.trim().to_lowercase()
+            } else {
+                String::new()
+            };
+
+            tracing::info!("Enrollment clip {} ASR transcript: \"{}\"", i + 1, text);
+            variants.push(text);
+
+            recognizer.reset(&stream);
+        }
+
+        Ok(variants)
+    }
+
+    /// IPC: Enroll a voice profile from multiple audio clips.
+    /// Each clip is a Vec<f32> of 16kHz mono audio samples.
+    /// Also runs ASR on each clip to capture wake-word variants.
+    /// Re-enrollment APPENDS new variants to existing ones (does not wipe).
+    #[tauri::command]
+    pub fn enroll_voice<R: Runtime>(
+        app: tauri::AppHandle<R>,
+        clips: Vec<Vec<f32>>,
+        threshold: Option<f32>,
+    ) -> Result<Vec<String>, String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+        let profile_path = voice_profile::resolve_profile_path(&dir);
+
+        let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+        let sherpa_dir = resolve_sherpa_dir(&resource_dir)
+            .ok_or_else(|| "Sherpa resource directory not found".to_string())?;
+
+        let speaker_model = sherpa_dir.join("speaker_model.onnx");
+
+        let mut verifier = voice_profile::SpeakerVerifier::new(speaker_model, profile_path)
+            .map_err(|e| e.to_string())?;
+
+        // Run ASR on each clip to capture wake-word variants
+        let asr_variants = transcribe_enrollment_clips(&sherpa_dir, &clips)
+            .map_err(|e| {
+                tracing::warn!("Enrollment ASR failed (continuing without variants): {e}");
+                // Don't fail enrollment if ASR fails — just use empty variants
+                vec![String::new(); clips.len()]
+            })
+            .unwrap_or_else(|_| vec![String::new(); clips.len()]);
+
+        let threshold = threshold.unwrap_or(voice_profile::DEFAULT_THRESHOLD);
+        verifier
+            .enroll(&clips, threshold, asr_variants.clone())
+            .map_err(|e| e.to_string())?;
+
+        // Return the captured variants so the UI can show them
+        let captured: Vec<String> = verifier
+            .profile()
+            .map(|p| p.wake_variants.clone())
+            .unwrap_or_default();
+
+        Ok(captured)
+    }
+
+    /// IPC: Delete the voice profile (disables speaker verification).
+    #[tauri::command]
+    pub fn delete_voice_profile<R: Runtime>(
+        app: tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let profile_path = voice_profile::resolve_profile_path(&dir);
+
+        if profile_path.exists() {
+            std::fs::remove_file(&profile_path).map_err(|e| e.to_string())?;
+            tracing::info!("Voice profile deleted");
+        }
+        Ok(())
+    }
+}
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────
 
@@ -634,23 +859,60 @@ pub fn hide_sidebar<R: Runtime>(
     Ok(())
 }
 
-// ─── Loading indicator (now inside Orb — no-ops for backwards compat) ──
+// ─── Loading indicator window ────────────────────────────────────────
 
-/// IPC: Show loading indicator — now rendered inside the Orb window.
-/// Kept as a no-op for backwards compatibility with older frontend code.
+/// IPC: Show the loading indicator window.
+/// Creates a small 80x80 transparent click-through window at the
+/// top-right corner of the screen. Shows the loading.json Lottie
+/// animation while NEXUS is processing a request (after "On it sir").
+/// The window is permanently click-through — mouse events pass through
+/// to whatever is behind it.
+///
+/// IMPORTANT: This command is async so it runs on a thread pool, NOT the
+/// main thread. A synchronous command would block the main thread during
+/// WebView2 window creation, which prevents Tauri events (like the Worker
+/// "result" event) from being delivered to the frontend — causing the
+/// response to never appear.
 #[tauri::command]
 pub async fn show_loading_indicator<R: Runtime>(
-    _app: tauri::AppHandle<R>,
+    app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
+    // Create the window — WebviewWindowBuilder::build() dispatches to the
+    // main thread internally, so this is safe to call from a thread pool.
+    let win = crate::dyn_windows::get_or_create_window(
+        &app,
+        crate::dyn_windows::WindowConfig::loading_indicator(),
+    )?;
+
+    // Position at the top-right corner — 7px from right, 9px from top.
+    if let Ok(Some(monitor)) = win.current_monitor() {
+        let scale = monitor.scale_factor();
+        let screen = monitor.size();
+        let win_size = 80i32;
+        let phys_win = (win_size as f64 * scale) as i32;
+        let inset_x = (7.0 * scale) as i32;
+        let inset_y = (9.0 * scale) as i32;
+        let x = screen.width as i32 - phys_win - inset_x;
+        let y = inset_y;
+        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+        tracing::debug!("loading-indicator positioned at ({x}, {y}) [scale={scale}]");
+    }
+
+    // Permanently click-through — mouse events pass through to windows behind.
+    win.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    tracing::info!("loading-indicator window shown");
     Ok(())
 }
 
-/// IPC: Hide loading indicator — now rendered inside the Orb window.
-/// Kept as a no-op for backwards compatibility with older frontend code.
+/// IPC: Hide/destroy the loading indicator window.
+/// Called when the Worker response arrives. Destroys the window to
+/// free ~250 MB of WebView2 processes.
 #[tauri::command]
 pub async fn hide_loading_indicator<R: Runtime>(
-    _app: tauri::AppHandle<R>,
+    app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
+    let _ = crate::dyn_windows::destroy_window(&app, "loading-indicator");
     Ok(())
 }
 
@@ -699,10 +961,19 @@ pub struct NexusSettings {
     pub speech_rate: f64,
     #[serde(default = "default_tts_provider")]
     pub tts_provider: String,
+    /// TTS auto-volume: NEXUS sets system volume to this level (0-100)
+    /// before speaking, then restores the original volume after.
+    /// Default 75. Set to 0 to disable auto-volume.
+    #[serde(default = "default_tts_volume")]
+    pub tts_volume: u8,
 }
 
 fn default_tts_provider() -> String {
     "kokoro".to_string()
+}
+
+fn default_tts_volume() -> u8 {
+    75
 }
 
 impl Default for NexusSettings {
@@ -726,6 +997,7 @@ impl Default for NexusSettings {
             tts_voice: "af_sky".to_string(),
             speech_rate: 1.15,
             tts_provider: "kokoro".to_string(),
+            tts_volume: 75,
         }
     }
 }

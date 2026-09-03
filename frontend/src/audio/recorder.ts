@@ -141,7 +141,11 @@ function isLongRunningQuery(transcript: string): boolean {
   // Branch analysis: "analyse branch X", "check the latest branch", "show branch"
   const hasBranch = /\bbranch(es)?\b/.test(t);
   // Architecture mapper: "analyze this repo", "map the codebase", "create architecture in servx"
-  const isArchitectQuery = (hasAnalyse && hasRepo) || (/\barchitecture\b/.test(t) && /\b(in|of|for|from)\b/.test(t));
+  // Also catch "open architecture mapper" (no analyse word, but clearly architect intent)
+  const isArchitectQuery = (hasAnalyse && hasRepo)
+    || (/\barchitecture\b/.test(t) && /\b(in|of|for|from)\b/.test(t))
+    || /\bopen\s+architecture\b/.test(t)
+    || /\barchitecture\s+mapper\b/.test(t);
   // "check the latest branch of servx by eesha" → hasAnalyse (check) + hasBranch
   // "analyse the pr in zync" → hasAnalyse + hasPR
   // "analyse the pr by prem in servx" → hasAnalyse + hasPR
@@ -241,6 +245,16 @@ function correctSttTranscript(transcript: string): string {
       const repoName = replacement.trim().replace(/^(?:in|of|from)\s+/, "");
       logFixes.push(`repo→${repoName}`);
     }
+  }
+
+  // Fix truncated "open-" / "open " from Intel SST mic silence.
+  // When the mic driver cuts out mid-utterance, STT only captures the
+  // first word. "open architecture mapper" becomes "open-" or "open".
+  // Since "open" is almost always followed by "architecture" in this
+  // app's context, expand the truncation to the full command.
+  if (/^open-?$/i.test(t.trim())) {
+    t = "open architecture mapper";
+    logFixes.push("open-→open architecture mapper (mic truncation recovery)");
   }
 
   if (logFixes.length > 0 || t !== transcript) {
@@ -612,13 +626,11 @@ export async function finishCapture(): Promise<void> {
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     setLocalAckGiven(); // prevent server ack from double-speaking
-    void speakCached("On it sir").then(() => {
-      const curState = useAssistant.getState().state;
-      if (curState === "speaking" || curState === "thinking") {
-        useAssistant.getState().setVisible(false);
-        setTimeout(() => useAssistant.getState().reset(), 550);
-      }
-    });
+    // DON'T hide the orb or show loading yet — wait for "On it sir" TTS
+    // to complete first. The user's desired flow is:
+    //   "On it sir" plays → orb disappears → loading animation → response
+    // If parsing later reveals this is a local command, we roll back below.
+    void speakCached("On it sir");
   }
 
   // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
@@ -630,29 +642,42 @@ export async function finishCapture(): Promise<void> {
 
   // Special case: open architecture mapper window directly
   if (intent.action === "open_architect") {
-    useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Opening architecture mapper, sir.");
-    void speak("Opening architecture mapper, sir.");
+    // Flow: "On it sir" plays → orb disappears → loading animation
+    // → Phase 1 + AI enrichment run in background (2-5s)
+    // → architect window opens with map ALREADY RENDERED
+    // → loading animation hides
+    //
+    // We use open_architect_with_auto_detect (not open_architect_window)
+    // because it runs Phase 1 analysis BEFORE opening the window, so the
+    // user never sees "Waiting for repository..." — the map is ready when
+    // the window appears.
+
+    // Step 1: Wait for "On it sir" TTS to finish playing.
+    // The orb is still visible at this point.
+    await waitForTtsIdle();
+
+    // Step 2: Now hide the orb and show the loading animation.
+    useAssistant.getState().setVisible(false);
+    useAssistant.getState().setLoadingVisible(true);
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      try {
-        const active = await invoke<{ owner: string; repo: string } | null>("get_active_repo_url");
-        if (active && active.owner && active.repo) {
-          await invoke("open_architect_window", { owner: active.owner, repo: active.repo });
-        } else {
-          await invoke("open_architect_window");
-        }
-      } catch {
-        await invoke("open_architect_window");
-      }
+      // This runs Phase 1 + AI enrichment in the background, then opens
+      // the architect window with the completed map. The loading indicator
+      // stays visible until this returns.
+      await invoke("open_architect_with_auto_detect");
     } catch (err) {
       console.error("[NEXUS] failed to open architect window:", err);
+      // Fallback: open without auto-detect
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("open_architect_window");
+      } catch {}
     }
 
-    await waitForTtsIdle();
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    useAssistant.getState().setVisible(false);
+    // The architect window is now open with the map ready.
+    // Hide the loading indicator and reset.
+    useAssistant.getState().setLoadingVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
     return;
@@ -663,6 +688,9 @@ export async function finishCapture(): Promise<void> {
   if (isAnalyseIntent(intent)) {
     console.log("[NEXUS] analyse intent detected, sending to backend:", intent);
   } else if (intent.action === "greeting") {
+    // Roll back loading state — greetings are local, not long-running.
+    useAssistant.getState().setLoadingVisible(false);
+    useAssistant.getState().setVisible(true);
     // Greeting/conversational reply — speak the reply directly, no "Ok sir."
     // preface and no "execute_command" round-trip (the reply is already
     // in the intent).
@@ -680,6 +708,9 @@ export async function finishCapture(): Promise<void> {
     return;
   } else if (intent.action !== "unknown") {
     // Known local command — execute it directly.
+    // Roll back loading state — local commands are not long-running.
+    useAssistant.getState().setLoadingVisible(false);
+    useAssistant.getState().setVisible(true);
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Ok sir.");
     void speak("Ok sir.");
@@ -717,6 +748,12 @@ export async function finishCapture(): Promise<void> {
     if (isLongFinal && !isLongRunningInFlight()) {
       // Track in-flight state for dedup + queue (ack already given above)
       setLongRunningInFlight(transcript, processNextQueuedCommand);
+      // Wait for "On it sir" TTS to finish, then hide orb + show loading.
+      // The orb stays visible while TTS plays, then disappears and the
+      // loading animation takes over.
+      await waitForTtsIdle();
+      useAssistant.getState().setVisible(false);
+      useAssistant.getState().setLoadingVisible(true);
     }
     // Release captureInProgress BEFORE sendTranscript so subsequent voice
     // commands can be processed while the Worker is generating the response.
@@ -731,6 +768,10 @@ export async function finishCapture(): Promise<void> {
   }
 
   // 5. Neither local intent nor backend available.
+  // Roll back loading state if it was set (long-running query detected
+  // but backend is unavailable — don't leave the loading animation hanging).
+  useAssistant.getState().setLoadingVisible(false);
+  useAssistant.getState().setVisible(true);
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
   await speak("Didn't catch that sir");
@@ -904,13 +945,11 @@ async function _finishCaptureFromVadInner(
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     setLocalAckGiven(); // prevent server ack from double-speaking
-    void speakCached("On it sir").then(() => {
-      const curState = useAssistant.getState().state;
-      if (curState === "speaking" || curState === "thinking") {
-        useAssistant.getState().setVisible(false);
-        setTimeout(() => useAssistant.getState().reset(), 550);
-      }
-    });
+    // DON'T hide the orb or show loading yet — wait for "On it sir" TTS
+    // to complete first. The user's desired flow is:
+    //   "On it sir" plays → orb disappears → loading animation → response
+    // If parsing later reveals this is a local command, we roll back below.
+    void speakCached("On it sir");
   }
 
   // 3. LOCAL-FIRST: Parse the intent locally. If it's a known local command
@@ -922,29 +961,42 @@ async function _finishCaptureFromVadInner(
 
   // Special case: open architecture mapper window directly
   if (intent.action === "open_architect") {
-    useAssistant.getState().setState("speaking");
-    useAssistant.getState().addAssistantMessage("Opening architecture mapper, sir.");
-    void speak("Opening architecture mapper, sir.");
+    // Flow: "On it sir" plays → orb disappears → loading animation
+    // → Phase 1 + AI enrichment run in background (2-5s)
+    // → architect window opens with map ALREADY RENDERED
+    // → loading animation hides
+    //
+    // We use open_architect_with_auto_detect (not open_architect_window)
+    // because it runs Phase 1 analysis BEFORE opening the window, so the
+    // user never sees "Waiting for repository..." — the map is ready when
+    // the window appears.
+
+    // Step 1: Wait for "On it sir" TTS to finish playing.
+    // The orb is still visible at this point.
+    await waitForTtsIdle();
+
+    // Step 2: Now hide the orb and show the loading animation.
+    useAssistant.getState().setVisible(false);
+    useAssistant.getState().setLoadingVisible(true);
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      try {
-        const active = await invoke<{ owner: string; repo: string } | null>("get_active_repo_url");
-        if (active && active.owner && active.repo) {
-          await invoke("open_architect_window", { owner: active.owner, repo: active.repo });
-        } else {
-          await invoke("open_architect_window");
-        }
-      } catch {
-        await invoke("open_architect_window");
-      }
+      // This runs Phase 1 + AI enrichment in the background, then opens
+      // the architect window with the completed map. The loading indicator
+      // stays visible until this returns.
+      await invoke("open_architect_with_auto_detect");
     } catch (err) {
       console.error("[NEXUS] failed to open architect window:", err);
+      // Fallback: open without auto-detect
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("open_architect_window");
+      } catch {}
     }
 
-    await waitForTtsIdle();
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    useAssistant.getState().setVisible(false);
+    // The architect window is now open with the map ready.
+    // Hide the loading indicator and reset.
+    useAssistant.getState().setLoadingVisible(false);
     setTimeout(() => useAssistant.getState().reset(), 550);
     captureInProgress = false;
     return;
@@ -955,6 +1007,9 @@ async function _finishCaptureFromVadInner(
   if (isAnalyseIntent(intent)) {
     console.log("[NEXUS] analyse intent detected (vad), sending to backend:", intent);
   } else if (intent.action === "greeting") {
+    // Roll back loading state — greetings are local, not long-running.
+    useAssistant.getState().setLoadingVisible(false);
+    useAssistant.getState().setVisible(true);
     // Greeting/conversational reply — speak the reply directly, no "Ok sir."
     // preface and no "execute_command" round-trip (the reply is already
     // in the intent).
@@ -972,6 +1027,9 @@ async function _finishCaptureFromVadInner(
     return;
   } else if (intent.action !== "unknown") {
     // Known local command — execute it directly.
+    // Roll back loading state — local commands are not long-running.
+    useAssistant.getState().setLoadingVisible(false);
+    useAssistant.getState().setVisible(true);
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("Ok sir.");
     void speak("Ok sir.");
@@ -1021,6 +1079,10 @@ async function _finishCaptureFromVadInner(
   }
 
   // 5. Neither local intent nor backend available.
+  // Roll back loading state if it was set (long-running query detected
+  // but backend is unavailable — don't leave the loading animation hanging).
+  useAssistant.getState().setLoadingVisible(false);
+  useAssistant.getState().setVisible(true);
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
   await speak("Didn't catch that sir");

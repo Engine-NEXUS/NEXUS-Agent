@@ -26,12 +26,11 @@ const CACHED_PHRASES: &[&str] = &[
 ];
 
 /// Lazily initialize the Kokoro TTS engine on first use.
-/// Called from `speak_text` when the engine is `None`, or pre-warmed at
-/// startup via `lib.rs` to eliminate the ~5.7s cold-start on first speak.
-/// Saves ~350 MB RAM at idle if NOT pre-warmed.
+/// Called from `speak_text` when the engine is `None`.
+/// Saves ~350 MB RAM at idle by not loading Kokoro at boot.
 /// First TTS call takes ~1.7s extra (one-time model load); subsequent calls are instant.
 /// Also pre-synthesizes cached acknowledgment phrases for instant playback.
-pub async fn ensure_engine_loaded(
+async fn ensure_engine_loaded(
     engine_arc: &Arc<Mutex<Option<TtsEngine>>>,
     cache_arc: &Arc<Mutex<HashMap<String, Vec<f32>>>>,
 ) -> Result<(), String> {
@@ -98,7 +97,6 @@ pub async fn ensure_engine_loaded(
 /// Pre-synthesize cached phrases using the loaded Kokoro engine.
 /// Runs once after engine load. Each phrase is synthesized at the default
 /// speed and stored as f32 PCM samples. Total memory: ~528 KB for 5 phrases.
-/// Phrases are synthesized in parallel to reduce pre-gen time from ~4s to ~1s.
 async fn pregenerate_cache(
     engine_arc: &Arc<Mutex<Option<TtsEngine>>>,
     cache_arc: &Arc<Mutex<HashMap<String, Vec<f32>>>>,
@@ -107,28 +105,23 @@ async fn pregenerate_cache(
     const KOKORO_INTERNAL_SPEED_SCALE: f32 = 0.65;
     let engine_spd = (1.15_f32 / KOKORO_INTERNAL_SPEED_SCALE).clamp(0.5, 3.0);
 
-    // Spawn all synthesis tasks in parallel — the ONNX runtime is thread-safe
-    // and can run multiple inferences concurrently on different threads.
-    let mut tasks = Vec::new();
+    let mut cached_count = 0;
     for phrase in CACHED_PHRASES {
         let p = phrase.to_string();
         let ea = engine_arc.clone();
-        let task = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let mut lock = ea.blocking_lock();
             if let Some(engine) = lock.as_mut() {
                 engine.synthesize_with_options(&p, Some("af_sky"), engine_spd, 1.0, Some("en"))
             } else {
                 Err("TTS Engine not initialized".to_string())
             }
-        });
-        tasks.push((phrase.to_string(), task));
-    }
+        })
+        .await;
 
-    let mut cached_count = 0;
-    for (phrase, task) in tasks {
-        match task.await {
+        match result {
             Ok(Ok(audio)) => {
-                cache_arc.lock().await.insert(phrase, audio);
+                cache_arc.lock().await.insert(phrase.to_string(), audio);
                 cached_count += 1;
             }
             Ok(Err(e)) => {
@@ -140,7 +133,7 @@ async fn pregenerate_cache(
         }
     }
     tracing::info!(
-        "tts: cached {} phrases in {:.2}s (parallel)",
+        "tts: cached {} phrases in {:.2}s",
         cached_count,
         cache_start.elapsed().as_secs_f32()
     );
@@ -178,13 +171,9 @@ pub async fn speak_text(
     // 1. Mark TTS as playing to suppress wake word self-trigger
     meeting.set_tts_playing(true);
 
-    // Stop any currently-playing TTS and capture the new generation.
-    // This atomically increments TTS_GENERATION (stopping any previous
-    // playback thread) and returns the new value as my_generation.
-    // This prevents overlapping audio when multiple speak_text calls
-    // arrive in quick succession (e.g. server ack + result both arrive
-    // while the engine is still loading).
-    let my_generation = TTS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    // Capture the current TTS generation. If stop_tts is called after this,
+    // the global generation will increment and we will abort playback.
+    let my_generation = TTS_GENERATION.load(Ordering::SeqCst);
 
     // 2. Lazy-load Kokoro engine on first speak (saves ~350 MB at idle).
     //    First call: ~1.7s model load. Subsequent calls: instant (fast path).
@@ -311,9 +300,7 @@ pub async fn speak_cached(
     // 1. Mark TTS as playing to suppress wake word self-trigger
     meeting.set_tts_playing(true);
 
-    // Stop any currently-playing TTS and capture the new generation.
-    // Same logic as speak_text — prevents overlapping audio.
-    let my_generation = TTS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let my_generation = TTS_GENERATION.load(Ordering::SeqCst);
 
     // 2. Try to get the cached audio. If not in cache, fall back to speak_text.
     let cache_arc = state.cache.clone();

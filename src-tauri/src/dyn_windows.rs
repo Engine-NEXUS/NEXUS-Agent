@@ -42,6 +42,31 @@ impl WindowConfig {
         }
     }
 
+    /// Loading indicator window — small 80x80 transparent window at the
+    /// top-right corner of the screen, below where a close button would be.
+    /// Shows a Lottie loading animation while a long-running command is
+    /// being processed by the Worker. Created on-demand and destroyed when
+    /// the result arrives.
+    pub fn loading() -> Self {
+        Self {
+            label: "loading", title: "NEXUS Loading", url: "loading.html",
+            width: 80., height: 80., min_width: None, min_height: None,
+            resizable: false, decorations: false, transparent: true,
+            always_on_top: true, skip_taskbar: true, shadow: false,
+            focus: false, center: false, hidden_title: true,
+        }
+    }
+    /// Loading indicator — same as loading() but with the stashed label.
+    pub fn loading_indicator() -> Self {
+        Self {
+            label: "loading-indicator", title: "NEXUS Loading", url: "loading.html",
+            width: 80., height: 80., min_width: None, min_height: None,
+            resizable: false, decorations: false, transparent: true,
+            always_on_top: true, skip_taskbar: true, shadow: false,
+            focus: false, center: false, hidden_title: true,
+        }
+    }
+
     pub fn setup() -> Self {
         Self {
             label: "setup", title: "NEXUS Setup", url: "setup.html",

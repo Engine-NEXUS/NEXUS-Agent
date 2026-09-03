@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import { Avatar } from "./avatar/Avatar";
-import { LoadingAnimation } from "./LoadingAnimation";
 import { useAssistant } from "./store/assistant";
 
 function isTauri(): boolean {
@@ -16,6 +15,7 @@ async function tauriInvoke(cmd: string, args?: Record<string, unknown>): Promise
 export default function App() {
   const state = useAssistant((s) => s.state);
   const visible = useAssistant((s) => s.visible);
+  const loadingVisible = useAssistant((s) => s.loadingVisible);
 
   // 8-second auto-hide: if user doesn't respond while listening, slide back down.
   // Also cleans up VAD + recording + mic stream to avoid orphaned AudioContexts.
@@ -36,32 +36,19 @@ export default function App() {
     return () => clearTimeout(t);
   }, [visible, state]);
 
-  // Native window visibility with deferred hide for slide-down animation.
-  //
-  // Show: call show_overlay immediately so the native window is visible
-  //   before the CSS slide-up transition plays.
-  //
-  // Hide: DON'T call hide_overlay immediately. Instead, let the CSS class
-  //   change to app--hidden trigger the slide-down transition (0.5s).
-  //   Only after the transition completes do we call hide_overlay to
-  //   natively hide the window. This prevents the orb from vanishing
-  //   "in the air" — it slides back down the way it came.
-  //
-  // Edge case — rapid re-wake during slide-down: the pending hide timer
-  //   is cleared, the window stays shown, and the orb reverses direction.
+  // Native orb window visibility — only depends on `visible` (the orb).
+  // The loading animation is now in a SEPARATE Tauri window, so hiding the
+  // orb window does NOT affect the loading window.
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (visible) {
-      // Cancel any pending native hide (e.g. rapid re-wake mid-slide-down).
       if (hideTimerRef.current) {
         clearTimeout(hideTimerRef.current);
         hideTimerRef.current = null;
       }
       tauriInvoke("show_overlay").catch(() => {});
     } else {
-      // Defer native hide until the CSS slide-down transition finishes.
-      // CSS transition is 0.5s; add 100ms buffer for safety.
       hideTimerRef.current = setTimeout(() => {
         tauriInvoke("hide_overlay").catch(() => {});
         hideTimerRef.current = null;
@@ -81,10 +68,34 @@ export default function App() {
     tauriInvoke("set_click_through", { ignore: false }).catch(() => {});
   }, [state]);
 
+  // Loading window management — show/hide a separate Tauri window at the
+  // top-right corner of the screen. This window contains the Lottie loading
+  // animation and is completely independent from the orb window.
+  useEffect(() => {
+    if (loadingVisible) {
+      console.log("[NEXUS] loading: showing loading window at top-right corner");
+      tauriInvoke("show_loading_indicator").catch((e) =>
+        console.warn("[NEXUS] loading: show_loading_indicator failed:", e)
+      );
+    } else {
+      console.log("[NEXUS] loading: hiding loading window");
+      tauriInvoke("hide_loading_indicator").catch((e) =>
+        console.warn("[NEXUS] loading: hide_loading_indicator failed:", e)
+      );
+    }
+  }, [loadingVisible]);
+
+  // Cleanup: destroy the loading window when the App unmounts
+  useEffect(() => {
+    return () => {
+      tauriInvoke("hide_loading_indicator").catch(() => {});
+    };
+  }, []);
+
   return (
     <div id="app" className={visible ? "app--visible" : "app--hidden"}>
       <div className="avatar-section" data-interactive>
-        {state === "thinking" ? <LoadingAnimation /> : <Avatar />}
+        <Avatar />
       </div>
     </div>
   );

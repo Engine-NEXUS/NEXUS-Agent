@@ -24,6 +24,7 @@ export function SetupApp() {
   const [hotkey] = useState("Ctrl+Space");
   const [wakeWordEnabled, setWakeWordEnabled] = useState(true);
   const [autostart, setAutostart] = useState(true);
+  const [ttsVolume, setTtsVolume] = useState(75);
 
   // Mic permission
   const [micStatus, setMicStatus] = useState<"checking" | "granted" | "denied" | "no_device">("checking");
@@ -53,6 +54,7 @@ export function SetupApp() {
           if (s.ttsVoice) setSelectedVoice(s.ttsVoice);
           if (typeof s.wakeWordEnabled === "boolean") setWakeWordEnabled(s.wakeWordEnabled);
           if (typeof s.autostart === "boolean") setAutostart(s.autostart);
+          if (typeof s.ttsVolume === "number") setTtsVolume(s.ttsVolume);
         }
       })
       .catch(() => {});
@@ -256,6 +258,7 @@ export function SetupApp() {
         hotkey,
         wakeWordEnabled,
         autostart,
+        ttsVolume,
       };
       await invoke("save_settings", { settings: updated });
     } catch (e) {
@@ -493,7 +496,7 @@ export function SetupApp() {
                   color: "var(--nx-text-secondary)",
                 }}>
                   <strong style={{ color: "var(--nx-text-primary)" }}>Privacy:</strong> All speech recognition
-                  runs locally via faster-whisper. Audio is never sent to the cloud. Only the transcribed
+                  runs locally via Moonshine ONNX. Audio is never sent to the cloud. Only the transcribed
                   text is sent to the NEXUS Worker for intent processing.
                 </div>
               </section>
@@ -545,6 +548,27 @@ export function SetupApp() {
                       onChange={(e) => setAutostart(e.target.checked)}
                       style={{ width: "18px", height: "18px", accentColor: "var(--nx-accent-blue)" }}
                     />
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px", border: "1px solid var(--nx-border)", borderRadius: "8px" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: "var(--nx-text-sm)" }}>NEXUS Volume</div>
+                      <div style={{ fontSize: "var(--nx-text-xs)", color: "var(--nx-text-secondary)" }}>
+                        NEXUS sets system volume to {ttsVolume}% while speaking, then restores it
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={ttsVolume}
+                        onChange={(e) => setTtsVolume(parseInt(e.target.value))}
+                        style={{ width: "120px", accentColor: "var(--nx-accent-blue)" }}
+                      />
+                      <span style={{ fontSize: "var(--nx-text-sm)", fontWeight: 600, minWidth: "36px", textAlign: "right" }}>{ttsVolume}%</span>
+                    </div>
                   </div>
                 </div>
 

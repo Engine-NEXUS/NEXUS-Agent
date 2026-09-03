@@ -118,8 +118,8 @@ pub fn capture_and_blur(x: i32, y: i32, w: i32, h: i32, sigma: f32) -> Option<St
     Some(format!("data:image/png;base64,{b64}"))
 }
 
-/// Same as capture_and_blur but uses JPEG encoding for much faster live updates
-#[allow(dead_code)]
+/// Same as capture_and_blur but uses JPEG encoding for much faster delivery.
+/// Used for both the initial backdrop capture and the live-blur loop.
 pub fn capture_and_blur_jpeg(x: i32, y: i32, w: i32, h: i32, sigma: f32) -> Option<String> {
     let bgra = unsafe { capture_region_bgra(x, y, w, h) }?;
     let rgba = bgra_to_rgba(&bgra);

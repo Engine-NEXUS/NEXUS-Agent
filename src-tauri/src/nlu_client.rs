@@ -27,8 +27,14 @@ struct NluResponse {
 /// Returns None if the server is not running or the request fails.
 /// Returns Some(ParseResult) if the server returns a valid classification.
 pub async fn parse_via_nlu(transcript: &str) -> Option<ParseResult> {
-    // Ensure the NLU server is running (lazy-start)
-    crate::lazy_nlu::ensure_nlu_running();
+    // Ensure the NLU server is running (lazy-start).
+    // Use spawn_blocking because ensure_nlu_running() does std::thread::sleep
+    // in a loop (up to 15s) which would block the Tokio worker thread.
+    tokio::task::spawn_blocking(|| {
+        crate::lazy_nlu::ensure_nlu_running();
+    })
+    .await
+    .ok()?;
 
     let url = format!("http://127.0.0.1:{}/parse", NLU_PORT);
 
