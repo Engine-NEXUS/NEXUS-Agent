@@ -102,18 +102,24 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Build macOS installer (.dmg)
+      - name: Build macOS app (skip codesigning — no Apple Developer cert in CI)
         run: |
-          # Remove signing identity for CI build (no Apple Developer cert)
-          sed -i '' 's/"signingIdentity": ".*"/"signingIdentity": null/' src-tauri/tauri.conf.json || true
-          npx --yes @tauri-apps/cli build --bundles dmg
+          # Use python to reliably patch the JSON config (sed is unreliable across BSD/GNU)
+          python3 -c "
+          import json
+          with open('src-tauri/tauri.conf.json') as f:
+            cfg = json.load(f)
+          cfg['bundle']['macOS']['signingIdentity'] = None
+          with open('src-tauri/tauri.conf.json', 'w') as f:
+            json.dump(cfg, f, indent=2)
+          "
+          # Build just the .app bundle (skip .dmg which requires codesigning)
+          npx --yes @tauri-apps/cli build --bundles app
         env:
           APPLE_SIGNING_IDENTITY: ""
 
-      - name: Verify .dmg was created
+      - name: Verify .app was created
         run: |
-          ls -la src-tauri/target/release/bundle/dmg/*.dmg || echo "WARNING: No .dmg found"
-          # Check the .app bundle exists too
           ls -la src-tauri/target/release/bundle/macos/*.app || echo "WARNING: No .app found"
 
       - name: Verify app launches (headless)
@@ -138,11 +144,11 @@ jobs:
             echo "ΓÜá∩╕Å No .app bundle found to test"
           fi
 
-      - name: Upload macOS installer artifact
+      - name: Upload macOS app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nexus-macos-dmg
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          name: nexus-macos-app
+          path: src-tauri/target/release/bundle/macos/*.app
           if-no-files-found: warn
           retention-days: 7
 
