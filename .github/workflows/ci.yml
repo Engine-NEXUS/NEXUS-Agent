@@ -103,10 +103,11 @@ jobs:
         run: npm run build
 
       - name: Build macOS installer (.dmg)
-        run: npx --yes @tauri-apps/cli build
+        run: |
+          # Remove signing identity for CI build (no Apple Developer cert)
+          sed -i '' 's/"signingIdentity": ".*"/"signingIdentity": null/' src-tauri/tauri.conf.json || true
+          npx --yes @tauri-apps/cli build --bundles dmg
         env:
-          # No code signing in CI ΓÇö produces an unsigned .dmg
-          # Users will need to right-click ΓåÆ Open to bypass Gatekeeper
           APPLE_SIGNING_IDENTITY: ""
 
       - name: Verify .dmg was created
