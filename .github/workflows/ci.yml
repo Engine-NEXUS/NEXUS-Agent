@@ -176,6 +176,10 @@ jobs:
           cargo test --lib
           cargo test --test offline_commands
 
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
       - name: Build Windows installer (.exe + .msi)
         run: npx --yes @tauri-apps/cli build
         env:
