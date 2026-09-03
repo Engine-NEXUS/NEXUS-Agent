@@ -62,7 +62,9 @@ async function parseTranscriptEnhanced(
 function isAnalyseIntent(intent: Intent): boolean {
   return (
     intent.action === "analyse_repo" ||
-    intent.action === "analyse_pr"
+    intent.action === "analyse_pr" ||
+    intent.action === "analyse_latest_pr" ||
+    intent.action === "check_branch"
   );
 }
 
@@ -130,15 +132,19 @@ function isLongRunningQuery(transcript: string): boolean {
   const t = transcript.toLowerCase();
   // PR analysis: "analyse PR 5 in servx", "review PR 3", "analyse the pull request"
   // Also matches "analysis" (noun form) — e.g. "deep analysis for the PR 24"
-  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine|map|understand|explore|create|build|show|generate)\b/.test(t);
+  // Also matches "check"/"show" for branch commands — e.g. "check the latest branch of servx"
+  const hasAnalyse = /\b(analy[sz]e|analy[sz]ing|analy[sz]is|review|deep\s*dive|critique|evaluate|assess|inspect|examine|map|understand|explore|create|build|show|generate|check|what\s+is)\b/.test(t);
   const hasPR = /\b(pr|pull\s*request)\b/.test(t);
   const hasRepo = /\b(repo|repository|codebase|project|architecture|code)\b/.test(t);
   // Also catch "PR <number>" patterns even without "analyse" (STT may mishear)
   const hasPRNumber = /\bpr\s*#?\s*\d+\b/.test(t);
-  // Branch analysis: "analyse branch X", "analyse the branch X"
-  const hasBranch = /\bbranch\b/.test(t);
+  // Branch analysis: "analyse branch X", "check the latest branch", "show branch"
+  const hasBranch = /\bbranch(es)?\b/.test(t);
   // Architecture mapper: "analyze this repo", "map the codebase", "create architecture in servx"
   const isArchitectQuery = (hasAnalyse && hasRepo) || (/\barchitecture\b/.test(t) && /\b(in|of|for|from)\b/.test(t));
+  // "check the latest branch of servx by eesha" → hasAnalyse (check) + hasBranch
+  // "analyse the pr in zync" → hasAnalyse + hasPR
+  // "analyse the pr by prem in servx" → hasAnalyse + hasPR
   return (hasAnalyse && (hasPR || hasRepo || hasBranch)) || hasPRNumber || isArchitectQuery;
 }
 

@@ -748,61 +748,98 @@ async function handleGitHubWrite(req: NexusRequest, env: Env, token: string): Pr
 // ---- GitHub deep analysis handler (GLM-5.2) ----
 
 /**
- * Parse a PR number and repo from the transcript.
+ * Parse a PR number, repo, and optional author from the transcript.
  * Patterns:
- *   "analyse PR 24 in zync"        → pr=24, repo=zync
- *   "analyse the PR of zync"       → latest PR, repo=zync
- *   "review PR 76 in owner/repo"   → pr=76, repo=owner/repo
- *   "analyse the pull request"     → latest PR, default repo
+ *   "analyse PR 24 in zync"             → pr=24, repo=zync, author=null
+ *   "analyse the PR of zync"            → latest PR, repo=zync, author=null
+ *   "analyse the PR by prem in servx"   → latest PR by prem, repo=servx, author=prem
+ *   "analyse the PR of prem in servx"   → latest PR by prem, repo=servx, author=prem
+ *   "analyse the PR from prem in servx" → latest PR by prem, repo=servx, author=prem
+ *   "review PR 76 in owner/repo"        → pr=76, repo=owner/repo, author=null
+ *   "analyse the pull request"          → latest PR, default repo, author=null
  */
-function parsePRRequest(transcript: string): { prNumber: number | null; repoName: string | null } {
+function parsePRRequest(transcript: string): { prNumber: number | null; repoName: string | null; author: string | null } {
   const tLower = transcript.toLowerCase();
 
   // "PR 24", "PR #24", "pull request 24", "PR number 24" (STT variation)
   const prNumMatch = tLower.match(/(?:pr|pull\s*request)\s*(?:number|#\s*)?\s*#?\s*(\d+)/);
   const prNumber = prNumMatch ? parseInt(prNumMatch[1], 10) : null;
 
-  // "in zync", "of zync", "on NEXUS agent", "from owner/repo",
-  // "in ledger ai", "in ledger-ai" — support multi-word repo names
-  // Exclude "of PR" and "of pull" — those are not repo names
-  // Also exclude common English words that follow "of/in/from/on"
-  const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
-  if (!repoMatch || !repoMatch[1]) {
-    return { prNumber, repoName: null };
-  }
-  // Extract from original transcript to preserve case
-  const repoLower = repoMatch[1].trim();
-  const idx = tLower.indexOf(repoLower);
-  const repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
+  // Extract author: "by prem", "of prem", "from prem" (but NOT "of zync" when zync is a repo)
+  // The author is the word after by/of/from, and the repo is after "in <repo>"
+  // Pattern: "[by|of|from] <author> in <repo>"
+  const authorRepoMatch = tLower.match(/(?:by|of|from)\s+(\w+)\s+in\s+([\w\-./]+(?:\s+[\w\-./]+)?)/);
+  let author: string | null = null;
+  let repoName: string | null = null;
 
-  return { prNumber, repoName };
+  if (authorRepoMatch && authorRepoMatch[1] && authorRepoMatch[2]) {
+    // Check if the word after "of/by/from" is actually a repo name (not a person)
+    // If the pattern is "of <word> in <repo>", <word> could be a repo or author
+    // Heuristic: if <word> is followed by "in <repo>", it's likely an author
+    // (because "analyse the PR of zync" has no "in <repo>" after "of zync")
+    author = authorRepoMatch[1];
+    const repoLower = authorRepoMatch[2].trim();
+    const idx = tLower.indexOf(repoLower);
+    repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
+  } else {
+    // No author pattern — just extract repo
+    // "in zync", "of zync", "on NEXUS agent", "from owner/repo"
+    // Exclude "of PR" and "of pull" — those are not repo names
+    // Also exclude common English words that follow "of/in/from/on"
+    const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
+    if (repoMatch && repoMatch[1]) {
+      const repoLower = repoMatch[1].trim();
+      const idx = tLower.indexOf(repoLower);
+      repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
+    }
+  }
+
+  return { prNumber, repoName, author };
 }
 
 /**
- * Parse a branch name and repo from the transcript.
+ * Parse a branch name, repo, and optional author from the transcript.
  * Patterns:
  *   "analyse branch sidebar-markdown-rich-rendering in zync"
  *   "analyse the branch feature-auth in servx"
  *   "analyse branch main in ledger-ai"
+ *   "check the latest branch of servx created by eesha"  → branchName=null, author=eesha
+ *   "check the latest branch by eesha in servx"          → branchName=null, author=eesha
  */
-function parseBranchRequest(transcript: string): { branchName: string | null; repoName: string | null } {
+function parseBranchRequest(transcript: string): { branchName: string | null; repoName: string | null; author: string | null } {
   const tLower = transcript.toLowerCase();
+
+  // Extract author: "by <author>" or "created by <author>"
+  // Must be checked BEFORE branch name extraction, because
+  // "check the latest branch by eesha" has no branch name
+  const authorMatch = tLower.match(/(?:created\s+)?by\s+(\w+)/);
+  const author = authorMatch && authorMatch[1] ? authorMatch[1] : null;
 
   // Extract branch name: "branch <name>" or "the branch <name>"
   // Branch names can contain hyphens, underscores, slashes, and dots
+  // But NOT "branch by" or "branch of" or "branch in" or "branch created"
+  // (those are the new "latest branch" patterns, not a specific branch name)
   const branchMatch = tLower.match(/(?:branch|ranch|bench)\s+(?:the\s+)?([\w\-./]+)/);
-  const branchName = branchMatch ? branchMatch[1] : null;
+  let branchName: string | null = null;
+  if (branchMatch && branchMatch[1]) {
+    const candidate = branchMatch[1];
+    // Reject prepositions — "branch by", "branch of", "branch in", "branch created"
+    // These indicate the "latest branch" pattern, not a specific branch name
+    if (!["by", "of", "in", "created", "from"].includes(candidate.toLowerCase())) {
+      branchName = candidate;
+    }
+  }
 
   // Extract repo name (same logic as parsePRRequest)
-  const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b|branch\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
+  const repoMatch = tLower.match(/(?:in|of|from|on)\s+(?!pr\b|pull\b|the\b|this\b|that\b|a\b|an\b|branch\b|created\b|by\b)([\w\-./]+(?:\s+[\w\-./]+)?)/);
   if (!repoMatch || !repoMatch[1]) {
-    return { branchName, repoName: null };
+    return { branchName, repoName: null, author };
   }
   const repoLower = repoMatch[1].trim();
   const idx = tLower.indexOf(repoLower);
   const repoName = idx >= 0 ? transcript.substr(idx, repoLower.length) : repoLower;
 
-  return { branchName, repoName };
+  return { branchName, repoName, author };
 }
 
 /**
@@ -1127,7 +1164,7 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
     return handleBranchAnalyse(req, env, token);
   }
 
-  const { prNumber, repoName } = parsePRRequest(req.task.request);
+  const { prNumber, repoName, author } = parsePRRequest(req.task.request);
   const userId = req.requester.id;
 
   try {
@@ -1151,16 +1188,36 @@ async function handleGitHubAnalyse(req: NexusRequest, env: Env, token: string): 
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "NEXUS-Worker",
       };
-      const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=all&per_page=1&sort=created&direction=desc`, { headers });
-      if (!resp.ok) {
-        if (resp.status === 401) return githubErrorMessage(401, `find PRs in ${repo}`);
-        return `I couldn't find any pull requests in ${repo}. Error: ${resp.status}. Try saying "analyse PR 24 in ${repo}".`;
+
+      // If author is specified, use GitHub Search API to find the latest PR by that author
+      if (author) {
+        // Use search API: "repo:{repo} is:pr author:{author}" sorted by created desc
+        const searchUrl = `https://api.github.com/search/issues?q=${encodeURIComponent(`repo:${repo} is:pr author:${author}`)}&sort=created&order=desc&per_page=1`;
+        const searchResp = await fetch(searchUrl, { headers });
+        if (!searchResp.ok) {
+          if (searchResp.status === 401) return githubErrorMessage(401, `search PRs by ${author} in ${repo}`);
+          return `I couldn't find any pull requests by "${author}" in ${repo}. Error: ${searchResp.status}. Try saying "analyse PR 24 in ${repo}".`;
+        }
+        const searchData = await searchResp.json() as Record<string, unknown>;
+        const items = searchData["items"] as Array<Record<string, unknown>>;
+        if (!items || items.length === 0) {
+          return `There are no pull requests by "${author}" in ${repo}. Try a different author name or specify a PR number.`;
+        }
+        // Search API returns issues — the PR number is the "number" field
+        actualPrNumber = items[0]["number"] as number;
+      } else {
+        // No author filter — get the latest PR overall
+        const resp = await fetch(`https://api.github.com/repos/${repo}/pulls?state=all&per_page=1&sort=created&direction=desc`, { headers });
+        if (!resp.ok) {
+          if (resp.status === 401) return githubErrorMessage(401, `find PRs in ${repo}`);
+          return `I couldn't find any pull requests in ${repo}. Error: ${resp.status}. Try saying "analyse PR 24 in ${repo}".`;
+        }
+        const prs = await resp.json() as Array<Record<string, unknown>>;
+        if (!prs || prs.length === 0) {
+          return `There are no pull requests in ${repo}. Try specifying a PR number, like "analyse PR 24".`;
+        }
+        actualPrNumber = prs[0]["number"] as number;
       }
-      const prs = await resp.json() as Array<Record<string, unknown>>;
-      if (!prs || prs.length === 0) {
-        return `There are no pull requests in ${repo}. Try specifying a PR number, like "analyse PR 24".`;
-      }
-      actualPrNumber = prs[0]["number"] as number;
     }
 
     // Fetch full PR context
@@ -1268,16 +1325,128 @@ ${context}
 }
 
 /**
+ * Find the latest branch created by a specific author in a repo.
+ * Uses GitHub Search Commits API to find the most recent commit by the author,
+ * then resolves the branch name from the commit SHA.
+ *
+ * Called when the user says "check the latest branch of servx created by eesha"
+ * (no branch name specified, just author + repo).
+ */
+async function handleLatestBranchByAuthor(
+  req: NexusRequest,
+  env: Env,
+  token: string,
+  repoName: string | null,
+  author: string,
+): Promise<string> {
+  try {
+    // Resolve the repo name
+    const repoResult = await resolveRepo(token, repoName);
+    const repo = repoResult.full_name;
+    if (!repo) {
+      const repoList = repoResult.availableRepos.length > 0
+        ? `\n\nYour available repositories: ${repoResult.availableRepos.join(", ")}`
+        : "";
+      return `I couldn't find a repository matching "${repoName}" in your GitHub account. Try specifying the full name, like "check the latest branch of owner/repo by ${author}".${repoList}`;
+    }
+
+    const headers: Record<string, string> = {
+      "Authorization": `Bearer ${token}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "NEXUS-Worker",
+    };
+
+    // Use GitHub Search Commits API to find the latest commit by the author
+    // q=repo:{repo}+author:{author}&sort=committer-date&order=desc
+    const searchUrl = `https://api.github.com/search/commits?q=${encodeURIComponent(`repo:${repo} author:${author}`)}&sort=committer-date&order=desc&per_page=10`;
+    const searchResp = await fetch(searchUrl, { headers });
+    if (!searchResp.ok) {
+      if (searchResp.status === 401) return githubErrorMessage(401, `search commits by ${author} in ${repo}`);
+      return `I couldn't find any commits by "${author}" in ${repo}. Error: ${searchResp.status}.`;
+    }
+    const searchData = await searchResp.json() as Record<string, unknown>;
+    const items = searchData["items"] as Array<Record<string, unknown>>;
+    if (!items || items.length === 0) {
+      return `There are no commits by "${author}" in ${repo}. Check the author name (GitHub username) and try again.`;
+    }
+
+    // Get the commit SHA from the first result
+    const latestCommitSha = items[0]["sha"] as string;
+    const commitInfo = items[0]["commit"] as Record<string, unknown>;
+    const commitMessage = (commitInfo?.["message"] as string || "").split("\n")[0];
+    const commitDate = (commitInfo?.["committer"] as Record<string, unknown>)?.["date"] as string || "unknown";
+
+    // Now find which branch this commit is on
+    // GitHub API: GET /repos/{owner}/{repo}/commits/{sha}/branches-where-head
+    // (This returns branches where this commit is the HEAD)
+    const branchesResp = await fetch(
+      `https://api.github.com/repos/${repo}/commits/${latestCommitSha}/branches-where-head`,
+      { headers },
+    );
+
+    let branchName: string | null = null;
+    if (branchesResp.ok) {
+      const branches = await branchesResp.json() as Array<Record<string, unknown>>;
+      if (branches && branches.length > 0) {
+        branchName = branches[0]["name"] as string;
+      }
+    }
+
+    // Fallback: if we can't find the branch, list all branches and check
+    // if any match the author's name pattern (e.g. "author/feature-x")
+    if (!branchName) {
+      const allBranchesResp = await fetch(
+        `https://api.github.com/repos/${repo}/branches?per_page=100`,
+        { headers },
+      );
+      if (allBranchesResp.ok) {
+        const allBranches = await allBranchesResp.json() as Array<Record<string, unknown>>;
+        // Look for branches that contain the author's name
+        const authorBranch = allBranches.find(b => {
+          const name = (b["name"] as string || "").toLowerCase();
+          return name.includes(author.toLowerCase());
+        });
+        if (authorBranch) {
+          branchName = authorBranch["name"] as string;
+        } else if (allBranches.length > 0) {
+          // Last resort: just return the first branch
+          branchName = allBranches[0]["name"] as string;
+        }
+      }
+    }
+
+    if (!branchName) {
+      // We found commits by the author but couldn't resolve the branch name
+      return `I found commits by "${author}" in ${repo}, but couldn't determine which branch they're on. The latest commit is "${commitMessage}" (${commitDate}). Try specifying a branch name directly.`;
+    }
+
+    // Now we have the branch name — delegate to the normal branch analysis
+    // by modifying the request transcript to include the branch name
+    const newTranscript = `analyse branch ${branchName} in ${repo}`;
+    const newReq = { ...req, task: { ...req.task, request: newTranscript } };
+    return handleBranchAnalyse(newReq, env, token);
+  } catch (err) {
+    return `I had trouble finding the latest branch by "${author}" in ${repoName}. Error: ${(err as Error).message}`;
+  }
+}
+
+/**
  * Deep branch analysis using GLM.
  * Fetches the branch's commits and diff against the default branch (main/master),
  * sends to GLM for analysis.
  */
 async function handleBranchAnalyse(req: NexusRequest, env: Env, token: string): Promise<string> {
-  const { branchName, repoName } = parseBranchRequest(req.task.request);
+  const { branchName, repoName, author } = parseBranchRequest(req.task.request);
   const userId = req.requester.id;
 
+  // If no branch name but author is specified, find the latest branch by that author
+  if (!branchName && author) {
+    return handleLatestBranchByAuthor(req, env, token, repoName, author);
+  }
+
   if (!branchName) {
-    return `I couldn't identify which branch you want to analyse. Try saying "analyse branch feature-name in repo-name".`;
+    return `I couldn't identify which branch you want to analyse. Try saying "analyse branch feature-name in repo-name" or "check the latest branch of repo-name by author".`;
   }
 
   try {

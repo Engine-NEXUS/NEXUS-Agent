@@ -33,6 +33,8 @@ export type Intent =
   | { action: "search"; query: string }
   | { action: "analyse_repo"; owner?: string; repo: string }
   | { action: "analyse_pr"; owner?: string; repo: string; pr_number: number }
+  | { action: "analyse_latest_pr"; owner?: string; repo: string; author?: string }
+  | { action: "check_branch"; owner?: string; repo: string; author?: string }
   | { action: "media_play_pause" }
   | { action: "media_next" }
   | { action: "media_previous" }

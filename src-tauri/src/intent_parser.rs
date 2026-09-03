@@ -43,6 +43,24 @@ pub enum ParsedIntent {
         repo: String,
         pr_number: u32,
     },
+    /// Analyse the latest PR in a repo, optionally filtered by author.
+    /// "analyse the pr in zync" → AnalyseLatestPr { repo: "zync", author: None }
+    /// "analyse the pr by prem in servx" → AnalyseLatestPr { repo: "servx", author: Some("prem") }
+    #[serde(rename = "analyse_latest_pr")]
+    AnalyseLatestPr {
+        owner: Option<String>,
+        repo: String,
+        author: Option<String>,
+    },
+    /// Check the latest branch in a repo, optionally filtered by author.
+    /// "check the latest branch of servx created by eesha"
+    ///   → CheckBranch { repo: "servx", author: Some("eesha") }
+    #[serde(rename = "check_branch")]
+    CheckBranch {
+        owner: Option<String>,
+        repo: String,
+        author: Option<String>,
+    },
     #[serde(rename = "media_play_pause")]
     MediaPlayPause,
     #[serde(rename = "media_next")]
@@ -136,7 +154,18 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
     // "analyse PR 23 servx", "analyse pr 23 in servx", "analyse pull request 23 servx"
     // "analyse servx repo", "analyse servx", "analyse owner/repo"
     // "analyse repo servx", "analyse the repo servx"
+    // "analyse the pr in zync" (latest PR, no number)
+    // "analyse the pr by prem in servx" (latest PR by author)
     if let Some(result) = parse_analyse_command(&text) {
+        return Some(result);
+    }
+
+    // --- Branch commands ---
+    // "check the latest branch of servx created by eesha"
+    // "check latest branch by eesha in servx"
+    // "show the latest branch of servx by eesha"
+    // "what is the latest branch of servx created by eesha"
+    if let Some(result) = parse_branch_command(&text) {
         return Some(result);
     }
 
@@ -453,6 +482,14 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
         return Some(result);
     }
 
+    // Pattern 3b: "the pr [by|of|from] <author> in <repo>" or "the pr in <repo>"
+    // or "latest pr [by|of|from] <author> in <repo>" or "latest pr in <repo>"
+    // or "the latest pr ..." / "the pull request ..." / "latest pull request ..."
+    // These are "latest PR" commands — no PR number, fetch the most recent PR.
+    if let Some(result) = parse_latest_pr_analyse(analyse_text) {
+        return Some(result);
+    }
+
     // Pattern 4: Just "<repo>" ΓÇö e.g. "analyse servx", "analyse zync"
     // Treat the whole remaining text as the repo name
     let repo = clean_repo_name(analyse_text);
@@ -576,6 +613,385 @@ fn fuzzy_match_repo_name(repo: &str) -> Option<String> {
             return Some(known.to_string());
         }
     }
+    None
+}
+
+/// Parse "latest PR" commands — PR without a number, optionally filtered by author.
+///
+/// Patterns:
+/// - "the pr in <repo>" → latest PR in repo
+/// - "the pr [of|by|from] <author> in <repo>" → latest PR by author in repo
+/// - "latest pr in <repo>" → latest PR in repo
+/// - "latest pr [of|by|from] <author> in <repo>" → latest PR by author in repo
+/// - "the latest pr in <repo>" → latest PR in repo
+/// - "the latest pr [of|by|from] <author> in <repo>" → latest PR by author in repo
+/// - "the pull request in <repo>" → latest PR in repo
+/// - "the pull request [of|by|from] <author> in <repo>" → latest PR by author in repo
+/// - "latest pull request in <repo>" → latest PR in repo
+/// - "the pr of <repo>" → latest PR in repo (when "of" is followed by a known repo)
+/// - "pr in <repo>" → latest PR in repo (no "the" / "latest")
+/// - "pr [of|by|from] <author> in <repo>" → latest PR by author in repo
+fn parse_latest_pr_analyse(text: &str) -> Option<ParseResult> {
+    // Must contain "pr" or "pull request" but NOT followed by a number
+    // (if followed by a number, it's a specific PR, handled by parse_pr_analyse)
+
+    // Strip leading "the " if present
+    let text = text.strip_prefix("the ").unwrap_or(text);
+
+    // Check if it starts with "latest " or "newest " or "recent " or "open " or "current "
+    let text = text
+        .strip_prefix("latest ")
+        .or_else(|| text.strip_prefix("newest "))
+        .or_else(|| text.strip_prefix("recent "))
+        .or_else(|| text.strip_prefix("current "))
+        .unwrap_or(text);
+
+    // Now text should start with "pr " or "pull request "
+    let after_pr = if let Some(rest) = text.strip_prefix("pr ") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("pull request ") {
+        rest
+    } else {
+        return None; // Not a PR command
+    };
+
+    // Check that "pr" is NOT followed by a number (that's parse_pr_analyse's job)
+    // If after_pr starts with a digit or "#", skip — it's a specific PR
+    let after_pr_trimmed = after_pr.trim_start_matches('#').trim_start();
+    if after_pr_trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        return None; // Has a PR number — not a "latest PR" command
+    }
+
+    // Patterns for extracting author and repo:
+    // 1. "[of|by|from] <author> in <repo>"
+    // 2. "in <repo>" (no author)
+    // 3. "of <repo>" (when "of" is followed by a known repo, not a person)
+
+    // Pattern 1: "[of|by|from] <author> in <repo>"
+    let author_repo_pat = regex::Regex::new(
+        r"^(?:of|by|from)\s+(\S+)\s+in\s+(.+)$"
+    ).ok()?;
+
+    if let Some(caps) = author_repo_pat.captures(after_pr) {
+        let author = caps[1].trim().to_string();
+        let repo_part = caps[2].trim();
+
+        // Check if repo_part is owner/repo format
+        if let Some((owner, repo)) = parse_owner_repo(repo_part) {
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: Some(owner),
+                    repo,
+                    author: Some(author),
+                },
+                confidence: 1.0,
+                source: "deterministic".to_string(),
+            });
+        }
+
+        let repo = clean_repo_name(repo_part);
+        if !repo.is_empty() {
+            // Try fuzzy matching for repo name
+            let lower_repo = repo.to_lowercase();
+            let final_repo = if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                fuzzy_match_repo_name(&lower_repo).unwrap_or(repo)
+            } else {
+                repo
+            };
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: None,
+                    repo: final_repo,
+                    author: Some(author),
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // Pattern 2: "in <repo>" (no author)
+    let in_repo_pat = regex::Regex::new(r"^in\s+(.+)$").ok()?;
+    if let Some(caps) = in_repo_pat.captures(after_pr) {
+        let repo_part = caps[1].trim();
+
+        if let Some((owner, repo)) = parse_owner_repo(repo_part) {
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: Some(owner),
+                    repo,
+                    author: None,
+                },
+                confidence: 1.0,
+                source: "deterministic".to_string(),
+            });
+        }
+
+        let repo = clean_repo_name(repo_part);
+        if !repo.is_empty() {
+            let lower_repo = repo.to_lowercase();
+            let final_repo = if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                fuzzy_match_repo_name(&lower_repo).unwrap_or(repo)
+            } else {
+                repo
+            };
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: None,
+                    repo: final_repo,
+                    author: None,
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // Pattern 3: "of <repo>" (when "of" is followed by a known repo)
+    // This is ambiguous — "of prem" could be author "prem" or repo "prem"
+    // Only treat as repo if it matches a KNOWN_REPO
+    let of_repo_pat = regex::Regex::new(r"^of\s+(.+)$").ok()?;
+    if let Some(caps) = of_repo_pat.captures(after_pr) {
+        let repo_part = caps[1].trim();
+        let lower_repo = repo_part.to_lowercase();
+        if KNOWN_REPOS.contains(&lower_repo.as_str()) {
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: None,
+                    repo: repo_part.to_string(),
+                    author: None,
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        }
+        // If not a known repo, "of <word>" is likely an author — but we need a repo too
+        // Check if there's "in <repo>" after the author
+        // This is already handled by Pattern 1 above
+    }
+
+    // Pattern 4: Just "<repo>" (no preposition) — e.g. "latest pr zync"
+    // This handles "analyse latest pr zync" where "latest" was stripped and "pr" was stripped,
+    // leaving just "zync"
+    let repo = clean_repo_name(after_pr);
+    if !repo.is_empty() {
+        let lower_repo = repo.to_lowercase();
+        // Only accept if it's a known repo or fuzzy-matches one — otherwise
+        // "pr something" could be garbage
+        if KNOWN_REPOS.contains(&lower_repo.as_str()) {
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: None,
+                    repo,
+                    author: None,
+                },
+                confidence: 0.85,
+                source: "deterministic".to_string(),
+            });
+        }
+        if let Some(fuzzy_repo) = fuzzy_match_repo_name(&lower_repo) {
+            return Some(ParseResult {
+                intent: ParsedIntent::AnalyseLatestPr {
+                    owner: None,
+                    repo: fuzzy_repo,
+                    author: None,
+                },
+                confidence: 0.8,
+                source: "fuzzy".to_string(),
+            });
+        }
+    }
+
+    None
+}
+
+/// Parse "check branch" / "show branch" / "what is branch" commands.
+///
+/// Patterns:
+/// - "check [the] [latest|recent|newest] branch [of|in] <repo> [created] [by] <author>"
+/// - "check [the] [latest|recent|newest] branch [by] <author> [in|of] <repo>"
+/// - "show [the] [latest|recent|newest] branch [of|in] <repo> [created] [by] <author>"
+/// - "what is [the] [latest|recent|newest] branch [of|in] <repo> [created] [by] <author>"
+/// - "check [the] [latest|recent|newest] branch [of|in] <repo>" (no author — just latest branch)
+fn parse_branch_command(text: &str) -> Option<ParseResult> {
+    // Must start with "check", "show", or "what is"
+    let branch_text = if let Some(rest) = text.strip_prefix("check ") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("show ") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("what is ") {
+        rest
+    } else if let Some(rest) = text.strip_prefix("what's ") {
+        rest
+    } else {
+        return None;
+    };
+
+    // Must contain "branch" (or "branches")
+    if !branch_text.contains("branch") && !branch_text.contains("branches") {
+        return None;
+    }
+
+    // Strip "the " prefix
+    let branch_text = branch_text.strip_prefix("the ").unwrap_or(branch_text);
+
+    // Strip "latest" / "newest" / "recent" / "new"
+    let branch_text = branch_text
+        .strip_prefix("latest ")
+        .or_else(|| branch_text.strip_prefix("newest "))
+        .or_else(|| branch_text.strip_prefix("recent "))
+        .or_else(|| branch_text.strip_prefix("new "))
+        .unwrap_or(branch_text);
+
+    // Strip "branch " or "branches "
+    let after_branch = if let Some(rest) = branch_text.strip_prefix("branch ") {
+        rest
+    } else if let Some(rest) = branch_text.strip_prefix("branches ") {
+        rest
+    } else {
+        // "branch" might be at the end with no trailing space
+        if branch_text == "branch" || branch_text == "branches" {
+            return None; // No repo specified
+        }
+        return None;
+    };
+
+    // Now after_branch should contain repo and/or author info.
+    // Patterns:
+    // A: "[of|in] <repo> [created] [by] <author>"
+    // B: "[by] <author> [in|of] <repo>"
+    // C: "[of|in] <repo>" (no author)
+
+    // Strip "created " if present anywhere (user says "of servx created by eesha")
+    let after_branch = after_branch.replace(" created ", " ");
+
+    // Pattern A: "[of|in] <repo> [by] <author>"
+    // The repo is everything between "of/in" and "by", or the rest if no "by"
+    let repo_author_pat_a = regex::Regex::new(
+        r"^(?:of|in)\s+(.+?)\s+by\s+(\S+)$"
+    ).ok()?;
+
+    if let Some(caps) = repo_author_pat_a.captures(&after_branch) {
+        let repo_part = caps[1].trim();
+        let author = caps[2].trim().to_string();
+
+        if let Some((owner, repo)) = parse_owner_repo(repo_part) {
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: Some(owner),
+                    repo,
+                    author: Some(author),
+                },
+                confidence: 1.0,
+                source: "deterministic".to_string(),
+            });
+        }
+
+        let repo = clean_repo_name(repo_part);
+        if !repo.is_empty() {
+            let lower_repo = repo.to_lowercase();
+            let final_repo = if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                fuzzy_match_repo_name(&lower_repo).unwrap_or(repo)
+            } else {
+                repo
+            };
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: None,
+                    repo: final_repo,
+                    author: Some(author),
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // Pattern B: "[by] <author> [in|of] <repo>"
+    let author_repo_pat_b = regex::Regex::new(
+        r"^by\s+(\S+)\s+(?:in|of)\s+(.+)$"
+    ).ok()?;
+
+    if let Some(caps) = author_repo_pat_b.captures(&after_branch) {
+        let author = caps[1].trim().to_string();
+        let repo_part = caps[2].trim();
+
+        if let Some((owner, repo)) = parse_owner_repo(repo_part) {
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: Some(owner),
+                    repo,
+                    author: Some(author),
+                },
+                confidence: 1.0,
+                source: "deterministic".to_string(),
+            });
+        }
+
+        let repo = clean_repo_name(repo_part);
+        if !repo.is_empty() {
+            let lower_repo = repo.to_lowercase();
+            let final_repo = if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                fuzzy_match_repo_name(&lower_repo).unwrap_or(repo)
+            } else {
+                repo
+            };
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: None,
+                    repo: final_repo,
+                    author: Some(author),
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // Pattern C: "[of|in] <repo>" (no author — just latest branch)
+    let repo_only_pat = regex::Regex::new(r"^(?:of|in)\s+(.+)$").ok()?;
+    if let Some(caps) = repo_only_pat.captures(&after_branch) {
+        let repo_part = caps[1].trim();
+
+        // Strip trailing " by <something>" if present (already handled above, but just in case)
+        let repo_part = if let Some(pos) = repo_part.find(" by ") {
+            &repo_part[..pos]
+        } else {
+            repo_part
+        };
+
+        if let Some((owner, repo)) = parse_owner_repo(repo_part) {
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: Some(owner),
+                    repo,
+                    author: None,
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        }
+
+        let repo = clean_repo_name(repo_part);
+        if !repo.is_empty() {
+            let lower_repo = repo.to_lowercase();
+            let final_repo = if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                fuzzy_match_repo_name(&lower_repo).unwrap_or(repo)
+            } else {
+                repo
+            };
+            return Some(ParseResult {
+                intent: ParsedIntent::CheckBranch {
+                    owner: None,
+                    repo: final_repo,
+                    author: None,
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
     None
 }
 
