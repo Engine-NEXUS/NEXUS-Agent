@@ -9,7 +9,7 @@ import {
   isDuplicateLongRunning,
 } from "../net/wsBridge";
 import { transcribeAudio } from "./stt";
-import { speak } from "./ttsPlayer";
+import { speak, speakCached } from "./ttsPlayer";
 import { parseIntent, type Intent } from "../intent/parser";
 
 /**
@@ -83,7 +83,8 @@ function processNextQueuedCommand(): void {
   // Send it — the session should still be open from the previous command.
   setLongRunningInFlight(next, processNextQueuedCommand);
   // The orb is already hidden from the previous command's "On it sir".
-  // Re-show the loading indicator for this queued command.  void sendTranscript(next).then(() => {
+  // Re-show the loading indicator for this queued command.
+  void sendTranscript(next).then(() => {
     console.log(`[NEXUS] queue: sent "${next}" to worker`);
   }).catch((e) => {
     console.warn(`[NEXUS] queue: failed to send "${next}":`, e);
@@ -241,6 +242,60 @@ function correctSttTranscript(transcript: string): string {
   }
   return t;
 }
+
+// ─── Self-Learning STT Corrections ───────────────────────────────────
+// Learned corrections are loaded from the Rust side at startup and applied
+// after the hardcoded corrections above. See stt_learning.rs.
+
+let learnedCorrections: Array<{ from: string; to: string }> = [];
+
+async function loadLearnedCorrections(): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke<[string, string][]>("get_learned_corrections");
+    learnedCorrections = result.map(([from, to]) => ({ from, to }));
+    if (learnedCorrections.length > 0) {
+      console.log(`[NEXUS] Loaded ${learnedCorrections.length} learned STT corrections`);
+    }
+  } catch {
+    // Outside Tauri or command not available — silently skip
+  }
+}
+
+function applyLearnedCorrections(transcript: string): string {
+  let t = transcript;
+  for (const { from, to } of learnedCorrections) {
+    if (t.includes(from)) {
+      t = t.replace(new RegExp(escapeRegExp(from), "gi"), to);
+    }
+  }
+  return t;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function logFailedTranscript(transcript: string): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("log_failed_transcript", { transcript });
+  } catch {
+    // Outside Tauri — silently skip
+  }
+}
+
+async function logSuccessfulTranscript(transcript: string): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("log_successful_transcript", { transcript });
+  } catch {
+    // Outside Tauri — silently skip
+  }
+}
+
+// Load learned corrections at module init
+void loadLearnedCorrections();
 
 /**
  * Audio recorder using ScriptProcessorNode (proven reliable in WebView2/Electron).
@@ -525,6 +580,10 @@ export async function finishCapture(): Promise<void> {
 
   // 1b. Post-process the transcript to fix common STT mishearings.
   transcript = correctSttTranscript(transcript);
+  transcript = applyLearnedCorrections(transcript);
+
+  // Log successful transcript for self-learning
+  void logSuccessfulTranscript(transcript);
 
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
@@ -547,20 +606,12 @@ export async function finishCapture(): Promise<void> {
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     setLocalAckGiven(); // prevent server ack from double-speaking
-    void speak("On it sir").then(() => {
-      // After ack TTS finishes, hide the orb — it will reappear when
-      // the Worker response arrives (wsBridge result handler).
-      // Check both "speaking" (TTS just finished) and "thinking" (Rust
-      // already emitted thinking state while TTS was playing). In both
-      // cases, the orb should be hidden — the result handler will
-      // re-show it when the Worker responds.
+    void speakCached("On it sir").then(() => {
       const curState = useAssistant.getState().state;
       if (curState === "speaking" || curState === "thinking") {
         useAssistant.getState().setVisible(false);
         setTimeout(() => useAssistant.getState().reset(), 550);
-        // Show the loading indicator — the orb (wakeup animation) is
-        // now hidden, so the user sees the loading animation at the
-        // top-right corner while NEXUS processes the request.      }
+      }
     });
   }
 
@@ -677,6 +728,8 @@ export async function finishCapture(): Promise<void> {
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
   await speak("Didn't catch that sir");
+  // Log failed transcript for self-learning
+  void logFailedTranscript(transcript);
   useAssistant.getState().setVisible(false);
   setTimeout(() => useAssistant.getState().reset(), 550);
   captureInProgress = false;
@@ -819,6 +872,10 @@ async function _finishCaptureFromVadInner(
 
   // 1b. Post-process the transcript to fix common STT mishearings.
   transcript = correctSttTranscript(transcript);
+  transcript = applyLearnedCorrections(transcript);
+
+  // Log successful transcript for self-learning
+  void logSuccessfulTranscript(transcript);
 
   // 2. Add the transcript to the UI.
   useAssistant.getState().addUserMessage(transcript);
@@ -841,20 +898,12 @@ async function _finishCaptureFromVadInner(
     useAssistant.getState().setState("speaking");
     useAssistant.getState().addAssistantMessage("On it sir.");
     setLocalAckGiven(); // prevent server ack from double-speaking
-    void speak("On it sir").then(() => {
-      // After ack TTS finishes, hide the orb — it will reappear when
-      // the Worker response arrives (wsBridge result handler).
-      // Check both "speaking" (TTS just finished) and "thinking" (Rust
-      // already emitted thinking state while TTS was playing). In both
-      // cases, the orb should be hidden — the result handler will
-      // re-show it when the Worker responds.
+    void speakCached("On it sir").then(() => {
       const curState = useAssistant.getState().state;
       if (curState === "speaking" || curState === "thinking") {
         useAssistant.getState().setVisible(false);
         setTimeout(() => useAssistant.getState().reset(), 550);
-        // Show the loading indicator — the orb (wakeup animation) is
-        // now hidden, so the user sees the loading animation at the
-        // top-right corner while NEXUS processes the request.      }
+      }
     });
   }
 
@@ -969,6 +1018,8 @@ async function _finishCaptureFromVadInner(
   useAssistant.getState().setState("speaking");
   useAssistant.getState().addAssistantMessage("Didn't catch that, sir.");
   await speak("Didn't catch that sir");
+  // Log failed transcript for self-learning
+  void logFailedTranscript(transcript);
   useAssistant.getState().setVisible(false);
   setTimeout(() => useAssistant.getState().reset(), 550);
   captureInProgress = false;

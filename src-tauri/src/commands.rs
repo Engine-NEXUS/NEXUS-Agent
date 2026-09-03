@@ -10,7 +10,6 @@ use tauri::{Emitter, Manager, Runtime};
 #[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt;
 
-#[cfg(feature = "wakeword-sherpa")]
 use crate::app_registry;
 
 // ─── Pending sidebar content ───────────────────────────────────────
@@ -146,7 +145,6 @@ pub fn get_server_config<R: Runtime>(
 // Speaker enrollment uses sherpa-onnx for embedding extraction. When using the
 // default wakeword-oww engine, verification is not yet wired (see AGENTS.md),
 // so these commands are compiled out to avoid pulling in sherpa-onnx C++ deps.
-#[cfg(feature = "wakeword-sherpa")]
 
 // ─── Meeting / privacy mode commands ─────────────────────────────────
 
@@ -636,60 +634,23 @@ pub fn hide_sidebar<R: Runtime>(
     Ok(())
 }
 
-// ─── Loading indicator window ────────────────────────────────────────
+// ─── Loading indicator (now inside Orb — no-ops for backwards compat) ──
 
-/// IPC: Show the loading indicator window.
-/// Creates a small 80x80 transparent click-through window at the
-/// top-right corner of the screen. Shows the loading.json Lottie
-/// animation while NEXUS is processing a request (after "On it sir").
-/// The window is permanently click-through — mouse events pass through
-/// to whatever is behind it.
-///
-/// IMPORTANT: This command is async so it runs on a thread pool, NOT the
-/// main thread. A synchronous command would block the main thread during
-/// WebView2 window creation, which prevents Tauri events (like the Worker
-/// "result" event) from being delivered to the frontend — causing the
-/// response to never appear.
+/// IPC: Show loading indicator — now rendered inside the Orb window.
+/// Kept as a no-op for backwards compatibility with older frontend code.
 #[tauri::command]
 pub async fn show_loading_indicator<R: Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    // Create the window — WebviewWindowBuilder::build() dispatches to the
-    // main thread internally, so this is safe to call from a thread pool.
-    let win = crate::dyn_windows::get_or_create_window(
-        &app,
-        crate::dyn_windows::WindowConfig::loading_indicator(),
-    )?;
-
-    // Position at the top-right corner — 7px from right, 9px from top.
-    if let Ok(Some(monitor)) = win.current_monitor() {
-        let scale = monitor.scale_factor();
-        let screen = monitor.size();
-        let win_size = 80i32;
-        let phys_win = (win_size as f64 * scale) as i32;
-        let inset_x = (7.0 * scale) as i32;
-        let inset_y = (9.0 * scale) as i32;
-        let x = screen.width as i32 - phys_win - inset_x;
-        let y = inset_y;
-        let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-        tracing::debug!("loading-indicator positioned at ({x}, {y}) [scale={scale}]");
-    }
-
-    // Permanently click-through — mouse events pass through to windows behind.
-    win.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
-    win.show().map_err(|e| e.to_string())?;
-    tracing::info!("loading-indicator window shown");
     Ok(())
 }
 
-/// IPC: Hide/destroy the loading indicator window.
-/// Called when the Worker response arrives. Destroys the window to
-/// free ~250 MB of WebView2 processes.
+/// IPC: Hide loading indicator — now rendered inside the Orb window.
+/// Kept as a no-op for backwards compatibility with older frontend code.
 #[tauri::command]
 pub async fn hide_loading_indicator<R: Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
-    let _ = crate::dyn_windows::destroy_window(&app, "loading-indicator");
     Ok(())
 }
 

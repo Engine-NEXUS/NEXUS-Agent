@@ -15,10 +15,9 @@ mod wakeword_oww;
 mod wakeword {
     pub use crate::wakeword_oww::*;
 }
-mod wakeword;
 mod network;
 mod tray;
-mod commands;
+pub mod commands;
 mod command_executor;
 mod app_registry;
 pub mod intent_parser;
@@ -26,6 +25,7 @@ mod nlu_client;
 mod lazy_nlu;
 mod lazy_stt;
 mod stt;
+mod stt_learning;
 mod tts;
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
 mod meeting_detect;
@@ -232,8 +232,6 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-
-        #[cfg(not(target_os = "linux"))]
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -386,10 +384,15 @@ pub fn run() {
             app.manage(stt_state);
 
             let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-            let tts_state = tts::TtsState { engine: tts_engine_arc.clone() };
+            let tts_cache_arc = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+            let tts_sample_rate_arc = std::sync::Arc::new(tokio::sync::Mutex::new(22050u32));
+            let tts_state = tts::TtsState { engine: tts_engine_arc.clone(), cache: tts_cache_arc.clone(), sample_rate: tts_sample_rate_arc.clone() };
             app.manage(tts_state);
-            // Kokoro TTS is now lazy-loaded on first speak_text call (saves ~350 MB at idle).
+            // Piper TTS is lazy-loaded on first speak_text call (saves ~80 MB at idle).
             // See tts::ensure_engine_loaded().
+
+            // ─── STT Self-Learning State ──────────────────────────────
+            app.manage(stt_learning::SttLearningState::new());
 
             // Wire the meeting state into the wake engine so the audio callback
             // can check `should_suppress_wake()` on every chunk.
@@ -678,7 +681,11 @@ pub fn run() {
             stt::transcribe_audio,
             stt::stt_status,
             tts::speak_text,
+            tts::speak_cached,
             tts::stop_tts,
+            stt_learning::log_failed_transcript,
+            stt_learning::log_successful_transcript,
+            stt_learning::get_learned_corrections,
             diagnostics::nexus_diagnostics,
             command_executor::execute_command,
             intent_parser::parse_transcript,

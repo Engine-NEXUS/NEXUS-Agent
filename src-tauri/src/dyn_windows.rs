@@ -91,11 +91,6 @@ impl WindowConfig {
             focus: false, center: false, hidden_title: true,
         }
     }
-    /// Loading indicator — small 80x80 transparent click-through window
-    /// at the top-right corner of the screen. Shows the loading.json Lottie
-    /// animation while NEXUS is processing a request (after "On it sir").
-    /// Destroyed when the response arrives to free ~250 MB WebView2 RAM.
-
 }
 
 /// Get an existing window, or create it on-demand if it doesn't exist.

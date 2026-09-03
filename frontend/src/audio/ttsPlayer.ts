@@ -13,7 +13,7 @@ let ttsGeneration = 0;
 export interface VoiceOption {
   id: string;
   name: string;
-  provider: "kokoro" | "system";
+  provider: "piper" | "system";
   accent: string;
   description: string;
   locale: string;
@@ -23,34 +23,14 @@ export interface VoiceOption {
 
 export const CURATED_VOICES: VoiceOption[] = [
   {
-    id: "af_sky",
-    name: "Sky (Kokoro)",
-    provider: "kokoro",
+    id: "en_US-amy-medium",
+    name: "Amy (Piper)",
+    provider: "piper",
     accent: "American",
-    description: "Clear, expressive female voice. Runs 100% locally with ultra-low latency.",
+    description: "Clear, natural female voice. Runs 100% locally with ultra-low latency (~85ms load, ~80MB RAM).",
     locale: "en-US",
     gender: "female",
-    sampleText: "Hello, I am Sky. All systems are operational.",
-  },
-  {
-    id: "am_adam",
-    name: "Adam (Kokoro)",
-    provider: "kokoro",
-    accent: "American",
-    description: "Deep, natural male voice. Runs 100% locally with ultra-low latency.",
-    locale: "en-US",
-    gender: "male",
-    sampleText: "At your service sir. Systems are online.",
-  },
-  {
-    id: "bf_emma",
-    name: "Emma (Kokoro)",
-    provider: "kokoro",
-    accent: "British",
-    description: "Professional British female voice. Runs 100% locally.",
-    locale: "en-GB",
-    gender: "female",
-    sampleText: "Hello. I am Emma, ready to assist you.",
+    sampleText: "Hello, I am Amy. All systems are operational.",
   },
 ];
 
@@ -145,7 +125,7 @@ export async function previewVoice(
   speed?: number,
 ): Promise<void> {
   stopTts();
-  if (voice.provider === "kokoro") {
+  if (voice.provider === "piper") {
     // After stopTts, capture the new generation (stopTts incremented it)
     return playKokoro(voice.sampleText, voice.id, speed ?? 1.15, ttsGeneration, onEnd);
   }
@@ -170,10 +150,35 @@ export async function speak(text: string, onEnd?: () => void): Promise<void> {
     return;
   }
 
-  const voiceId = settings?.ttsVoice || "af_sky";
+  const voiceId = settings?.ttsVoice || "en_US-amy-medium";
   const speed = settings?.speechRate ?? 1.15;
 
   return playKokoro(text, voiceId, speed, myGen, onEnd);
+}
+
+/**
+ * Speak a pre-cached TTS phrase instantly from memory.
+ * Falls back to `speak` if the phrase is not cached.
+ * Emits `tts:audio-started` event before playback starts.
+ */
+export async function speakCached(phrase: string, onEnd?: () => void): Promise<void> {
+  const meeting = await isMeetingActive();
+  if (meeting) {
+    console.log("[TTS] Suppressed — meeting mode active");
+    onEnd?.();
+    return;
+  }
+
+  const myGen = ttsGeneration;
+  try {
+    await invoke("speak_cached", { phrase });
+    if (ttsGeneration !== myGen) return;
+    onEnd?.();
+  } catch (e) {
+    // Fallback to regular speak if cached phrase not available
+    console.warn("[TTS] speak_cached failed, falling back to speak:", e);
+    return speak(phrase, onEnd);
+  }
 }
 
 export function stopTts(): void {

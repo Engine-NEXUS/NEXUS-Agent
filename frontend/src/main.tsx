@@ -22,7 +22,6 @@ import { captureUntilSilence, abortCapture } from "./audio/recorder";
 import { stopTts } from "./audio/ttsPlayer";
 import { useAssistant } from "./store/assistant";
 import { setBargedIn, clearBargedIn, clearDialogContext } from "./net/wsBridge";
-import { hideLoadingIndicator } from "./loading/loadingController";
 
 /** Set to true when the wake is triggered automatically by a follow-up
  * question (not by the user pressing Ctrl+Space). When true, startListening

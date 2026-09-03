@@ -1,11 +1,11 @@
-//! Enhanced intent parser — Rust-side command understanding with app registry
+//! Enhanced intent parser ΓÇö Rust-side command understanding with app registry
 //! fuzzy matching, analyse/repo/PR entity extraction, and NLU server fallback.
 //!
 //! Architecture:
 //!   1. Deterministic regex patterns for command structure (open, analyse, search, media)
 //!   2. App registry fuzzy matching for app names (uses ALL installed apps, not a fixed list)
 //!   3. Entity extraction for repo names, PR numbers, owners
-//!   4. NLU server (BERT-Mini) as a confidence booster — lazy-started Python sidecar
+//!   4. NLU server (BERT-Mini) as a confidence booster ΓÇö lazy-started Python sidecar
 //!   5. Falls back to the frontend regex parser if NLU is unavailable
 //!
 //! This replaces the frontend TypeScript parser for better accuracy:
@@ -17,9 +17,9 @@
 use crate::app_registry;
 use serde::{Deserialize, Serialize};
 
-// ─── Types ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Types ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-/// Parsed intent — same shape as the frontend Intent type, plus new analyse intents.
+/// Parsed intent ΓÇö same shape as the frontend Intent type, plus new analyse intents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum ParsedIntent {
@@ -51,11 +51,11 @@ pub enum ParsedIntent {
     MediaPrevious,
     #[serde(rename = "media_stop")]
     MediaStop,
-    /// Local conversational reply (greetings, thanks, etc.) — handled
+    /// Local conversational reply (greetings, thanks, etc.) ΓÇö handled
     /// entirely locally, no Cloudflare Worker round-trip needed.
     #[serde(rename = "greeting")]
     Greeting { reply: String },
-    /// NLU server result — used when the deterministic parser is uncertain
+    /// NLU server result ΓÇö used when the deterministic parser is uncertain
     /// and the NLU server returns a classification.
     #[serde(rename = "nlu_result")]
     NluResult {
@@ -71,19 +71,19 @@ pub enum ParsedIntent {
 #[derive(Debug, Clone, Serialize)]
 pub struct ParseResult {
     pub intent: ParsedIntent,
-    /// Confidence score 0.0–1.0. Deterministic matches are 1.0.
+    /// Confidence score 0.0ΓÇô1.0. Deterministic matches are 1.0.
     /// NLU server matches are the model's confidence.
     pub confidence: f32,
     /// Source of the parse: "deterministic", "nlu", "fallback"
     pub source: String,
 }
 
-// ─── Deterministic parser ──────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Deterministic parser ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Parse a transcript into a structured intent using deterministic rules.
 ///
 /// This is the primary parser. It handles:
-/// - "open <app>" / "launch <app>" / etc. → open_app (with app registry fuzzy match)
+/// - "open <app>" / "launch <app>" / etc. ΓåÆ open_app (with app registry fuzzy match)
 /// - "analyse <repo>" / "analyse PR <num> <repo>" / "analyse <owner>/<repo>"
 /// - "search for <query>" / "google <query>"
 /// - "open architecture mapper"
@@ -103,6 +103,18 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
             intent: ParsedIntent::OpenArchitect,
             confidence: 1.0,
             source: "deterministic".to_string(),
+        });
+    }
+
+    // --- Fuzzy match for architecture mapper (STT mishearings) ---
+    // faster-whisper tiny.en often mishears "architecture mapper" as:
+    //   "octach at mapper", "architecture mapper", "arcade mapper", etc.
+    // Check for the pattern: (open|launch|start|show) + <garbled> + "mapper"
+    if is_architect_fuzzy(&text) {
+        return Some(ParseResult {
+            intent: ParsedIntent::OpenArchitect,
+            confidence: 0.85,
+            source: "deterministic-fuzzy".to_string(),
         });
     }
 
@@ -128,7 +140,7 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
         return Some(result);
     }
 
-    // --- WhatsApp chat (must be BEFORE open command — "open chat with X" would match open) ---
+    // --- WhatsApp chat (must be BEFORE open command ΓÇö "open chat with X" would match open) ---
     // "open chat with lakshya", "message lakshya on whatsapp", "chat with mom"
     if let Some(result) = parse_whatsapp_command(&text) {
         return Some(result);
@@ -155,7 +167,7 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
     None
 }
 
-// ─── Open command ──────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Open command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Verbs that trigger an "open" command.
 const OPEN_VERBS: &[&str] = &[
@@ -199,7 +211,7 @@ fn parse_open_command(text: &str) -> Option<ParseResult> {
                 });
             }
 
-            // App name — resolve against the app registry
+            // App name ΓÇö resolve against the app registry
             let resolved = resolve_app_name(&cleaned_no_site);
             return Some(ParseResult {
                 intent: ParsedIntent::OpenApp {
@@ -224,7 +236,7 @@ fn resolve_app_name(name: &str) -> Option<String> {
         // Return the first search name (canonical form)
         if let Some(canonical) = entry.search_names.first() {
             tracing::debug!(
-                "app registry match: '{}' → '{}' ({})",
+                "app registry match: '{}' ΓåÆ '{}' ({})",
                 name,
                 canonical,
                 entry.display_name
@@ -235,15 +247,15 @@ fn resolve_app_name(name: &str) -> Option<String> {
     }
 
     // 2. Phonetic correction against the app registry
-    // This handles Whisper mishearings like "what's app" → "whatsapp"
+    // This handles Whisper mishearings like "what's app" ΓåÆ "whatsapp"
     if let Some(corrected) = phonetic_app_lookup(name) {
-        tracing::debug!("phonetic app match: '{}' → '{}'", name, corrected);
+        tracing::debug!("phonetic app match: '{}' ΓåÆ '{}'", name, corrected);
         return Some(corrected);
     }
 
-    // 3. Try with spaces removed/added (e.g. "whats app" → "whatsapp", "googlechrome" → "google chrome")
+    // 3. Try with spaces removed/added (e.g. "whats app" ΓåÆ "whatsapp", "googlechrome" ΓåÆ "google chrome")
     if let Some(corrected) = space_variation_lookup(name) {
-        tracing::debug!("space variation match: '{}' → '{}'", name, corrected);
+        tracing::debug!("space variation match: '{}' ΓåÆ '{}'", name, corrected);
         return Some(corrected);
     }
 
@@ -251,9 +263,9 @@ fn resolve_app_name(name: &str) -> Option<String> {
 }
 
 /// Try looking up the app name with space variations.
-/// "whats app" → try "whatsapp", "googlechrome" → try "google chrome"
+/// "whats app" ΓåÆ try "whatsapp", "googlechrome" ΓåÆ try "google chrome"
 fn space_variation_lookup(name: &str) -> Option<String> {
-    // Remove all spaces: "what's app" → "what'sapp"
+    // Remove all spaces: "what's app" ΓåÆ "what'sapp"
     let no_spaces = name.replace(' ', "");
     if no_spaces != name {
         if let Some(entry) = app_registry::lookup(&no_spaces) {
@@ -263,13 +275,13 @@ fn space_variation_lookup(name: &str) -> Option<String> {
         }
     }
 
-    // Try adding a space at common boundaries (consonant→vowel transitions)
+    // Try adding a space at common boundaries (consonantΓåÆvowel transitions)
     // This is a simple heuristic for compound words
     let chars: Vec<char> = name.chars().collect();
     for i in 1..chars.len() {
         let prev = chars[i - 1];
         let curr = chars[i];
-        // Insert space between consonant and vowel (e.g. "googlechrome" → "google chrome")
+        // Insert space between consonant and vowel (e.g. "googlechrome" ΓåÆ "google chrome")
         if !is_vowel(prev) && is_vowel(curr) {
             let mut modified = name[..i].to_string();
             modified.push(' ');
@@ -289,7 +301,7 @@ fn is_vowel(c: char) -> bool {
     matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
 }
 
-/// Phonetic app lookup — tries to match the spoken word against app names
+/// Phonetic app lookup ΓÇö tries to match the spoken word against app names
 /// using simple phonetic similarity (sound-alike matching).
 ///
 /// This is a lightweight alternative to Double Metaphone that works against
@@ -337,7 +349,7 @@ fn phonetic_app_lookup(name: &str) -> Option<String> {
     best_match.map(|(name, _)| name)
 }
 
-/// Simple phonetic encoding — removes vowels and normalizes consonant clusters.
+/// Simple phonetic encoding ΓÇö removes vowels and normalizes consonant clusters.
 /// This is a very lightweight phonetic representation (not as sophisticated as
 /// Double Metaphone, but good enough for app name matching against the registry).
 fn simple_phonetic(word: &str) -> String {
@@ -370,7 +382,7 @@ fn simple_phonetic(word: &str) -> String {
                     result.push('K');
                 }
             }
-            // PH → F
+            // PH ΓåÆ F
             'H' => {
                 if prev == 'P' {
                     // Replace last P with F
@@ -394,7 +406,7 @@ fn simple_phonetic(word: &str) -> String {
     result
 }
 
-// ─── Analyse command ───────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Analyse command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Parse "analyse" commands:
 /// - "analyse PR 23 servx" / "analyse pr 23 in servx" / "analyse pull request 23 servx"
@@ -430,7 +442,7 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
         return Some(result);
     }
 
-    // Pattern 2: "<owner>/<repo>" — e.g. "zync-meet/zync", "eesh264/congi"
+    // Pattern 2: "<owner>/<repo>" ΓÇö e.g. "zync-meet/zync", "eesh264/congi"
     if let Some(result) = parse_owner_repo_analyse(analyse_text) {
         return Some(result);
     }
@@ -441,7 +453,7 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
         return Some(result);
     }
 
-    // Pattern 4: Just "<repo>" — e.g. "analyse servx", "analyse zync"
+    // Pattern 4: Just "<repo>" ΓÇö e.g. "analyse servx", "analyse zync"
     // Treat the whole remaining text as the repo name
     let repo = clean_repo_name(analyse_text);
     if !repo.is_empty() {
@@ -450,7 +462,7 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
                 owner: None,
                 repo,
             },
-            confidence: 0.9, // slightly lower — we're guessing this is a repo name
+            confidence: 0.9, // slightly lower ΓÇö we're guessing this is a repo name
             source: "deterministic".to_string(),
         });
     }
@@ -458,10 +470,22 @@ fn parse_analyse_command(text: &str) -> Option<ParseResult> {
     None
 }
 
+/// Known repos for fuzzy matching. These are the user's commonly-analyzed repos.
+/// In production, this could be populated from GitHub OAuth (user's repos).
+const KNOWN_REPOS: &[&str] = &[
+    "nexus",
+    "ultron",
+    "servx",
+    "zync",
+    "ledger-ai",
+    "nexus-agent",
+];
+
 /// Parse "PR <num> [in|of|for|from|on] <repo>" patterns.
 fn parse_pr_analyse(text: &str) -> Option<ParseResult> {
     // Match: "PR <num> [in|of|for|from|on] <repo>" or "pull request <num> ..."
     // Also handles "PR number <num>" and "PR # <num>" (STT variations)
+    // Also handles "the PR" (user says "analyse the pr 254 in zync")
     let pr_patterns = [
         // "PR number 24 on NEXUS agent" / "PR number 24 in repo"
         regex::Regex::new(r"^pr\s*(?:number|#\s*)?\s*#?\s*(\d+)\s+(?:in|of|for|from|on)\s+(.+)$").ok()?,
@@ -473,6 +497,12 @@ fn parse_pr_analyse(text: &str) -> Option<ParseResult> {
         regex::Regex::new(r"^pull\s+request\s*#?\s*(\d+)\s+(.+)$").ok()?,
         // "PR <num> owner/repo"
         regex::Regex::new(r"^pr\s*#?\s*(\d+)\s+(\S+/\S+)$").ok()?,
+        // "the PR <num> in <repo>" ΓÇö user says "analyse the pr 254 in zync"
+        regex::Regex::new(r"^the\s+pr\s*#?\s*(\d+)\s+(?:in|of|for|from|on)\s+(.+)$").ok()?,
+        // "the PR <num> <repo>" (no preposition)
+        regex::Regex::new(r"^the\s+pr\s*#?\s*(\d+)\s+(.+)$").ok()?,
+        // "the pull request <num> in <repo>"
+        regex::Regex::new(r"^the\s+pull\s+request\s*#?\s*(\d+)\s+(?:in|of|for|from|on)\s+(.+)$").ok()?,
     ];
 
     for pat in &pr_patterns {
@@ -493,9 +523,32 @@ fn parse_pr_analyse(text: &str) -> Option<ParseResult> {
                 });
             }
 
-            // Just repo name
+            // Just repo name ΓÇö try exact match first
             let repo = clean_repo_name(repo_part);
             if !repo.is_empty() {
+                // If the repo isn't an exact known repo, try fuzzy matching
+                // against known repos. This catches STT mishearings like
+                // "zink" ΓåÆ "zync" that haven't been learned yet.
+                let lower_repo = repo.to_lowercase();
+                if !KNOWN_REPOS.contains(&lower_repo.as_str()) {
+                    if let Some(fuzzy_repo) = fuzzy_match_repo_name(&lower_repo) {
+                        tracing::info!(
+                            "intent_parser: fuzzy matched repo '{}' ΓåÆ '{}' in PR command",
+                            repo,
+                            fuzzy_repo
+                        );
+                        return Some(ParseResult {
+                            intent: ParsedIntent::AnalysePr {
+                                owner: None,
+                                repo: fuzzy_repo,
+                                pr_number,
+                            },
+                            confidence: 0.8,
+                            source: "fuzzy".to_string(),
+                        });
+                    }
+                }
+
                 return Some(ParseResult {
                     intent: ParsedIntent::AnalysePr {
                         owner: None,
@@ -509,6 +562,20 @@ fn parse_pr_analyse(text: &str) -> Option<ParseResult> {
         }
     }
 
+    None
+}
+
+/// Fuzzy-match a repo name against known repos using Levenshtein distance.
+/// Returns the matched repo name if within threshold, None otherwise.
+fn fuzzy_match_repo_name(repo: &str) -> Option<String> {
+    for &known in KNOWN_REPOS {
+        let dist = levenshtein(repo, known);
+        // Threshold: 2 for short repos (Γëñ6 chars), 3 for longer
+        let threshold = if known.len() <= 6 { 2 } else { 3 };
+        if dist <= threshold && dist > 0 {
+            return Some(known.to_string());
+        }
+    }
     None
 }
 
@@ -556,7 +623,7 @@ fn parse_repo_keyword_analyse(text: &str) -> Option<ParseResult> {
             });
         }
     }
-    // "<name> repo" — trailing "repo" keyword
+    // "<name> repo" ΓÇö trailing "repo" keyword
     if let Some(rest) = text.strip_suffix(" repo") {
         let repo = clean_repo_name(rest);
         if !repo.is_empty() {
@@ -612,7 +679,7 @@ fn is_valid_repo_name(name: &str) -> bool {
         && !name.starts_with('.')
 }
 
-/// Clean a repo name — strip articles, trailing keywords, whitespace.
+/// Clean a repo name ΓÇö strip articles, trailing keywords, whitespace.
 fn clean_repo_name(text: &str) -> String {
     let text = text.trim();
     // Strip leading "the "
@@ -627,7 +694,7 @@ fn clean_repo_name(text: &str) -> String {
     text.trim().to_string()
 }
 
-// ─── Close app command ──────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Close app command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const CLOSE_VERBS: &[&str] = &["close", "quit", "exit", "kill", "shut down", "shut"];
 
@@ -648,7 +715,7 @@ fn parse_close_command(text: &str) -> Option<ParseResult> {
     None
 }
 
-// ─── WhatsApp chat command ──────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ WhatsApp chat command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 fn parse_whatsapp_command(text: &str) -> Option<ParseResult> {
     // "open chat with lakshya", "chat with lakshya", "message lakshya"
@@ -683,7 +750,7 @@ fn parse_whatsapp_command(text: &str) -> Option<ParseResult> {
     None
 }
 
-// ─── Search command ────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Search command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 const SEARCH_VERBS: &[&str] = &[
     "search for", "search", "google", "look up", "find me", "find", "look for",
@@ -708,11 +775,11 @@ fn parse_search_command(text: &str) -> Option<ParseResult> {
     None
 }
 
-// ─── Media control ─────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Media control ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-// ─── Greetings / conversational replies ─────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Greetings / conversational replies ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 //
-// These are handled entirely locally — no Cloudflare Worker round-trip.
+// These are handled entirely locally ΓÇö no Cloudflare Worker round-trip.
 // This saves ~1-3s of latency and avoids using GLM-4.7 Flash tokens for
 // trivial conversational replies.
 
@@ -858,7 +925,7 @@ fn parse_greeting(text: &str) -> Option<ParseResult> {
 
 /// Pick a reply from a list, deterministically based on a hash of the input
 /// text. This gives variety (different replies for different inputs) while
-/// remaining deterministic (same input → same reply, no randomness).
+/// remaining deterministic (same input ΓåÆ same reply, no randomness).
 fn pick<'a>(replies: &[&'a str], text: &str) -> &'a str {
     let hash: u32 = text.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
     replies[(hash as usize) % replies.len()]
@@ -880,19 +947,130 @@ fn parse_media(text: &str) -> Option<ParsedIntent> {
     None
 }
 
-// ─── Architecture mapper ───────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Architecture mapper ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
+/// Exact match for architecture mapper commands.
+/// Covers all natural phrasings:
+///   "open architecture mapper"
+///   "open the architecture mapper"
+///   "open architect"
+///   "show architecture map"
+///   "launch architecture window"
+///   "bring up architecture"
+///   "pull up the architect mapper"
+///   "open the architecture"
+///   "show me the architecture"
+///   "open codebase mapper"
+///   "open dependency mapper"
 fn is_architect_command(text: &str) -> bool {
     regex_match(
         text,
-        r"^(?:open|launch|start|show|bring\s+up|pull\s+up)\s+(?:the\s+)?(?:architecture|architect)(?:\s+(?:mapper|map|window|mapper\s+window))?$",
+        r"^(?:open|launch|start|show|bring\s+up|pull\s+up|give\s+me|show\s+me)\s+(?:me\s+)?(?:the\s+)?(?:architecture|architect|codebase|dependency)(?:\s+(?:mapper|map|window|mapper\s+window|viewer|diagram|graph|explorer))?$",
     ) || regex_match(
         text,
-        r"^(?:open|launch|start|show)\s+the\s+(?:architecture|architect)(?:\s+(?:mapper|map|window))?$",
+        r"^(?:open|launch|start|show)\s+(?:the\s+)?(?:architecture|architect)(?:\s+(?:mapper|map|window))?$",
+    ) || regex_match(
+        text,
+        r"^(?:show|display|view)\s+(?:me\s+)?(?:the\s+)?architecture$",
     )
 }
 
-// ─── Browser force ─────────────────────────────────────────────────────────
+/// Fuzzy match for architecture mapper commands that STT misheard.
+///
+/// faster-whisper tiny.en (39M params) commonly mishears "architecture mapper" as:
+///   "octach at mapper", "arcade mapper", "arch at mapper", "arch mapper",
+///   "architecture at mapper", "open architect mapper", etc.
+///   "open up and remember" (severe mishearing)
+///   "open are cat map", "open our cat map", "open ark map"
+///   "open art at mapper", "open art map"
+///   "open a cat map", "open acat mapper"
+///
+/// Strategy (layered, most-specific first):
+/// 1. Exact-ish: ends with "mapper"/"map"/"diagram"/"graph" + has arch-like word
+/// 2. Contains "arch" or "architect" anywhere
+/// 3. Contains "codebase" or "dependency" + "map"/"mapper"
+/// 4. Severe mishearing: "open" + 2-5 words with mapper-like or arch-like sounds
+fn is_architect_fuzzy(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    // Must start with an open/launch verb (or "show me" / "give me")
+    let starts_with_verb = t.starts_with("open ")
+        || t.starts_with("launch ")
+        || t.starts_with("start ")
+        || t.starts_with("show ")
+        || t.starts_with("show me ")
+        || t.starts_with("bring up ")
+        || t.starts_with("bring me ")
+        || t.starts_with("pull up ")
+        || t.starts_with("give me ");
+    if !starts_with_verb {
+        return false;
+    }
+
+    // Pattern 1: ends with "mapper"/"map"/"diagram"/"graph"/"viewer"/"explorer"
+    // (strong signal ΓÇö these are rare words in NEXUS context)
+    if t.ends_with("mapper")
+        || t.ends_with("map")
+        || t.ends_with("mapper window")
+        || t.ends_with("map window")
+        || t.ends_with("diagram")
+        || t.ends_with("graph")
+        || t.ends_with("viewer")
+        || t.ends_with("explorer")
+    {
+        return true;
+    }
+
+    // Pattern 2: contains "arch" or "architect" (medium signal)
+    if t.contains("arch") || t.contains("architect") {
+        return true;
+    }
+
+    // Pattern 3: contains "codebase" or "dependency" (NEXUS-specific architecture words)
+    if t.contains("codebase") || t.contains("dependency") || t.contains("dependencies") {
+        return true;
+    }
+
+    // Pattern 4: "open" + 2-5 words that could be misheard "architecture mapper"
+    // Common mishearings of "architecture":
+    //   "are cat", "our cat", "ark", "art", "octach", "arcade", "arc", "are"
+    // Common mishearings of "mapper":
+    //   "remember", "member", "december", "map", "mac", "mad", "matter", "master"
+    let words: Vec<&str> = t.split_whitespace().collect();
+    if words.len() >= 2 && words.len() <= 6 {
+        // Words that sound like "architecture"
+        let has_arch_like = words.iter().any(|w| {
+            w.starts_with("arch") || w.starts_with("oct") || w.starts_with("arc")
+            || w.starts_with("art") || w.starts_with("ark") || w.starts_with("are")
+            || w.starts_with("our") || *w == "are" || *w == "our"
+            || *w == "art" || *w == "ark" || *w == "arc"
+        });
+        // Words that sound like "mapper"
+        let has_mapper_like = words.iter().any(|w| {
+            w.starts_with("map") || w.starts_with("mem") || w.starts_with("rem")
+            || w.starts_with("mac") || w.starts_with("mad") || w.starts_with("mat")
+            || w.starts_with("mas")
+            || *w == "remember" || *w == "member" || *w == "december"
+            || *w == "map" || *w == "mac" || *w == "mad" || *w == "matter"
+            || *w == "master" || *w == "manner"
+        });
+        // Need at least one arch-like OR one mapper-like word
+        // (for 2-word phrases like "open map" we only need mapper-like)
+        if words.len() <= 3 && has_mapper_like {
+            return true;
+        }
+        // For longer phrases, need both signals OR just arch-like
+        if has_arch_like {
+            return true;
+        }
+        if has_mapper_like && words.len() >= 3 {
+            return true;
+        }
+    }
+
+    false
+}
+
+// ΓöÇΓöÇΓöÇ Browser force ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// URL map for "open <app> in browser" commands.
 const BROWSER_FORCE_URLS: &[(&str, &str)] = &[
@@ -972,7 +1150,7 @@ fn parse_browser_force(text: &str) -> Option<ParseResult> {
                     });
                 }
             }
-            // Unknown app + "in browser" → construct URL if it looks like a domain
+            // Unknown app + "in browser" ΓåÆ construct URL if it looks like a domain
             if app_name.contains('.') && !app_name.contains(' ') {
                 let url = if app_name.starts_with("http") {
                     app_name.to_string()
@@ -994,7 +1172,7 @@ fn parse_browser_force(text: &str) -> Option<ParseResult> {
     None
 }
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -1051,7 +1229,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[n]
 }
 
-// ─── Regex helper ──────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Regex helper ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // We use the `regex` crate for pattern matching. It's already in the dependency
 // tree via other crates, but we need to add it explicitly to Cargo.toml.
 
@@ -1067,7 +1245,7 @@ fn regex_match(text: &str, pattern: &str) -> bool {
     re.is_match(text)
 }
 
-// ─── Tauri command ─────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Tauri command ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 /// Parse a transcript into a structured intent.
 ///
@@ -1111,7 +1289,7 @@ pub async fn parse_transcript(transcript: String) -> Result<ParseResult, String>
     })
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇΓöÇ Tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 #[cfg(test)]
 mod tests {
@@ -1335,6 +1513,137 @@ mod tests {
     }
 
     #[test]
+    fn test_architect_natural_variants() {
+        // All natural ways of saying the command
+        let variants = [
+            "open architecture mapper",
+            "open the architecture mapper",
+            "open architect",
+            "open the architect",
+            "show architecture mapper",
+            "show the architecture mapper",
+            "launch architecture mapper",
+            "launch the architecture mapper",
+            "start architecture mapper",
+            "bring up architecture mapper",
+            "bring up the architecture mapper",
+            "pull up architecture mapper",
+            "pull up the architecture mapper",
+            "show me the architecture",
+            "show me architecture mapper",
+            "give me the architecture",
+            "open architecture map",
+            "open architecture window",
+            "open architecture diagram",
+            "open architecture graph",
+            "open architecture viewer",
+            "open architecture explorer",
+            "open codebase mapper",
+            "open dependency mapper",
+            "show architecture",
+            "show the architecture",
+            "display architecture",
+            "open the architecture",
+        ];
+        for v in &variants {
+            let result = parse_deterministic(v);
+            assert!(result.is_some(), "should match: '{}'", v);
+            if let Some(r) = result {
+                assert!(matches!(r.intent, ParsedIntent::OpenArchitect), "should be OpenArchitect for: '{}'", v);
+            }
+        }
+    }
+
+    #[test]
+    fn test_architect_fuzzy_mishearing() {
+        // STT mishears "architecture mapper" as "octach at mapper"
+        let result = parse_deterministic("open octach at mapper");
+        assert!(result.is_some(), "fuzzy match should catch 'octach at mapper'");
+        let r = result.unwrap();
+        assert!(matches!(r.intent, ParsedIntent::OpenArchitect));
+        assert_eq!(r.source, "deterministic-fuzzy");
+
+        // Other common mishearings
+        let r2 = parse_deterministic("open arcade mapper");
+        assert!(r2.is_some(), "fuzzy match should catch 'arcade mapper'");
+        assert!(matches!(r2.unwrap().intent, ParsedIntent::OpenArchitect));
+
+        let r3 = parse_deterministic("launch arch at mapper");
+        assert!(r3.is_some(), "fuzzy match should catch 'arch at mapper'");
+        assert!(matches!(r3.unwrap().intent, ParsedIntent::OpenArchitect));
+
+        // Severe mishearing: "open up and remember" (from real user test)
+        let r4 = parse_deterministic("open up and remember");
+        assert!(r4.is_some(), "fuzzy match should catch 'open up and remember'");
+        assert!(matches!(r4.unwrap().intent, ParsedIntent::OpenArchitect));
+
+        // "open up and member" (another common mishearing)
+        let r5 = parse_deterministic("open up and member");
+        assert!(r5.is_some(), "fuzzy match should catch 'open up and member'");
+        assert!(matches!(r5.unwrap().intent, ParsedIntent::OpenArchitect));
+    }
+
+    #[test]
+    fn test_architect_fuzzy_comprehensive() {
+        // Comprehensive list of all known STT mishearings
+        let mishearings = [
+            // "architecture" mishearings + "mapper" correct
+            "open octach at mapper",
+            "open arcade mapper",
+            "open arch at mapper",
+            "open arch mapper",
+            "open architecture at mapper",
+            "open architect mapper",
+            "open are cat mapper",
+            "open our cat mapper",
+            "open ark mapper",
+            "open art at mapper",
+            "open art mapper",
+            "open a cat mapper",
+            "open acat mapper",
+            // "mapper" mishearings + "architecture" correct
+            "open architecture remember",
+            "open architecture member",
+            "open architecture december",
+            "open architecture mac",
+            "open architecture mad",
+            "open architecture matter",
+            "open architecture master",
+            // Both misheard
+            "open up and remember",
+            "open up and member",
+            "open up and december",
+            "open are cat map",
+            "open our cat map",
+            "open ark map",
+            "open art map",
+            "open a cat map",
+            // Short forms
+            "open map",
+            "open the map",
+            "show map",
+            "show the map",
+            // With "codebase" / "dependency"
+            "open codebase",
+            "open codebase map",
+            "open dependency map",
+            "open dependencies mapper",
+            // "show me" variants
+            "show me the architecture",
+            "show me architecture",
+            "give me the architecture",
+            "give me architecture mapper",
+        ];
+        for m in &mishearings {
+            let result = parse_deterministic(m);
+            assert!(result.is_some(), "fuzzy should catch: '{}'", m);
+            if let Some(r) = result {
+                assert!(matches!(r.intent, ParsedIntent::OpenArchitect), "should be OpenArchitect for: '{}'", m);
+            }
+        }
+    }
+
+    #[test]
     fn test_url_direct() {
         let result = parse_deterministic("open google.com");
         assert!(result.is_some());
@@ -1394,7 +1703,7 @@ mod tests {
         assert_eq!(clean_repo_name("servx repository"), "servx");
     }
 
-    // ─── Edge cases for Whisper mishearings ───────────────────────────────
+    // ΓöÇΓöÇΓöÇ Edge cases for Whisper mishearings ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn test_open_whats_app_mishearing() {
@@ -1455,7 +1764,7 @@ mod tests {
 
     #[test]
     fn test_deep_analysis_pr() {
-        // "deep analysis PR 24 in nexus-agent" — noun form with "deep" prefix
+        // "deep analysis PR 24 in nexus-agent" ΓÇö noun form with "deep" prefix
         for cmd in &[
             "deep analysis PR 24 in nexus-agent",
             "deep analyse PR 24 in nexus-agent",
@@ -1562,7 +1871,133 @@ mod tests {
         }
     }
 
-    // ─── Greeting tests ─────────────────────────────────────────────────
+    // ΓöÇΓöÇΓöÇ "the PR" pattern tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    #[test]
+    fn test_pr_with_the_preposition() {
+        // "analyse the pr 254 in zync" ΓÇö user says "the" before "pr"
+        let result = parse_deterministic("analyse the pr 254 in zync");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "zync");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_pr_with_the_no_preposition() {
+        // "analyse the pr 254 zync" ΓÇö "the" before "pr", no preposition
+        let result = parse_deterministic("analyse the pr 254 zync");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "zync");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_pr_the_pull_request() {
+        // "analyse the pull request 254 in zync"
+        let result = parse_deterministic("analyse the pull request 254 in zync");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "zync");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    // ΓöÇΓöÇΓöÇ Fuzzy matching tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+
+    #[test]
+    fn test_fuzzy_match_zink_to_zync() {
+        // "zink" is 1 edit from "zync" (iΓåÆy) ΓÇö should fuzzy match
+        let result = parse_deterministic("analyse pr 254 in zink");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "zync");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_match_zinc_to_zync() {
+        // "zinc" is 1 edit from "zync" (iΓåÆy) ΓÇö should fuzzy match
+        let result = parse_deterministic("analyse pr 254 in zinc");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "zync");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_match_sink_to_zync() {
+        // "sink" is 3 edits from "zync" (sΓåÆz, iΓåÆy, kΓåÆc) ΓÇö exceeds threshold 2
+        // for short repos. Should NOT fuzzy match ΓÇö returns "sink" as-is.
+        let result = parse_deterministic("analyse pr 254 in sink");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            // "sink" is too far from "zync" (distance 3 > threshold 2)
+            // so it's returned as-is, not fuzzy-matched
+            assert_eq!(repo, "sink");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_match_cervix_to_servx() {
+        // "cervix" ΓåÆ "servx": cΓåÆs + delete i = 2 edits ΓÇö should fuzzy match
+        let result = parse_deterministic("analyse pr 254 in cervix");
+        assert!(result.is_some());
+        if let ParsedIntent::AnalysePr { repo, pr_number, .. } = result.unwrap().intent {
+            assert_eq!(pr_number, 254);
+            assert_eq!(repo, "servx");
+        } else {
+            panic!("expected AnalysePr");
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_does_not_match_too_far() {
+        // "chrome" is too far from any known repo ΓÇö should NOT fuzzy match
+        let result = parse_deterministic("analyse pr 254 in chrome");
+        // "chrome" won't match any known repo within threshold
+        // But it will still be accepted as a repo name (clean_repo_name)
+        // because the exact pattern "pr <num> in <word>" matches.
+        // This is correct behavior ΓÇö we only fuzzy match when exact fails.
+        if let Some(r) = result {
+            if let ParsedIntent::AnalysePr { repo, .. } = r.intent {
+                // Should be "chrome" as-is, not fuzzy-matched to something
+                assert_eq!(repo, "chrome");
+            }
+        }
+    }
+
+    #[test]
+    fn test_fuzzy_match_confidence_lower() {
+        // Fuzzy matches should have lower confidence (0.8) than exact (1.0)
+        let result = parse_deterministic("analyse pr 254 in zink");
+        assert!(result.is_some());
+        let r = result.unwrap();
+        if let ParsedIntent::AnalysePr { .. } = r.intent {
+            assert_eq!(r.confidence, 0.8);
+            assert_eq!(r.source, "fuzzy");
+        }
+    }
+
+    // ΓöÇΓöÇΓöÇ Greeting tests ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
     #[test]
     fn test_greeting_hello() {
@@ -1714,7 +2149,7 @@ mod tests {
 
     #[test]
     fn test_greeting_not_triggered_by_open() {
-        // "open hello" should NOT be a greeting — it's an open command
+        // "open hello" should NOT be a greeting ΓÇö it's an open command
         let result = parse_deterministic("open hello");
         assert!(result.is_some());
         assert!(!matches!(result.unwrap().intent, ParsedIntent::Greeting { .. }));

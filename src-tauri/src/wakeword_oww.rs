@@ -470,7 +470,6 @@ mod engine {
             Ok(WakeEngine {
                 classifier,
                 audio_features,
-                speaker,
                 sample_rate: 16000,
                 chunk_buffer: Vec::with_capacity(OWW_CHUNK_SIZE),
                 threshold: 0.35,

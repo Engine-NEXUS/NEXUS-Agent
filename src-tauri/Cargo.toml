@@ -54,7 +54,8 @@ reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
 # TTS engine (in-process Kokoro)
-kokoro-micro = "1.0"
+# TTS engine (Piper — lightweight neural TTS, ~80 MB RAM, 85ms load)
+piper-rs = "0.2"
 rodio = "0.19"
 
 # Cross-platform app/URL launching (open::that, open::with)
