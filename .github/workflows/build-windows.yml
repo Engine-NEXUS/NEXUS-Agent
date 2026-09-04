@@ -46,14 +46,11 @@ jobs:
         run: npm run build
 
       - name: Build Windows Executable (.exe) Installer via Tauri
-        uses: tauri-apps/tauri-action@v0
+        working-directory: ./src-tauri
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXUS_SERVER_URL: https://nexus-worker.chitkullakshya.workers.dev
           CARGO_INCREMENTAL: 0
-        with:
-          projectPath: './src-tauri'
-          args: '--bundles nsis --features custom-protocol'
+        run: npx --yes @tauri-apps/cli build --bundles nsis --features custom-protocol
 
       - name: Upload Windows Setup Executable (.exe) Artifact
         uses: actions/upload-artifact@v4
