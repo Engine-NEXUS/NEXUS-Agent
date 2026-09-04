@@ -36,6 +36,10 @@ export function SetupApp() {
   // Accounts
   const [oauthStatus, setOauthStatus] = useState<Record<string, OAuthStatus>>({});
   const [connecting, setConnecting] = useState<string | null>(null);
+  // connectingPhase: "opening" → browser is opening
+  //                  "waiting" → browser is open, waiting for user to authorize
+  //                  "done"    → connected successfully
+  const [connectingPhase, setConnectingPhase] = useState<"opening" | "waiting" | "done">("opening");
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -105,7 +109,9 @@ export function SetupApp() {
         url = cfg.serverUrl;
         setServerUrl(cfg.serverUrl);
         setUserId(cfg.userId);
-      } catch {
+        console.log(`[Setup] loaded server config: url=${cfg.serverUrl}, userId=${cfg.userId}`);
+      } catch (e) {
+        console.error("[Setup] failed to load server config:", e);
         setError("Server not configured");
         return;
       }
@@ -114,14 +120,28 @@ export function SetupApp() {
       setError("Server not configured");
       return;
     }
+    if (!userId) {
+      console.warn("[Setup] userId is empty — OAuth state will have empty user_id");
+    }
     setConnecting(provider);
+    setConnectingPhase("opening");
     setError(null);
     try {
       setSidecarBaseUrl(url);
-      await connectOAuth(provider, userId);
+      console.log(`[Setup] connecting ${provider} via ${url}, userId=${userId}`);
+      // connectOAuth opens the browser and waits for the redirect/polling.
+      // The callback fires when the browser is opened, so we can update
+      // the UI from "Opening GitHub..." to "Waiting for authorization..."
+      await connectOAuth(provider, userId, () => {
+        setConnectingPhase("waiting");
+      });
+      setConnectingPhase("done");
       await checkServer();
+      console.log(`[Setup] ${provider} connected successfully`);
     } catch (err) {
-      setError(`${provider} connection failed: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Setup] ${provider} connection failed:`, msg, err);
+      setError(`${provider} connection failed: ${msg}`);
     } finally {
       setConnecting(null);
     }
@@ -615,7 +635,7 @@ export function SetupApp() {
                 <div className="installer-subtitle">Connect your app accounts before you proceed.</div>
 
                 <div className="installer-list">
-                  <div className="installer-list-item" onClick={() => !oauthStatus.google?.connected && handleConnect("google")}>
+                  <div className="installer-list-item" onClick={() => !oauthStatus.google?.connected && connecting !== "google" && handleConnect("google")}>
                     <div className="installer-icon-circle">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                         <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
@@ -634,17 +654,23 @@ export function SetupApp() {
                         Google {oauthStatus.google?.connected && <span className="installer-badge">Connected</span>}
                       </div>
                       <div className="installer-list-item-subtitle">
-                        {connecting === "google" ? "Connecting..." : (oauthStatus.google?.connected ? "nexus-assistant@google.com" : "Gmail, Calendar & Meet")}
+                        {connecting === "google" && connectingPhase === "opening" && "Opening Google..."}
+                        {connecting === "google" && connectingPhase === "waiting" && "Waiting for authorization..."}
+                        {connecting === "google" && connectingPhase === "done" && "Connected!"}
+                        {connecting !== "google" && (oauthStatus.google?.connected ? "nexus-assistant@google.com" : "Gmail, Calendar & Meet")}
                       </div>
                     </div>
-                    {!oauthStatus.google?.connected && (
+                    {!oauthStatus.google?.connected && connecting !== "google" && (
                       <div className="installer-list-item-chevron">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                       </div>
                     )}
+                    {connecting === "google" && (
+                      <div className="installer-list-item-spinner" style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#3b82f6", borderRadius: "50%", animation: "nx-spin 0.8s linear infinite" }} />
+                    )}
                   </div>
 
-                  <div className="installer-list-item" onClick={() => !oauthStatus.github?.connected && handleConnect("github")}>
+                  <div className="installer-list-item" onClick={() => !oauthStatus.github?.connected && connecting !== "github" && handleConnect("github")}>
                     <div className="installer-icon-circle">
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
@@ -660,13 +686,19 @@ export function SetupApp() {
                         GitHub {oauthStatus.github?.connected && <span className="installer-badge">Connected</span>}
                       </div>
                       <div className="installer-list-item-subtitle">
-                        {connecting === "github" ? "Connecting..." : (oauthStatus.github?.connected ? "GitHub User" : "Repos & Pull Requests")}
+                        {connecting === "github" && connectingPhase === "opening" && "Opening GitHub..."}
+                        {connecting === "github" && connectingPhase === "waiting" && "Waiting for authorization..."}
+                        {connecting === "github" && connectingPhase === "done" && "Connected!"}
+                        {connecting !== "github" && (oauthStatus.github?.connected ? "GitHub User" : "Click to connect — opens GitHub in browser")}
                       </div>
                     </div>
-                    {!oauthStatus.github?.connected && (
+                    {!oauthStatus.github?.connected && connecting !== "github" && (
                       <div className="installer-list-item-chevron">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
                       </div>
+                    )}
+                    {connecting === "github" && (
+                      <div className="installer-list-item-spinner" style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#3b82f6", borderRadius: "50%", animation: "nx-spin 0.8s linear infinite" }} />
                     )}
                   </div>
                 </div>
