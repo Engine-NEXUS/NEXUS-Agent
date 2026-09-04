@@ -30,6 +30,10 @@ If you're new to the project, read in this order:
 | 03 | [component-map.md](./architecture/03-component-map.md) | Every source file mapped to its purpose, key exports, and what it talks to (Rust, frontend, Python sidecar, config, models, notebooks) |
 | 04 | [tech-stack.md](./architecture/04-tech-stack.md) | Every crate, library, and tool chosen for NEXUS, with the reason it was picked over alternatives + feature flags + port allocation |
 | 05 | [state-machine.md](./architecture/05-state-machine.md) | Frontend Zustand state machine: states, transitions, side effects per transition, barge-in, Tier 3 bypass, boot greeting bypass, meeting override |
+| 06 | [liquid-glass-screenshot-blur.md](./architecture/06-liquid-glass-screenshot-blur.md) | Liquid glass blur for sidebar and architect windows |
+| 07 | [central-orchestrator.md](./architecture/07-central-orchestrator.md) | Central orchestrator: single owner of request lifecycle, routing, loading state, cancellation, request IDs |
+| 08 | [oauth-github-flow.md](./architecture/08-oauth-github-flow.md) | GitHub OAuth 2.0 PKCE flow: browser redirect, token exchange, deep-link callback, polling detection |
+| 09 | [request-flow-evolution.md](./architecture/09-request-flow-evolution.md) | Evolution of request handling from scattered to centralized (Phase 1 → Phase 4) |
 
 ### Features (What each feature does and how)
 
@@ -50,6 +54,9 @@ If you're new to the project, read in this order:
 | 13 | [response-sidebar.md](./features/13-response-sidebar.md) | Right-edge transparent window (280x500) that shows server responses only. Slides in from right when n8n/Ollama responds. Not for local commands |
 | 14 | [nsis-installer.md](./features/14-nsis-installer.md) | Custom white-themed NSIS installer with NEXUS branding, 220x500 sidebar image, no desktop shortcut (Start Menu only). 40.1 MB LZMA compressed |
 | 15 | [setup-wizard.md](./features/15-setup-wizard.md) | 4-step onboarding wizard (520x680): Welcome → Server → Voice → Accounts. Multi-option Google + GitHub cards with brand icons. API keys section |
+| 45 | [central-orchestrator.md](./features/45-central-orchestrator.md) | Central orchestrator: single owner of request lifecycle, routing, loading, cancellation |
+| 46 | [github-oauth-connect.md](./features/46-github-oauth-connect.md) | GitHub OAuth connect button: browser redirect, one-click authorize, auto-detection |
+| 47 | [loading-indicator-ownership.md](./features/47-loading-indicator-ownership.md) | Loading indicator centralized in orchestrator (Rust owns show/hide) |
 
 ### Credentials (How API keys, OAuth, and device tokens work)
 
@@ -97,6 +104,8 @@ If you're new to the project, read in this order:
 | 26 | [stt-performance-optimization.md](./changes/26-stt-performance-optimization.md) | STT: base→tiny.en, beam_size 5→1, eager loading — 54x faster, 22% less RAM |
 | 27 | [native-app-priority-resolution-cache.md](./changes/27-native-app-priority-resolution-cache.md) | Opens native apps/PWAs/Store apps instead of browser tabs. Resolution cache + daily scan + cross-platform PWA discovery |
 | 28 | [hot-mic-preinit-vad.md](./changes/28-hot-mic-preinit-vad.md) | Eliminates 2s wake-to-listen delay: hot mic + pre-init VAD + parallel init |
+| 29 | [central-orchestrator.md](./changes/29-central-orchestrator.md) | Central orchestrator implementation: single owner of request lifecycle, routing, loading, cancellation |
+| 30 | [github-oauth-fix.md](./changes/30-github-oauth-fix.md) | Fixed GitHub Connect button: shell plugin config, capabilities scope, fallback, macOS deep-link |
 
 ### Wake Word Detection (Detailed Deep Dive)
 
