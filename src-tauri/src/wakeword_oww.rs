@@ -1392,8 +1392,35 @@ pub fn run<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     while rx.recv().is_ok() {
         tracing::info!("wake-word: NEXUS detected → triggering wake");
 
-        // Ensure the STT server is running before the frontend starts recording
-        crate::lazy_stt::ensure_stt_running();
+        // Only pre-start the local faster-whisper sidecar if Groq cloud STT
+        // will NOT be used. This saves ~64-128MB RAM when Groq is configured.
+        // Groq is used when: a key exists AND localSttOnly is false.
+        let data_dir = app.path().app_data_dir().ok();
+        let settings_path = data_dir.as_ref().map(|d| d.join("settings.json"));
+        let (groq_key, local_only) = match settings_path {
+            Some(p) if p.exists() => {
+                let content = std::fs::read_to_string(&p).unwrap_or_default();
+                let json: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+                let key = json.get("groqApiKey")
+                    .or_else(|| json.get("groq_api_key"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let local = json.get("localSttOnly")
+                    .or_else(|| json.get("local_stt_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                (key, local)
+            }
+            _ => (String::new(), false),
+        };
+
+        if groq_key.is_empty() || local_only {
+            // Groq won't be used — pre-start the local STT sidecar
+            crate::lazy_stt::ensure_stt_running();
+        } else {
+            tracing::info!("wake-word: Groq cloud STT configured, skipping local sidecar pre-start (saves RAM)");
+        }
 
         // Only use the direct eval — the frontend's __NEXUS_WAKE__ handler
         // calls wakeWithGreeting(). Do NOT also emit Tauri events, as the
