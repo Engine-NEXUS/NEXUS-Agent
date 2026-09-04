@@ -40,6 +40,7 @@ mod browser_url;
 mod symbol_extractor;
 mod dyn_windows;
 mod diagnostics;
+pub mod orchestrator;
 #[cfg(target_os = "windows")]
 mod dwm_corners;
 #[cfg(target_os = "windows")]
@@ -698,6 +699,12 @@ pub fn run() {
             network::send_transcript,
             network::cancel_session,
             network::close_session,
+            orchestrator::orchestrator_process,
+            orchestrator::orchestrator_cancel,
+            orchestrator::orchestrator_done,
+            orchestrator::orchestrator_status,
+            orchestrator::orchestrator_show_loading,
+            orchestrator::orchestrator_hide_loading,
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,
