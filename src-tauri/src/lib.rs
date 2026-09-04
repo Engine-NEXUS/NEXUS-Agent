@@ -25,8 +25,11 @@ mod nlu_client;
 mod lazy_nlu;
 mod lazy_stt;
 mod stt;
+mod stt_groq;
 mod stt_learning;
 mod tts;
+mod tts_edge;
+mod tts_piper;
 mod volume;
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
 mod meeting_detect;
@@ -391,12 +394,12 @@ pub fn run() {
             // Without this, Phase 2 deep scan invoke fails silently.
             app.manage(architect::ArchitectCancels::new());
 
-            let tts_engine_arc = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-            let tts_cache_arc = std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-            let tts_state = tts::TtsState { engine: tts_engine_arc.clone(), cache: tts_cache_arc.clone() };
+            let tts_state = tts::TtsState::new();
+            let prewarm_cache = tts_state.cache.clone();
             app.manage(tts_state);
-            // Kokoro TTS is lazy-loaded on first speak_text call (saves ~350 MB at idle).
-            // See tts::ensure_engine_loaded().
+            // Phase 2 TTS: edge-tts (cloud) primary, Piper (local) fallback.
+            // No local engine to pre-warm — edge-tts is cloud (0 MB RAM).
+            // Only the cached ack phrases are pre-synthesized at boot.
 
             // ─── STT Self-Learning State ──────────────────────────────
             app.manage(stt_learning::SttLearningState::new());
@@ -496,42 +499,29 @@ pub fn run() {
             // then STT (needed for transcription), then NLU (needed for
             // ambiguous commands — deterministic parser handles most).
             //
-            // TTS pre-warm: load Kokoro engine + pre-synthesize ack phrases
-            // in a background async task. The orb appears immediately; the
-            // engine loads while the user sees the idle orb.
-            let prewarm_engine = tts_engine_arc.clone();
-            let prewarm_cache = tts_cache_arc.clone();
+            // TTS pre-warm: pre-synthesize ack phrases using edge-tts (cloud).
+            // This generates the 5 cached phrases ("On it sir", etc.) so
+            // speak_cached() plays in <5ms. No local engine to load —
+            // edge-tts is cloud (0 MB RAM). Falls back to Piper if offline.
+            let prewarm_cache2 = prewarm_cache.clone();
             tauri::async_runtime::spawn(async move {
-                tracing::info!("tts: startup pre-warm starting...");
-                if let Err(e) = tts::ensure_engine_loaded(&prewarm_engine, &prewarm_cache).await {
-                    tracing::warn!("tts: startup pre-warm failed: {}", e);
-                } else {
-                    tracing::info!("tts: startup pre-warm complete — engine ready for instant ack");
-                }
+                tracing::info!("tts: startup cache pre-generation starting...");
+                let voice = "en-US-AvaNeural".to_string(); // default; user can change in settings
+                tts::pregenerate_cache(&prewarm_cache2, &voice).await;
+                tracing::info!("tts: startup cache pre-generation complete — ack phrases ready");
             });
 
-            // STT pre-warm: start the faster-whisper Python sidecar in a
-            // background thread so the model is loaded before the first
-            // wake-word detection. This eliminates the ~8s cold-start.
-            std::thread::spawn(|| {
-                tracing::info!("stt: startup pre-warm starting...");
-                lazy_stt::ensure_stt_running();
-                tracing::info!("stt: startup pre-warm complete — model loading in background");
-            });
+            // STT pre-warm removed in Phase 2.
+            // Primary STT is now Groq cloud (0 MB RAM, ~247ms latency).
+            // Local faster-whisper starts lazily only as a fallback when
+            // Groq is unavailable (no key, network error, rate limit).
+            // This saves ~150 MB idle RAM.
 
-            // NLU pre-warm: start the BERT-Mini NLU server in a background
-            // thread. The deterministic parser handles most commands, but
-            // for ambiguous ones the NLU adds ~18s cold-start. Pre-warming
-            // eliminates this. The NLU idle timeout is 300s (5 min), so it
-            // stays resident through a typical voice session.
-            std::thread::spawn(|| {
-                tracing::info!("nlu: startup pre-warm starting...");
-                lazy_nlu::ensure_nlu_running();
-                // Mark a request so the idle killer doesn't immediately kill
-                // the server (it kills if LAST_REQUEST is None on first check).
-                lazy_nlu::mark_nlu_request();
-                tracing::info!("nlu: startup pre-warm complete — model loading in background");
-            });
+            // NLU pre-warm removed in Phase 2.
+            // The deterministic Rust parser handles 90-95% of commands
+            // in <5ms with only 2 MB RAM. The BERT-Mini Python sidecar
+            // starts lazily only when an ambiguous command is encountered.
+            // This saves ~100 MB idle RAM.
 
             // Global hotkey → wake event.
             hotkey::init(app.handle())?;

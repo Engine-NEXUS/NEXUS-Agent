@@ -37,6 +37,8 @@ interface Settings {
   elevenlabsApiKey?: string;
   fishAudioApiKey?: string;
   googleCloudApiKey?: string;
+  groqApiKey?: string;
+  edgeTtsVoice?: string;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -57,6 +59,8 @@ const DEFAULT_SETTINGS: Settings = {
   speechRate: 1.15,
   ttsVolume: 75,
   ttsProvider: "kokoro",
+  groqApiKey: "",
+  edgeTtsVoice: "en-US-AvaNeural",
 };
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
@@ -502,6 +506,66 @@ function BackendTab({ settings, update, connected }: { settings: Settings; updat
           <button className="nx-btn" onClick={() => invoke("open_setup_window").catch(() => {})}>
             Manage →
           </button>
+        </div>
+      </section>
+
+      <section className="nx-section">
+        <div className="nx-section-title">Cloud STT (Groq)</div>
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">Groq API Key</span>
+            <span className="nx-row-hint">Free at console.groq.com — 2,000 commands/day, forever free</span>
+          </div>
+          <input
+            type="password"
+            className="nx-input"
+            placeholder="gsk_..."
+            value={settings.groqApiKey || ""}
+            onChange={(e) => update("groqApiKey", e.target.value)}
+          />
+        </div>
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">Don't have a key?</span>
+            <span className="nx-row-hint">Sign up free at console.groq.com (Google/GitHub login, no credit card)</span>
+          </div>
+          <button className="nx-btn" onClick={() => window.open("https://console.groq.com/keys", "_blank")}>
+            Get Free Key →
+          </button>
+        </div>
+      </section>
+
+      <section className="nx-section">
+        <div className="nx-section-title">Cloud TTS (edge-tts)</div>
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">Voice</span>
+            <span className="nx-row-hint">Microsoft Neural voice (free, no API key needed)</span>
+          </div>
+          <select
+            className="nx-input"
+            value={settings.edgeTtsVoice || "en-US-AvaNeural"}
+            onChange={(e) => update("edgeTtsVoice", e.target.value)}
+          >
+            <option value="en-US-AvaNeural">Ava (Female, warm)</option>
+            <option value="en-US-EmmaMultilingualNeural">Emma (Female, professional)</option>
+            <option value="en-US-GuyNeural">Guy (Male, natural)</option>
+            <option value="en-US-DavisNeural">Davis (Male, calm)</option>
+            <option value="en-US-JennyNeural">Jenny (Female, friendly)</option>
+            <option value="en-US-AriaNeural">Aria (Female, expressive)</option>
+            <option value="en-US-AndrewNeural">Andrew (Male, warm)</option>
+            <option value="en-US-BrandonNeural">Brandon (Male, casual)</option>
+          </select>
+        </div>
+        <div className="nx-row">
+          <div className="nx-row-label">
+            <span className="nx-row-name">Cost</span>
+            <span className="nx-row-hint">Free forever — no API key, no account, no limit</span>
+          </div>
+          <span className="nx-status-indicator">
+            <span className="nx-status-dot nx-status-dot--ok" />
+            Free
+          </span>
         </div>
       </section>
     </>

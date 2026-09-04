@@ -966,6 +966,15 @@ pub struct NexusSettings {
     /// Default 75. Set to 0 to disable auto-volume.
     #[serde(default = "default_tts_volume")]
     pub tts_volume: u8,
+    /// Groq API key for cloud STT (Whisper Large v3 Turbo).
+    /// Free at console.groq.com — 2,000 requests/day per user.
+    /// When empty, NEXUS uses local faster-whisper STT.
+    #[serde(default)]
+    pub groq_api_key: String,
+    /// edge-tts voice name (Microsoft Neural, free, no API key).
+    /// Default: en-US-AvaNeural. See full list at Microsoft Speech docs.
+    #[serde(default = "default_edge_tts_voice")]
+    pub edge_tts_voice: String,
 }
 
 fn default_tts_provider() -> String {
@@ -974,6 +983,10 @@ fn default_tts_provider() -> String {
 
 fn default_tts_volume() -> u8 {
     75
+}
+
+fn default_edge_tts_voice() -> String {
+    "en-US-AvaNeural".to_string()
 }
 
 impl Default for NexusSettings {
@@ -998,6 +1011,8 @@ impl Default for NexusSettings {
             speech_rate: 1.15,
             tts_provider: "kokoro".to_string(),
             tts_volume: 75,
+            groq_api_key: String::new(),
+            edge_tts_voice: "en-US-AvaNeural".to_string(),
         }
     }
 }
@@ -1094,6 +1109,34 @@ pub fn save_settings<R: Runtime>(
     std::fs::write(&config_path, config.to_string()).map_err(|e| e.to_string())?;
     tracing::info!("settings saved to {:?}", path);
     Ok(())
+}
+
+/// Read the Groq API key from settings.json (non-IPC helper for stt.rs).
+/// Returns empty string if no key is set or settings file doesn't exist.
+pub fn read_groq_api_key(app: &tauri::AppHandle) -> String {
+    let dir = app.path().app_data_dir();
+    let Ok(dir) = dir else { return String::new(); };
+    let path = dir.join("settings.json");
+    let Ok(content) = std::fs::read_to_string(&path) else { return String::new(); };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return String::new(); };
+    json.get("groqApiKey")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Read the edge-tts voice from settings.json (non-IPC helper for tts.rs).
+/// Returns default voice if not set.
+pub fn read_edge_tts_voice(app: &tauri::AppHandle) -> String {
+    let dir = app.path().app_data_dir();
+    let Ok(dir) = dir else { return "en-US-AvaNeural".to_string(); };
+    let path = dir.join("settings.json");
+    let Ok(content) = std::fs::read_to_string(&path) else { return "en-US-AvaNeural".to_string(); };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return "en-US-AvaNeural".to_string(); };
+    json.get("edgeTtsVoice")
+        .and_then(|v| v.as_str())
+        .unwrap_or("en-US-AvaNeural")
+        .to_string()
 }
 
 // ─── Autostart management ───────────────────────────────────────────

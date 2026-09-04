@@ -1,8 +1,13 @@
-//! STT proxy — sends audio to the local faster-whisper Python server.
+//! STT proxy — routes to Groq cloud STT (primary) or local faster-whisper (fallback).
 //!
-//! The faster-whisper server (server/stt_server.py) runs on port 39217
-//! and is started lazily by lazy_stt.rs when the wake word fires.
-//! This module sends Int16 PCM audio via HTTP POST and returns the transcript.
+//! Primary: Groq Whisper Large v3 Turbo (cloud, ~247ms, $0 free tier)
+//! Fallback: faster-whisper tiny.en (local Python sidecar, ~500ms warm / ~8s cold)
+//!
+//! The fallback is used when:
+//! - No Groq API key is set in settings
+//! - Groq API is unreachable (network error)
+//! - Groq rate limit is hit (429)
+//! - Groq returns an error
 
 use std::sync::Arc;
 use tauri::State;
@@ -24,27 +29,54 @@ impl SttState {
 
 const STT_URL: &str = "http://127.0.0.1:39217/transcribe";
 
-/// Transcribe audio by sending it to the local faster-whisper STT server.
+/// Transcribe audio — tries Groq cloud first, falls back to local faster-whisper.
 ///
-/// The frontend sends Int16 PCM samples at 16kHz. We convert them to a WAV
-/// blob and POST it to the Python server which runs faster-whisper tiny.en.
+/// The frontend sends Int16 PCM samples at 16kHz. We route to Groq if an API
+/// key is configured, otherwise use the local Python sidecar.
 #[tauri::command]
 pub async fn transcribe_audio(
     samples: Vec<i16>,
     state: State<'_, SttState>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    tracing::info!("stt: received {} samples for faster-whisper transcription", samples.len());
+    tracing::info!("stt: received {} samples for transcription", samples.len());
 
+    // Read Groq API key from settings
+    let groq_key = crate::commands::read_groq_api_key(&app);
+
+    if !groq_key.is_empty() {
+        // Primary: Groq cloud STT (~247ms, free)
+        match crate::stt_groq::transcribe_with_groq(&samples, &groq_key, &state.client).await {
+            Ok(text) => {
+                let filtered = apply_hallucination_filter(&text);
+                if filtered != text {
+                    tracing::info!("stt: filtered hallucination '{}' -> '{}'", text, filtered);
+                } else {
+                    tracing::info!("stt: groq transcript: '{}'", filtered);
+                }
+                return Ok(filtered);
+            }
+            Err(e) => {
+                tracing::warn!("stt: groq failed ({}), falling back to local whisper", e);
+                // Fall through to local STT
+            }
+        }
+    } else {
+        tracing::info!("stt: no groq key, using local whisper directly");
+    }
+
+    // Fallback: local faster-whisper Python sidecar
+    transcribe_local(&samples, &state.client).await
+}
+
+/// Transcribe using the local faster-whisper Python sidecar (port 39217).
+async fn transcribe_local(samples: &[i16], client: &reqwest::Client) -> Result<String, String> {
     // Ensure the STT server is running (lazy start)
     crate::lazy_stt::ensure_stt_running();
     crate::lazy_stt::mark_stt_request();
 
-    // Reuse the long-lived client from SttState (no per-call Client::build)
-    let client = &state.client;
-
     let mut ready = false;
     for attempt in 0..40 {
-        // Check health
         let health = client
             .get("http://127.0.0.1:39217/health")
             .timeout(std::time::Duration::from_secs(2))
@@ -59,7 +91,7 @@ pub async fn transcribe_audio(
         }
 
         if attempt == 0 {
-            tracing::info!("stt: waiting for STT server to be ready...");
+            tracing::info!("stt: waiting for local STT server to be ready...");
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -68,18 +100,14 @@ pub async fn transcribe_audio(
         return Err("STT server did not become ready in 20s".to_string());
     }
 
-    // Convert i16 samples to WAV bytes (16kHz, mono, 16-bit)
-    let wav_bytes = pcm_to_wav(&samples, 16000);
+    let wav_bytes = pcm_to_wav(samples, 16000);
     tracing::info!("stt: sending {} bytes WAV to {}", wav_bytes.len(), STT_URL);
 
-    // POST the WAV to the local STT server as multipart form data
-    // (FastAPI's UploadFile = File(...) expects multipart, not raw body)
     let part = reqwest::multipart::Part::bytes(wav_bytes)
         .file_name("audio.wav")
         .mime_str("audio/wav")
         .map_err(|e| format!("MIME error: {}", e))?;
-    let form = reqwest::multipart::Form::new()
-        .part("audio", part);
+    let form = reqwest::multipart::Form::new().part("audio", part);
 
     let resp = client
         .post(STT_URL)
@@ -95,7 +123,6 @@ pub async fn transcribe_audio(
         return Err(format!("STT server error {}: {}", status, body));
     }
 
-    // Parse JSON response: {"text": "..."}
     let json: serde_json::Value = resp
         .json()
         .await
@@ -108,19 +135,18 @@ pub async fn transcribe_audio(
         .trim()
         .to_string();
 
-    // Apply hallucination filter
     let filtered = apply_hallucination_filter(&text);
 
     if filtered != text {
         tracing::info!("stt: filtered hallucination '{}' -> '{}'", text, filtered);
     } else {
-        tracing::info!("stt: transcript: '{}'", text);
+        tracing::info!("stt: local transcript: '{}'", filtered);
     }
 
     Ok(filtered)
 }
 
-/// Check if the STT server is reachable.
+/// Check if the STT server is reachable (local fallback status).
 #[tauri::command]
 pub async fn stt_status(state: State<'_, SttState>) -> Result<bool, String> {
     let resp = state.client

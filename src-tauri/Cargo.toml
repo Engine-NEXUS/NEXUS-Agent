@@ -53,8 +53,14 @@ circular-buffer = "1.2"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 
-# TTS engine (in-process Kokoro — 82M params, ~350 MB RAM, 1.7s lazy load)
-kokoro-micro = "1.0"
+# TTS engines:
+# - edge-tts-rust: Microsoft Edge Neural TTS (cloud, free, no API key, 400+ voices)
+#   Primary TTS — 0 MB local RAM, ~200ms latency, broadcast-quality voices.
+# - piper-rs: Piper VITS ONNX (local fallback, 80 MB RAM, 60 MB model, 40ms latency)
+#   Fallback when internet is unavailable.
+# - rodio: audio playback (shared by both engines)
+edge-tts-rust = "0.1"
+piper-rs = "0.2"
 rodio = "0.19"
 
 # Cross-platform app/URL launching (open::that, open::with)

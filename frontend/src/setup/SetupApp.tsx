@@ -686,35 +686,35 @@ export function SetupApp() {
 
         {/* 🔹 Footer navigation 🔹 */}
         {step !== 3 && (
-{/* ── Footer navigation ── */}
-      <div className="setup-footer">
-        {step > 0 ? (
-          <button className="setup-btn" onClick={() => setStep((step - 1) as Step)}>
-            ← Back
-          </button>
-        ) : (
-          <div />
+          <div className="setup-footer">
+            {step > 0 ? (
+              <button className="setup-btn" onClick={() => setStep((step - 1) as Step)}>
+                ← Back
+              </button>
+            ) : (
+              <div />
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
+              {saved && <span className="setup-saved">Ready!</span>}
+              {step < 3 ? (
+                <button
+                  className="setup-btn setup-btn--primary"
+                  disabled={step === 1 && !canAdvanceFromPermissions}
+                  onClick={async () => {
+                    await saveAllSettings();
+                    setStep((step + 1) as Step);
+                  }}
+                >
+                  Continue →
+                </button>
+              ) : (
+                <button className="setup-btn setup-btn--primary" style={{ padding: "10px 24px" }} onClick={handleFinish}>
+                  🚀 Launch Assistant
+                </button>
+              )}
+            </div>
+          </div>
         )}
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--nx-space-3)" }}>
-          {saved && <span className="setup-saved">Ready!</span>}
-          {step < 3 ? (
-            <button
-              className="setup-btn setup-btn--primary"
-              disabled={step === 1 && !canAdvanceFromPermissions}
-              onClick={async () => {
-                await saveAllSettings();
-                setStep((step + 1) as Step);
-              }}
-            >
-              Continue →
-            </button>
-          ) : (
-            <button className="setup-btn setup-btn--primary" style={{ padding: "10px 24px" }} onClick={handleFinish}>
-              🚀 Launch Assistant
-            </button>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
