@@ -82,6 +82,9 @@
       "desktop": {
         "schemes": ["nexus"]
       }
+    },
+    "shell": {
+      "open": true
     }
   }
 }

@@ -26,6 +26,6 @@
     "deep-link:default",
     "positioner:allow-move-window",
     "positioner:default",
-    "shell:allow-open"
+    "shell:default"
   ]
 }
