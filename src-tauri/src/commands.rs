@@ -1128,6 +1128,21 @@ pub fn read_groq_api_key(app: &tauri::AppHandle) -> String {
         .to_string()
 }
 
+/// Read the localSttOnly flag from settings.json (non-IPC helper for stt.rs).
+/// Returns true if the user has enabled "Local STT only" (privacy mode —
+/// audio never leaves the device). Returns false if not set or file missing.
+pub fn read_local_stt_only(app: &tauri::AppHandle) -> bool {
+    let dir = app.path().app_data_dir();
+    let Ok(dir) = dir else { return false; };
+    let path = dir.join("settings.json");
+    let Ok(content) = std::fs::read_to_string(&path) else { return false; };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return false; };
+    json.get("localSttOnly")
+        .or_else(|| json.get("local_stt_only"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Read the edge-tts voice from settings.json (non-IPC helper for tts.rs).
 /// Returns default voice if not set.
 pub fn read_edge_tts_voice(app: &tauri::AppHandle) -> String {
