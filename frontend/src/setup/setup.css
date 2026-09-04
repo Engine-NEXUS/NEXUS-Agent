@@ -464,6 +464,11 @@ html, body, #root {
   50% { opacity: 0.6; }
 }
 
+@keyframes nx-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 /* ── Voice Persona Selection Cards ────────────────────────────── */
 .setup-voice-grid {
   display: grid;

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Avatar } from "./avatar/Avatar";
 import { useAssistant } from "./store/assistant";
+import { initOrchestratorListener } from "./net/orchestrator";
 
 function isTauri(): boolean {
   return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
@@ -16,6 +17,17 @@ export default function App() {
   const state = useAssistant((s) => s.state);
   const visible = useAssistant((s) => s.visible);
   const loadingVisible = useAssistant((s) => s.loadingVisible);
+
+  // Initialize the central orchestrator event listener (once).
+  // This listens to "orchestrator:event" from Rust and handles:
+  //   - state transitions (thinking → speaking)
+  //   - loading indicator visibility
+  //   - ack TTS ("On it sir")
+  //   - result TTS + sidebar display
+  //   - error handling
+  useEffect(() => {
+    void initOrchestratorListener();
+  }, []);
 
   // 8-second auto-hide: if user doesn't respond while listening, slide back down.
   // Also cleans up VAD + recording + mic stream to avoid orphaned AudioContexts.

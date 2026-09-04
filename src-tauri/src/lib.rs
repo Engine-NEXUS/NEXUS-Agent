@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod window_manager;
+#[cfg(not(target_os = "linux"))]
 mod hotkey;
 // wakeword-oww (default): openWakeWord via tract-onnx (pure Rust, no C++ deps)
 #[cfg(feature = "wakeword-oww")]
@@ -40,6 +41,7 @@ mod browser_url;
 mod symbol_extractor;
 mod dyn_windows;
 mod diagnostics;
+pub mod orchestrator;
 #[cfg(target_os = "windows")]
 mod dwm_corners;
 #[cfg(target_os = "windows")]
@@ -187,7 +189,7 @@ pub fn run() {
     #[cfg(target_os = "windows")]
     cleanup_webview2_profile();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             tracing::info!("single-instance: secondary launch attempt with args: {:?}", args);
             // Handle deep-link redirects on Windows/Linux (passed as CLI arg)
@@ -238,14 +240,21 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_positioner::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_positioner::init());
+
+    // global-shortcut plugin is not available on Linux
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
+
+    let builder = builder.setup(|app| {
+        // macOS: hide from the Dock and Cmd+Tab switcher (accessory/background app).
             // macOS: hide from the Dock and Cmd+Tab switcher (accessory/background app).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -529,7 +538,8 @@ pub fn run() {
             // starts lazily only when an ambiguous command is encountered.
             // This saves ~100 MB idle RAM.
 
-            // Global hotkey → wake event.
+            // Global hotkey → wake event (not available on Linux).
+            #[cfg(not(target_os = "linux"))]
             hotkey::init(app.handle())?;
 
             // Wake-word engine — runs on a DEDICATED OS THREAD, not tokio.
@@ -698,6 +708,12 @@ pub fn run() {
             network::send_transcript,
             network::cancel_session,
             network::close_session,
+            orchestrator::orchestrator_process,
+            orchestrator::orchestrator_cancel,
+            orchestrator::orchestrator_done,
+            orchestrator::orchestrator_status,
+            orchestrator::orchestrator_show_loading,
+            orchestrator::orchestrator_hide_loading,
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,

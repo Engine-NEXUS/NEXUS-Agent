@@ -44,7 +44,12 @@ pub async fn transcribe_audio(
     // Read Groq API key from settings
     let groq_key = crate::commands::read_groq_api_key(&app);
 
-    if !groq_key.is_empty() {
+    // Check if user has enabled "Local STT only" (privacy mode).
+    // If true, audio never leaves the device — skip Groq cloud entirely.
+    let local_only = crate::commands::read_local_stt_only(&app);
+    if local_only {
+        tracing::info!("stt: localSttOnly=true, using local whisper (privacy mode)");
+    } else if !groq_key.is_empty() {
         // Primary: Groq cloud STT (~247ms, free)
         match crate::stt_groq::transcribe_with_groq(&samples, &groq_key, &state.client).await {
             Ok(text) => {

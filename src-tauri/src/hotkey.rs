@@ -13,6 +13,11 @@
 //!     in `wakeword_oww.rs`, which never emits `sidebar:hide`).
 //!   - The hotkey never does both at once — it's one or the other based on
 //!     the current sidebar visibility state.
+//!
+//! NOTE: The global-shortcut plugin is not available on Linux.
+//! This entire module is compiled only on Windows and macOS.
+
+#![cfg(not(target_os = "linux"))]
 
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};

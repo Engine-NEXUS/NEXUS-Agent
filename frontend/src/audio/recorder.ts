@@ -11,6 +11,7 @@ import {
 import { transcribeAudio } from "./stt";
 import { speak, speakCached } from "./ttsPlayer";
 import { parseIntent, type Intent } from "../intent/parser";
+import { processViaOrchestrator, cancelOrchestrator } from "../net/orchestrator";
 
 /**
  * Parse a transcript using the Rust-side enhanced intent parser.
@@ -753,36 +754,47 @@ export async function finishCapture(): Promise<void> {
     return;
   }
 
-  // 4. Unknown intent (or analyse intent) — try the remote backend.
-  //    If the backend is available, send the transcript and let the server
-  //    handle it. The server sends back ack/result/done events.
+  // 4. Unknown intent (or analyse intent) — route through the CENTRAL ORCHESTRATOR.
+  //    The orchestrator (Rust) owns the full lifecycle:
+  //      - Parses intent (deterministic, <1ms)
+  //      - Routes to the correct subsystem (LocalCommand, WorkerBackend, Architect)
+  //      - Emits ack + shows loading indicator (for long-running)
+  //      - Dispatches to the Worker
+  //      - Emits result + hides loading
+  //    The frontend just calls processViaOrchestrator() and listens for events.
   try {
-    // isLong was already determined above (before intent parsing).
-    // If it's long-running, we already gave the instant ack and handled
-    // dedup/queue. Here we just need to set the in-flight flag and send.
     const isLongFinal = isLong || isAnalyseIntent(intent);
     console.log("[NEXUS] finishCapture: intent=", intent.action, "isLongRunning=", isLongFinal, "transcript=", transcript);
 
     if (isLongFinal && !isLongRunningInFlight()) {
       // Track in-flight state for dedup + queue (ack already given above)
       setLongRunningInFlight(transcript, processNextQueuedCommand);
-      // Wait for "On it sir" TTS to finish, then hide orb + show loading.
-      // The orb stays visible while TTS plays, then disappears and the
-      // loading animation takes over.
+      // Wait for "On it sir" TTS to finish, then hide orb.
+      // The orchestrator will show the loading indicator from Rust.
       await waitForTtsIdle();
       useAssistant.getState().setVisible(false);
-      useAssistant.getState().setLoadingVisible(true);
     }
-    // Release captureInProgress BEFORE sendTranscript so subsequent voice
+    // Release captureInProgress BEFORE dispatch so subsequent voice
     // commands can be processed while the Worker is generating the response.
     captureInProgress = false;
-    await sendTranscript(transcript);
-    console.log("[NEXUS] sendTranscript done");
-    // Backend is handling it — wsBridge will speak ack + result + reset.
+
+    // ─── CENTRAL ORCHESTRATOR PATH ───
+    // The orchestrator handles: routing, ack, loading, Worker dispatch, result.
+    // It emits events on the "orchestrator:event" channel which the
+    // frontend listener (net/orchestrator.ts) translates to UI state.
+    const result = await processViaOrchestrator(transcript);
+    console.log("[NEXUS] orchestrator process result:", result);
+
+    if (result?.handled_locally) {
+      // Local command — orchestrator emitted "done", we're finished.
+      return;
+    }
+    // Worker/Architect — orchestrator is handling it.
+    // The orchestrator listener will speak ack + result + reset.
     return;
   } catch (err) {
     // Backend unavailable — can't handle this query.
-    console.warn("[NEXUS] backend unavailable for unknown query:", err);
+    console.warn("[NEXUS] orchestrator unavailable for unknown query:", err);
   }
 
   // 5. Neither local intent nor backend available.
@@ -811,6 +823,8 @@ export async function abortCapture(): Promise<void> {
   }
   await stopRecording();
   floatBuffer = [];
+  // Cancel any active orchestrator request (barge-in)
+  void cancelOrchestrator();
   try { await closeSession(); } catch { /* backend may already be closed */ }
   releaseMicStream();
   useAssistant.getState().reset();

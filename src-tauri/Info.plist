@@ -4,5 +4,16 @@
 <dict>
     <key>LSUIElement</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.nexus.assistant</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>nexus</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
