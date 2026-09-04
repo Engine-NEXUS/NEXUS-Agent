@@ -132,23 +132,25 @@ fn get_last_latency() -> Option<u64> {
     LAST_LATENCY.with(|l| l.get())
 }
 
-/// Check if the local STT engine is ready.
+/// Check if the STT engine is ready.
+/// Phase 2: Groq cloud STT is primary (0 MB RAM, ~247ms).
+/// Local faster-whisper on port 39217 is the fallback (lazy-started).
 fn check_stt() -> ServiceStatus {
-    // Check if the faster-whisper STT server is reachable on port 39217
+    // Check if the local faster-whisper fallback STT server is reachable
     match http_get("http://127.0.0.1:39217/health", 3000) {
         Ok((status, _body)) if status >= 200 && status < 400 => {
             ServiceStatus {
-                name: "STT (faster-whisper tiny.en)".into(),
+                name: "STT (Groq cloud + local fallback)".into(),
                 connected: true,
-                detail: "STT server ready on port 39217".into(),
+                detail: "Groq primary + faster-whisper fallback ready on port 39217".into(),
                 latency_ms: get_last_latency(),
             }
         }
         _ => {
             ServiceStatus {
-                name: "STT (faster-whisper tiny.en)".into(),
-                connected: true, // Not an error — lazy-started on first wake
-                detail: "STT server lazy-starts on first wake (port 39217)".into(),
+                name: "STT (Groq cloud + local fallback)".into(),
+                connected: true, // Not an error — Groq is cloud, local is lazy
+                detail: "Groq cloud primary — local fallback lazy-starts on first wake".into(),
                 latency_ms: Some(0),
             }
         }
@@ -290,13 +292,13 @@ fn check_oauth(worker_url: &str, user_id: &str) -> (ServiceStatus, ServiceStatus
 }
 
 /// Check TTS configuration.
-/// Kokoro is lazy-loaded on first speak_text call, so at boot it's "ready (lazy)"
-/// — the engine will load in ~1.7s on first TTS request.
+/// Phase 2: edge-tts (cloud) primary, Piper (local) fallback.
+/// edge-tts is cloud-based (0 MB RAM), ack phrases are pre-cached at boot.
 fn check_tts() -> ServiceStatus {
     ServiceStatus {
-        name: "TTS (Kokoro 82M)".into(),
+        name: "TTS (edge-tts cloud)".into(),
         connected: true,
-        detail: "Lazy-loaded — ready on first speak (~1.7s load, af_sky, am_adam, bf_emma)".into(),
+        detail: "Cached ack phrases ready — edge-tts cloud + Piper local fallback".into(),
         latency_ms: Some(0),
     }
 }

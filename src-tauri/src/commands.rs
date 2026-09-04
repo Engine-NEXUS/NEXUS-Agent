@@ -1119,7 +1119,10 @@ pub fn read_groq_api_key(app: &tauri::AppHandle) -> String {
     let path = dir.join("settings.json");
     let Ok(content) = std::fs::read_to_string(&path) else { return String::new(); };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return String::new(); };
+    // Read groqApiKey (frontend camelCase) with fallback to groq_api_key
+    // (snake_case, used by manual settings.json edits or older versions).
     json.get("groqApiKey")
+        .or_else(|| json.get("groq_api_key"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string()
@@ -1134,6 +1137,7 @@ pub fn read_edge_tts_voice(app: &tauri::AppHandle) -> String {
     let Ok(content) = std::fs::read_to_string(&path) else { return "en-US-AvaNeural".to_string(); };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return "en-US-AvaNeural".to_string(); };
     json.get("edgeTtsVoice")
+        .or_else(|| json.get("edge_tts_voice"))
         .and_then(|v| v.as_str())
         .unwrap_or("en-US-AvaNeural")
         .to_string()

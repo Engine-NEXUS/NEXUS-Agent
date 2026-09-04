@@ -25,11 +25,11 @@ mod nlu_client;
 mod lazy_nlu;
 mod lazy_stt;
 mod stt;
-mod stt_groq;
+pub mod stt_groq;
 mod stt_learning;
 mod tts;
-mod tts_edge;
-mod tts_piper;
+pub mod tts_edge;
+pub mod tts_piper;
 mod volume;
 // Verification is not yet wired into wakeword_oww (see AGENTS.md known limitations).
 mod meeting_detect;
@@ -488,6 +488,12 @@ pub fn run() {
 
             // Pre-index installed apps for instant launch (background thread).
             app_registry::init();
+
+            // Start the foreground window tracker for architect repo detection.
+            // This caches the last non-NEXUS foreground window title so that
+            // `get_active_repo_url()` can detect the user's browser/GitHub
+            // app even after the NEXUS orb steals focus during STT.
+            architect::start_foreground_tracker();
 
             // ─── Pre-warm TTS + STT + NLU at startup (Phase 1) ──────────
             // Eliminates ~31.7s of cold-start latency on the first voice command.

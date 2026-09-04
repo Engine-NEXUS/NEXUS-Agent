@@ -654,7 +654,11 @@ export async function finishCapture(): Promise<void> {
 
     // Step 1: Wait for "On it sir" TTS to finish playing.
     // The orb is still visible at this point.
+    // waitForTtsIdle checks speechSynthesis.speaking (Web Speech API),
+    // but our TTS is played via Rust (edge-tts → rodio), so we also add
+    // a fixed delay matching the "On it sir" audio duration (~1.2s).
     await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
 
     // Step 2: Now hide the orb and show the loading animation.
     useAssistant.getState().setVisible(false);
@@ -668,11 +672,25 @@ export async function finishCapture(): Promise<void> {
       await invoke("open_architect_with_auto_detect");
     } catch (err) {
       console.error("[NEXUS] failed to open architect window:", err);
-      // Fallback: open without auto-detect
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("open_architect_window");
-      } catch {}
+      const errMsg = String(err).toLowerCase();
+      if (errMsg.includes("no github repository") || errMsg.includes("no repo")) {
+        // No repo detected — speak error and hide loading, do NOT open window
+        useAssistant.getState().setLoadingVisible(false);
+        useAssistant.getState().setVisible(true);
+        useAssistant.getState().setState("speaking");
+        useAssistant.getState().addAssistantMessage("No repository found, sir. Open a repo in your browser or GitHub Desktop.");
+        void speak("No repository found sir. Open a repo in your browser or GitHub Desktop.");
+        await waitForTtsIdle();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        useAssistant.getState().setVisible(false);
+        setTimeout(() => useAssistant.getState().reset(), 550);
+      } else {
+        // Other error — fallback: open without auto-detect
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("open_architect_window");
+        } catch {}
+      }
     }
 
     // The architect window is now open with the map ready.
@@ -973,7 +991,11 @@ async function _finishCaptureFromVadInner(
 
     // Step 1: Wait for "On it sir" TTS to finish playing.
     // The orb is still visible at this point.
+    // waitForTtsIdle checks speechSynthesis.speaking (Web Speech API),
+    // but our TTS is played via Rust (edge-tts → rodio), so we also add
+    // a fixed delay matching the "On it sir" audio duration (~1.2s).
     await waitForTtsIdle();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
 
     // Step 2: Now hide the orb and show the loading animation.
     useAssistant.getState().setVisible(false);
@@ -986,12 +1008,26 @@ async function _finishCaptureFromVadInner(
       // stays visible until this returns.
       await invoke("open_architect_with_auto_detect");
     } catch (err) {
-      console.error("[NEXUS] failed to open architect window:", err);
-      // Fallback: open without auto-detect
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("open_architect_window");
-      } catch {}
+      console.error("[NEXUS] failed to open architect window (vad):", err);
+      const errMsg = String(err).toLowerCase();
+      if (errMsg.includes("no github repository") || errMsg.includes("no repo")) {
+        // No repo detected — speak error and hide loading, do NOT open window
+        useAssistant.getState().setLoadingVisible(false);
+        useAssistant.getState().setVisible(true);
+        useAssistant.getState().setState("speaking");
+        useAssistant.getState().addAssistantMessage("No repository found, sir. Open a repo in your browser or GitHub Desktop.");
+        void speak("No repository found sir. Open a repo in your browser or GitHub Desktop.");
+        await waitForTtsIdle();
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        useAssistant.getState().setVisible(false);
+        setTimeout(() => useAssistant.getState().reset(), 550);
+      } else {
+        // Other error — fallback: open without auto-detect
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("open_architect_window");
+        } catch {}
+      }
     }
 
     // The architect window is now open with the map ready.

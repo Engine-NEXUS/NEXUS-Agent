@@ -42,6 +42,113 @@ struct PendingArchitect {
 
 static PENDING_ARCHITECT_REPO: Mutex<Option<PendingArchitect>> = parking_lot::const_mutex(None);
 
+// ─── Last foreground window cache ──────────────────────────────────
+//
+// When the user says "open architecture mapper", the STT + intent parsing
+// takes 0.6-16s. During that time, the NEXUS orb or terminal may become
+// the foreground window, so `get_active_repo_url()` can't detect the
+// user's browser/GitHub Desktop anymore.
+//
+// This cache stores the last known foreground window title + process name
+// that was NOT a NEXUS window. A background thread updates it every 2s.
+// `get_active_repo_url()` checks the current foreground first, then falls
+// back to this cache.
+
+struct ForegroundCache {
+    title: String,
+    /// Process name (e.g. "chrome.exe", "GitHub.exe"). Stored for
+    /// debugging and future browser-URL extraction. Currently the
+    /// title-based fallback is sufficient for repo detection.
+    #[allow(dead_code)]
+    process_name: String,
+}
+
+static LAST_FOREGROUND: Mutex<Option<ForegroundCache>> = parking_lot::const_mutex(None);
+
+/// Start the background thread that tracks the last non-NEXUS foreground window.
+/// Called once from `lib.rs` at startup.
+pub fn start_foreground_tracker() {
+    std::thread::spawn(|| {
+        loop {
+            if let Some((title, proc_name)) = get_foreground_window_info() {
+                // Skip NEXUS windows (orb, sidebar, architect, loading, settings, setup)
+                let is_nexus = proc_name == "nexus.exe"
+                    || title.contains("NEXUS")
+                    || title.contains("architect")
+                    || title.contains("Task Switching");
+                if !is_nexus && !title.is_empty() {
+                    let mut cache = LAST_FOREGROUND.lock();
+                    *cache = Some(ForegroundCache {
+                        title: title.clone(),
+                        process_name: proc_name.clone(),
+                    });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+}
+
+/// Get foreground window title + process name (cross-platform).
+/// Returns None if no foreground window or detection fails.
+fn get_foreground_window_info() -> Option<(String, String)> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.0 == 0 {
+                return None;
+            }
+            let mut buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut buf);
+            if len == 0 {
+                return None;
+            }
+            let title = String::from_utf16_lossy(&buf[..len as usize]);
+
+            // Get process name
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+            use windows::Win32::System::ProcessStatus::K32GetModuleBaseNameW;
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid as *mut u32);
+            let proc_name = if pid > 0 {
+                let handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid).ok();
+                if let Some(h) = handle {
+                    let mut name_buf = [0u16; 260];
+                    let name_len = K32GetModuleBaseNameW(h, None, &mut name_buf);
+                    let _ = windows::Win32::Foundation::CloseHandle(h);
+                    if name_len > 0 {
+                        String::from_utf16_lossy(&name_buf[..name_len as usize])
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            Some((title, proc_name))
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// Try to extract a browser URL from the cached foreground window's process.
+/// Get the cached foreground window title (for repo detection fallback).
+/// Used by `get_active_repo_url()` when the current foreground is NEXUS
+/// but the user was previously in a browser/GitHub Desktop.
+fn get_cached_foreground_title() -> Option<String> {
+    let cache = LAST_FOREGROUND.lock();
+    cache.as_ref().map(|c| c.title.clone())
+}
+
 // ─── Data Models ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,10 +326,11 @@ static CACHED_GRAPH: once_cell::sync::Lazy<parking_lot::Mutex<Option<Arc<CachedG
 
 // ─── Active Window Detection ──────────────────────────────────────
 
-/// IPC: Extract active GitHub owner and repository using a 3-layer cascade:
-/// 1. Browser URL extraction (UI Automation / AppleScript / xdotool)
-/// 2. Window title parsing (works for GitHub Desktop app too)
-/// 3. Fallback: None
+/// IPC: Extract active GitHub owner and repository using a 4-layer cascade:
+/// 1. Browser URL extraction (UI Automation / AppleScript / xdotool) — current foreground
+/// 2. Window title parsing (works for GitHub Desktop app too) — current foreground
+/// 3. Cached foreground window title (from background tracker — handles focus changes)
+/// 4. Fallback: None
 ///
 /// Cross-platform: Windows, macOS, Linux.
 #[tauri::command]
@@ -241,6 +349,17 @@ pub fn get_active_repo_url() -> Option<RepoIdentity> {
     if let Some(title) = get_foreground_window_title() {
         tracing::info!("[architect] window title: {}", title);
         if let Some(repo) = extract_github_repo_from_title(&title) {
+            return Some(repo);
+        }
+    }
+
+    // Layer 3: Use the cached foreground window title from the background tracker.
+    // When the user says "open architecture mapper", STT + parsing takes time.
+    // During that time, the NEXUS orb or terminal may steal foreground focus.
+    // The background tracker remembers the last non-NEXUS foreground window.
+    if let Some(cached_title) = get_cached_foreground_title() {
+        tracing::info!("[architect] cached foreground title: {}", cached_title);
+        if let Some(repo) = extract_github_repo_from_title(&cached_title) {
             return Some(repo);
         }
     }
@@ -692,6 +811,22 @@ pub async fn open_architect_with_auto_detect<R: Runtime>(
     } else {
         None
     };
+
+    // If no repo was detected, do NOT open the architect window.
+    // The user would see "Waiting for repository..." forever with no way
+    // to auto-start analysis. Instead, return an error so the frontend
+    // can speak "No repository found sir" and hide the loading indicator.
+    if owner.is_none() || repo.is_none() {
+        tracing::info!("[architect] no repo detected — NOT opening architect window");
+        let _ = app.emit(
+            "architect:loading",
+            serde_json::json!({
+                "stage": "error",
+                "message": "No GitHub repository detected. Open a repo in your browser or GitHub Desktop.",
+            }),
+        );
+        return Err("No GitHub repository detected. Open a repo in your browser or GitHub Desktop.".to_string());
+    }
 
     // Step 3: Open the architect window with the pre-computed data
     let window_existed = app.get_webview_window("architect-sidebar").is_some();

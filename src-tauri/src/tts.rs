@@ -60,15 +60,13 @@ pub async fn pregenerate_cache(
 ) {
     let cache_start = std::time::Instant::now();
 
-    // Try edge-tts first for cache generation
-    let edge_available = crate::tts_edge::is_available().await;
-
     let mut cached_count = 0;
 
-    if edge_available {
-        tracing::info!("tts: pre-generating cache with edge-tts (voice={})", voice);
-        for phrase in CACHED_PHRASES {
-            match crate::tts_edge::synthesize_to_pcm(phrase, voice).await {
+    // Always try edge-tts first (cloud, best quality).
+    // If it fails, the Piper fallback below kicks in automatically.
+    tracing::info!("tts: pre-generating cache with edge-tts (voice={})", voice);
+    for phrase in CACHED_PHRASES {
+        match crate::tts_edge::synthesize_to_pcm(phrase, voice).await {
                 Ok((samples, sr)) => {
                     cache_arc.lock().await.insert(
                         phrase.to_string(),
@@ -81,9 +79,8 @@ pub async fn pregenerate_cache(
                 }
             }
         }
-    }
 
-    // If edge-tts failed or unavailable, try Piper for cache
+    // If edge-tts failed, try Piper for cache
     if cached_count == 0 {
         tracing::info!("tts: falling back to Piper for cache generation");
         // We need a temporary Piper engine for cache generation

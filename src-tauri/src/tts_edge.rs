@@ -83,15 +83,26 @@ pub async fn synthesize_to_pcm(
 
 /// Check if edge-tts is reachable (network test).
 pub async fn is_available() -> bool {
-    // Quick DNS/connectivity test — if we can't reach the internet, edge-tts won't work.
-    use std::net::TcpStream;
+    // Quick connectivity test — try connecting to Microsoft's speech endpoint.
+    // Uses reqwest to check if we can reach the internet at all.
     use std::time::Duration;
 
-    match TcpStream::connect_timeout(
-        &"speech.platform.bing.com:443".parse().unwrap(),
-        Duration::from_secs(3),
-    ) {
-        Ok(_) => true,
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Try to fetch the voice list from edge-tts endpoint
+    // If this succeeds, edge-tts is available
+    match client
+        .get("https://speech.platform.bing.com/consumer/speech/synthesize/read-aloud/voices/list")
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }
 }
