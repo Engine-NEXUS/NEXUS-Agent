@@ -32,6 +32,9 @@ interface AssistantStore {
   reset: () => void;
   /** Clear the transcript. */
   clearTranscript: () => void;
+  /** Pending GitHub command awaiting user confirmation (destructive ops). */
+  pendingGithubCommand: unknown | null;
+  setPendingGithubCommand: (cmd: unknown | null) => void;
 }
 
 export const useAssistant = create<AssistantStore>((set) => ({
@@ -56,6 +59,8 @@ export const useAssistant = create<AssistantStore>((set) => ({
   setSpeakSeq: (n) => set({ speakSeq: n }),
   reset: () => set({ state: "idle", speakSeq: null, audioVolume: 0 }),
   clearTranscript: () => set({ transcript: [] }),
+  pendingGithubCommand: null,
+  setPendingGithubCommand: (cmd) => set({ pendingGithubCommand: cmd }),
 }));
 
 /**

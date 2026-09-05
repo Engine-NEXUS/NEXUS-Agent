@@ -13,6 +13,22 @@ import { create } from "zustand";
 
 export type SidebarFontSize = "sm" | "md" | "lg" | "xl";
 
+/** GitHub merge conflict data for the conflict panel. */
+export interface ConflictData {
+  prNumber: number;
+  repo: string;
+  conflictFiles: {
+    filename: string;
+    conflict_count: number;
+    blocks: {
+      start_line: number;
+      head_content: string;
+      branch_content: string;
+    }[];
+  }[];
+  message: string;
+}
+
 export interface RepoAnalysis {
   repo: string;
   visibility: string;
@@ -41,9 +57,11 @@ interface SidebarState {
   activeImage: { src: string; alt: string } | null;
   collapsedQuery: boolean;
   analysisData: RepoAnalysis | null;
+  conflictData: ConflictData | null;
 
   show: (query: string, text: string) => void;
   showAnalysis: (query: string, text: string, analysis: RepoAnalysis) => void;
+  showConflict: (data: ConflictData) => void;
   hide: () => void;
   setFontSize: (size: SidebarFontSize) => void;
   setSpeaking: (speaking: boolean) => void;
@@ -63,6 +81,7 @@ export const useSidebar = create<SidebarState>((set) => ({
   activeImage: null,
   collapsedQuery: false,
   analysisData: null,
+  conflictData: null,
 
   show: (query: string, text: string) => {
     console.log("[sidebarStore] show called: query=", query?.substring(0, 50), "text=", text?.substring(0, 50));
@@ -74,6 +93,7 @@ export const useSidebar = create<SidebarState>((set) => ({
       speaking: false,
       activeImage: null,
       analysisData: null,
+      conflictData: null,
     });
   },
 
@@ -87,6 +107,20 @@ export const useSidebar = create<SidebarState>((set) => ({
       speaking: false,
       activeImage: null,
       analysisData: analysis,
+      conflictData: null,
+    });
+  },
+
+  showConflict: (data: ConflictData) => {
+    set({
+      visible: true,
+      query: `Merge Conflict — PR #${data.prNumber}`,
+      response: data.message,
+      timestamp: Date.now(),
+      speaking: false,
+      activeImage: null,
+      analysisData: null,
+      conflictData: data,
     });
   },
 
@@ -96,6 +130,7 @@ export const useSidebar = create<SidebarState>((set) => ({
       speaking: false,
       activeImage: null,
       analysisData: null,
+      conflictData: null,
     }),
 
   setFontSize: (size: SidebarFontSize) => {

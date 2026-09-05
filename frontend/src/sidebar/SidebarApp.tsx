@@ -6,6 +6,7 @@ import { useSidebar } from "./sidebarStore";
 import { renderMarkdownToHtml } from "./markdownRenderer";
 import { speak, stopTts } from "../audio/ttsPlayer";
 import { AnalysisDashboard } from "./AnalysisDashboard";
+import { GitHubConflictPanel } from "./GitHubConflictPanel";
 
 /**
  * NEXUS Response Sidebar
@@ -28,6 +29,7 @@ export function SidebarApp() {
   const speaking = useSidebar((s) => s.speaking);
   const activeImage = useSidebar((s) => s.activeImage);
   const analysisData = useSidebar((s) => s.analysisData);
+  const conflictData = useSidebar((s) => s.conflictData);
 
   const show = useSidebar((s) => s.show);
   const hide = useSidebar((s) => s.hide);
@@ -326,9 +328,16 @@ export function SidebarApp() {
         </header>
 
         {/* ── Response Body ─────────────────────────────────────────── */}
-        {/* If we have analysis data, show the rich dashboard. Otherwise, show markdown. */}
+        {/* Priority: conflict panel > analysis dashboard > markdown */}
         <div className="sidebar-response" ref={responseScrollRef} onScroll={handleScroll}>
-          {analysisData ? (
+          {conflictData ? (
+            <GitHubConflictPanel
+              prNumber={conflictData.prNumber}
+              repo={conflictData.repo}
+              conflictFiles={conflictData.conflictFiles}
+              message={conflictData.message}
+            />
+          ) : analysisData ? (
             <AnalysisDashboard data={analysisData} />
           ) : (
             <div

@@ -19,6 +19,7 @@
 
 import { useAssistant } from "../store/assistant";
 import { speak, stopTts } from "../audio/ttsPlayer";
+import { useSidebar } from "../sidebar/sidebarStore";
 
 function isTauri(): boolean {
   return typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
@@ -210,7 +211,8 @@ export async function initOrchestratorListener(): Promise<void> {
 
       case "confirm": {
         // GitHub destructive operation needs confirmation.
-        // Speak the prompt and wait for the user to say "yes".
+        // Store the pending command so when the user says "yes",
+        // processViaOrchestrator can re-invoke with confirmed=true.
         store.setLoadingVisible(false);
         store.setVisible(true);
         store.setState("speaking");
@@ -218,21 +220,21 @@ export async function initOrchestratorListener(): Promise<void> {
           store.addAssistantMessage(ev.prompt);
           void speak(ev.prompt);
         }
-        // The frontend can also show a confirmation dialog here.
-        // For voice flow: the user says "yes" → orchestrator_process
-        // with the confirmed command.
+        // Store the pending command for the "yes" confirmation flow
+        store.setPendingGithubCommand(ev.command ?? null);
         console.log("[NEXUS] orchestrator: confirm needed for command", ev.command);
         break;
       }
 
       case "conflict_report": {
         // GitHub merge conflict detected.
-        // Speak the conflict summary and display conflict details.
+        // Speak the conflict summary and display the conflict panel
+        // in the sidebar with copy-paste options.
         store.setLoadingVisible(false);
         store.setVisible(true);
         store.setState("speaking");
 
-        const prNum = ev.pr_number;
+        const prNum = ev.pr_number ?? 0;
         const repo = ev.repo || "";
         const files = ev.conflict_files || [];
         const fileCount = files.length;
@@ -243,16 +245,20 @@ export async function initOrchestratorListener(): Promise<void> {
         store.addAssistantMessage(spoken);
         void speak(spoken);
 
-        // Log conflict details for the frontend to display
         console.log("[NEXUS] orchestrator: merge conflict", {
           pr_number: prNum,
           repo,
           files,
         });
 
-        // TODO: Show a conflict UI overlay with copy-paste options.
-        // For now, the conflict details are available in the console log
-        // and will be displayed in the sidebar.
+        // Show the conflict panel in the sidebar with copy-paste options
+        useSidebar.getState().showConflict({
+          prNumber: prNum,
+          repo,
+          conflictFiles: files,
+          message: summary,
+        });
+
         break;
       }
 
@@ -291,6 +297,53 @@ export async function processViaOrchestrator(
   if (!isTauri()) return null;
 
   const { invoke } = await import("@tauri-apps/api/core");
+
+  // ─── GitHub confirmation flow ───
+  // If there's a pending GitHub command awaiting confirmation, check if
+  // the user said "yes" (confirm) or "no"/"cancel" (abort).
+  const store = useAssistant.getState();
+  const pendingCmd = store.pendingGithubCommand;
+  if (pendingCmd) {
+    const lower = transcript.trim().toLowerCase();
+    const isYes = /^(yes|yeah|yep|yup|confirm|ok|okay|sure|go ahead|do it|proceed)\b/.test(lower);
+    const isNo = /^(no|nope|cancel|abort|stop|don't|dont|never)\b/.test(lower);
+
+    if (isYes) {
+      // Clear the pending command first, then re-execute with confirmed=true
+      store.setPendingGithubCommand(null);
+      useAssistant.getState().addUserMessage(transcript);
+      console.log("[NEXUS] orchestrator: confirming pending GitHub command", pendingCmd);
+      try {
+        const result = await invoke<unknown>("orchestrator_github_execute", {
+          command: pendingCmd,
+          confirmed: true,
+        });
+        console.log("[NEXUS] orchestrator: github_execute confirmed result", result);
+        // The result events are emitted by Rust on the orchestrator:event channel
+        // and handled by the listener above.
+        return {
+          request_id: String((result as any)?.request_id ?? "github-confirmed"),
+          subsystem: "github",
+          handled_locally: false,
+        };
+      } catch (err) {
+        console.error("[NEXUS] orchestrator: github_execute confirmed failed:", err);
+        return null;
+      }
+    } else if (isNo) {
+      // User declined — clear the pending command
+      store.setPendingGithubCommand(null);
+      useAssistant.getState().addUserMessage(transcript);
+      const abortMsg = "Okay, I've cancelled that operation, sir.";
+      useAssistant.getState().addAssistantMessage(abortMsg);
+      void speak(abortMsg);
+      setTimeout(() => useAssistant.getState().reset(), 2000);
+      return { request_id: "github-aborted", subsystem: "github", handled_locally: true };
+    }
+    // If it's neither yes nor no, fall through to normal processing
+    // (the user may have said a completely different command)
+    store.setPendingGithubCommand(null);
+  }
 
   try {
     const result = await invoke<{
