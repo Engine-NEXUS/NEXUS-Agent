@@ -95,6 +95,12 @@ tree-sitter-go = "0.23"
 # SHA-256 for content hashing in symbol extraction
 sha2 = "0.10"
 
+# GitHub API client for the GitHub sub-command system (Phase 2A).
+# octocrab provides a typed semantic API + low-level HTTP fallback.
+# Used by github_cmd.rs to execute structured GitHubCommand operations.
+octocrab = "0.42"
+async-trait = "0.1"
+
 
 # Windows-specific: EnumWindows + SetForegroundWindow + ShellExecuteW
 [target.'cfg(windows)'.dependencies]

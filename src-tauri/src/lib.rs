@@ -42,6 +42,7 @@ mod symbol_extractor;
 mod dyn_windows;
 mod diagnostics;
 pub mod orchestrator;
+pub mod github_cmd;
 #[cfg(target_os = "windows")]
 mod dwm_corners;
 #[cfg(target_os = "windows")]
@@ -714,6 +715,8 @@ pub fn run() {
             orchestrator::orchestrator_status,
             orchestrator::orchestrator_show_loading,
             orchestrator::orchestrator_hide_loading,
+            orchestrator::orchestrator_github_execute,
+            orchestrator::orchestrator_github_clear_token,
             commands::open_setup_window,
             commands::close_setup_window,
             commands::save_server_config,

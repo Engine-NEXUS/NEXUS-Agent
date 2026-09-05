@@ -81,6 +81,12 @@ pub enum ParsedIntent {
         slots: serde_json::Value,
         confidence: f32,
     },
+    /// GitHub sub-command — parsed from voice/text into a structured
+    /// `GitHubCommand` that the orchestrator routes to `Subsystem::GitHub`.
+    #[serde(rename = "github_command")]
+    GitHubCommand {
+        command: crate::github_cmd::GitHubCommand,
+    },
     #[serde(rename = "unknown")]
     Unknown { raw: String },
 }
@@ -172,6 +178,16 @@ pub fn parse_deterministic(transcript: &str) -> Option<ParseResult> {
     // --- WhatsApp chat (must be BEFORE open command ΓÇö "open chat with X" would match open) ---
     // "open chat with lakshya", "message lakshya on whatsapp", "chat with mom"
     if let Some(result) = parse_whatsapp_command(&text) {
+        return Some(result);
+    }
+
+    // --- GitHub commands ---
+    // "merge PR 23 in owner/repo", "approve PR 5 in servx",
+    // "close PR 10 in zync", "list PRs in owner/repo",
+    // "add user X as collaborator to owner/repo", etc.
+    // Must be BEFORE open/close app — "close PR 10" and "show PR 42"
+    // would match close_app / open_app respectively.
+    if let Some(result) = parse_github_command(&text) {
         return Some(result);
     }
 
@@ -1188,6 +1204,492 @@ fn parse_search_command(text: &str) -> Option<ParseResult> {
             }
         }
     }
+    None
+}
+
+// ─── GitHub command parsing ───────────────────────────────────────────
+
+/// Parse GitHub sub-commands from natural language.
+///
+/// Supported patterns:
+///   "merge PR <num> in <owner/repo>"        → MergePr
+///   "squash merge PR <num> in <repo>"       → MergePr (squash)
+///   "rebase merge PR <num> in <repo>"       → MergePr (rebase)
+///   "approve PR <num> in <repo>"            → ApprovePr
+///   "close PR <num> in <repo>"              → ClosePr
+///   "list PRs in <repo>"                    → ListPrs
+///   "list open PRs in <repo>"               → ListPrs (open)
+///   "list closed PRs in <repo>"             → ListPrs (closed)
+///   "get PR <num> in <repo>"                → GetPr
+///   "show PR <num> in <repo>"               → GetPr
+///   "create PR <title> from <head> to <base> in <repo>" → CreatePr
+///   "comment on PR <num> in <repo>: <body>" → CommentPr
+///   "list PR files for PR <num> in <repo>"  → ListPrFiles
+///   "update branch for PR <num> in <repo>"  → UpdateBranch
+///   "revert PR <num> in <repo>"             → RevertPr
+///   "add <user> as collaborator to <repo>"  → AddCollaborator
+///   "remove <user> from collaborators in <repo>" → RemoveCollaborator
+///   "list collaborators in <repo>"          → ListCollaborators
+///   "add <user> to org <org>"               → AddOrgMember
+///   "remove <user> from org <org>"          → RemoveOrgMember
+///   "list members of org <org>"             → ListOrgMembers
+///   "list branches in <repo>"               → ListBranches
+///   "delete branch <name> in <repo>"        → DeleteBranch
+///   "list releases in <repo>"               → ListReleases
+///   "create release <tag> in <repo>"        → CreateRelease
+///   "list workflows in <repo>"              → ListWorkflows
+///   "list workflow runs in <repo>"          → ListWorkflowRuns
+///   "rerun workflow <id> in <repo>"         → RerunWorkflow
+///   "cancel workflow <id> in <repo>"        → CancelWorkflow
+fn parse_github_command(text: &str) -> Option<ParseResult> {
+    use crate::github_cmd::{CollaboratorPermission, GitHubCommand, MergeMethod, OrgRole};
+
+    // Helper: extract "in <owner/repo>" or "in <repo>" from the end of text.
+    // Returns (repo, remaining_text_before_in).
+    let extract_repo = |t: &str| -> Option<(String, String)> {
+        // Try "in <owner/repo>" pattern
+        if let Some(pos) = t.rfind(" in ") {
+            let repo_part = t[pos + 4..].trim();
+            let repo = clean_repo_name(repo_part);
+            if !repo.is_empty() {
+                return Some((repo, t[..pos].trim().to_string()));
+            }
+        }
+        // Try "for <owner/repo>"
+        if let Some(pos) = t.rfind(" for ") {
+            let repo_part = t[pos + 5..].trim();
+            let repo = clean_repo_name(repo_part);
+            if !repo.is_empty() {
+                return Some((repo, t[..pos].trim().to_string()));
+            }
+        }
+        None
+    };
+
+    // --- Merge PR ---
+    // "merge PR 23 in owner/repo"
+    // "squash merge PR 23 in owner/repo"
+    // "rebase merge PR 23 in owner/repo"
+    let merge_re = regex::Regex::new(
+        r"^(?:(squash|rebase)\s+)?merge\s+(?:pr|pull\s+request)\s*#?\s*(\d+)(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = merge_re.captures(text) {
+        let method = match caps.get(1).map(|m| m.as_str()) {
+            Some("squash") => MergeMethod::Squash,
+            Some("rebase") => MergeMethod::Rebase,
+            _ => MergeMethod::Merge,
+        };
+        let pr_number: u64 = caps[2].parse().ok()?;
+        let repo = if let Some(r) = caps.get(3) {
+            clean_repo_name(r.as_str())
+        } else {
+            // Try "in <repo>" from full text
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::MergePr { repo, pr_number, method },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::MergePr { repo, pr_number, method },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Approve PR ---
+    let approve_re = regex::Regex::new(
+        r"^approve\s+(?:pr|pull\s+request)\s*#?\s*(\d+)(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = approve_re.captures(text) {
+        let pr_number: u64 = caps[1].parse().ok()?;
+        let repo = if let Some(r) = caps.get(2) {
+            clean_repo_name(r.as_str())
+        } else {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ApprovePr { repo, pr_number },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ApprovePr { repo, pr_number },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Close PR ---
+    let close_re = regex::Regex::new(
+        r"^close\s+(?:pr|pull\s+request)\s*#?\s*(\d+)(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = close_re.captures(text) {
+        let pr_number: u64 = caps[1].parse().ok()?;
+        let repo = if let Some(r) = caps.get(2) {
+            clean_repo_name(r.as_str())
+        } else {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ClosePr { repo, pr_number },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ClosePr { repo, pr_number },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Get PR ---
+    let get_re = regex::Regex::new(
+        r"^(?:get|show|tell\s+me\s+about)\s+(?:pr|pull\s+request)\s*#?\s*(\d+)(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = get_re.captures(text) {
+        let pr_number: u64 = caps[1].parse().ok()?;
+        let repo = if let Some(r) = caps.get(2) {
+            clean_repo_name(r.as_str())
+        } else {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::GetPr { repo, pr_number },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::GetPr { repo, pr_number },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List PRs ---
+    let list_prs_re = regex::Regex::new(
+        r"^list\s+(open\s+|closed\s+|all\s+)?prs?(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = list_prs_re.captures(text) {
+        let state = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("open").to_string();
+        let repo = if let Some(r) = caps.get(2) {
+            clean_repo_name(r.as_str())
+        } else {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListPrs { repo, state },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListPrs { repo, state },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List PR files ---
+    if let Some(rest) = text.strip_prefix("list pr files ") {
+        // "list pr files for PR <num> in <repo>" or "list pr files for <num> in <repo>"
+        let rest = rest.trim_start_matches("for ").trim();
+        let rest = rest.trim_start_matches("pr ").trim();
+        if let Ok(pr_number) = rest.parse::<u64>() {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListPrFiles { repo, pr_number },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Update branch ---
+    if let Some(rest) = text.strip_prefix("update branch ") {
+        let rest = rest.trim_start_matches("for ").trim();
+        let rest = rest.trim_start_matches("pr ").trim();
+        if let Ok(pr_number) = rest.parse::<u64>() {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::UpdateBranch { repo, pr_number },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Revert PR ---
+    let revert_re = regex::Regex::new(
+        r"^revert\s+(?:pr|pull\s+request)\s*#?\s*(\d+)(?:\s+in\s+(\S+))?$"
+    ).ok()?;
+    if let Some(caps) = revert_re.captures(text) {
+        let pr_number: u64 = caps[1].parse().ok()?;
+        let repo = if let Some(r) = caps.get(2) {
+            clean_repo_name(r.as_str())
+        } else {
+            return extract_repo(text).map(|(repo, _)| ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::RevertPr { repo, pr_number, title: None },
+                },
+                confidence: 0.9,
+                source: "deterministic".to_string(),
+            });
+        };
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::RevertPr { repo, pr_number, title: None },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Add collaborator ---
+    // "add <user> as collaborator to <repo>" or "add <user> as admin to <repo>"
+    let add_collab_re = regex::Regex::new(
+        r"^add\s+(\S+)\s+as\s+(admin|push|pull|triage|maintain)?\s*collaborator\s+to\s+(\S+)$"
+    ).ok()?;
+    if let Some(caps) = add_collab_re.captures(text) {
+        let username = caps[1].to_string();
+        let permission = match caps.get(2).map(|m| m.as_str().trim()) {
+            Some("admin") => CollaboratorPermission::Admin,
+            Some("push") => CollaboratorPermission::Push,
+            Some("pull") => CollaboratorPermission::Pull,
+            Some("triage") => CollaboratorPermission::Triage,
+            Some("maintain") => CollaboratorPermission::Maintain,
+            _ => CollaboratorPermission::Push,
+        };
+        let repo = clean_repo_name(&caps[3]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::AddCollaborator { repo, username, permission },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Remove collaborator ---
+    let rem_collab_re = regex::Regex::new(
+        r"^remove\s+(\S+)\s+(?:as\s+)?collaborator\s+from\s+(\S+)$"
+    ).ok()?;
+    if let Some(caps) = rem_collab_re.captures(text) {
+        let username = caps[1].to_string();
+        let repo = clean_repo_name(&caps[2]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::RemoveCollaborator { repo, username },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List collaborators ---
+    let list_collab_re = regex::Regex::new(r"^list\s+collaborators\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = list_collab_re.captures(text) {
+        let repo = clean_repo_name(&caps[1]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListCollaborators { repo },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Add org member ---
+    // "add <user> to org <org>" or "add <user> as admin to org <org>"
+    let add_org_re = regex::Regex::new(
+        r"^add\s+(\S+)\s+(?:as\s+(admin|member)\s+)?to\s+org\s+(\S+)$"
+    ).ok()?;
+    if let Some(caps) = add_org_re.captures(text) {
+        let username = caps[1].to_string();
+        let role = match caps.get(2).map(|m| m.as_str()) {
+            Some("admin") => OrgRole::Admin,
+            _ => OrgRole::Member,
+        };
+        let org = caps[3].to_string();
+        return Some(ParseResult {
+            intent: ParsedIntent::GitHubCommand {
+                command: GitHubCommand::AddOrgMember { org, username, role },
+            },
+            confidence: 0.95,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // --- Remove org member ---
+    let rem_org_re = regex::Regex::new(r"^remove\s+(\S+)\s+from\s+org\s+(\S+)$").ok()?;
+    if let Some(caps) = rem_org_re.captures(text) {
+        let username = caps[1].to_string();
+        let org = caps[2].to_string();
+        return Some(ParseResult {
+            intent: ParsedIntent::GitHubCommand {
+                command: GitHubCommand::RemoveOrgMember { org, username },
+            },
+            confidence: 0.95,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // --- List org members ---
+    let list_org_re = regex::Regex::new(r"^list\s+members\s+of\s+org\s+(\S+)$").ok()?;
+    if let Some(caps) = list_org_re.captures(text) {
+        let org = caps[1].to_string();
+        return Some(ParseResult {
+            intent: ParsedIntent::GitHubCommand {
+                command: GitHubCommand::ListOrgMembers { org },
+            },
+            confidence: 0.95,
+            source: "deterministic".to_string(),
+        });
+    }
+
+    // --- List branches ---
+    let list_branches_re = regex::Regex::new(r"^list\s+branches\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = list_branches_re.captures(text) {
+        let repo = clean_repo_name(&caps[1]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListBranches { repo },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Delete branch ---
+    let del_branch_re = regex::Regex::new(r"^delete\s+branch\s+(\S+)\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = del_branch_re.captures(text) {
+        let branch = caps[1].to_string();
+        let repo = clean_repo_name(&caps[2]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::DeleteBranch { repo, branch },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List releases ---
+    let list_releases_re = regex::Regex::new(r"^list\s+releases\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = list_releases_re.captures(text) {
+        let repo = clean_repo_name(&caps[1]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListReleases { repo },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List workflows ---
+    let list_wf_re = regex::Regex::new(r"^list\s+workflows\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = list_wf_re.captures(text) {
+        let repo = clean_repo_name(&caps[1]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListWorkflows { repo },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- List workflow runs ---
+    let list_runs_re = regex::Regex::new(r"^list\s+workflow\s+runs\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = list_runs_re.captures(text) {
+        let repo = clean_repo_name(&caps[1]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::ListWorkflowRuns { repo, workflow_file: None },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Rerun workflow ---
+    let rerun_re = regex::Regex::new(r"^rerun\s+workflow\s+(\d+)\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = rerun_re.captures(text) {
+        let run_id: u64 = caps[1].parse().ok()?;
+        let repo = clean_repo_name(&caps[2]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::RerunWorkflow { repo, run_id },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
+    // --- Cancel workflow ---
+    let cancel_re = regex::Regex::new(r"^cancel\s+workflow\s+(\d+)\s+in\s+(\S+)$").ok()?;
+    if let Some(caps) = cancel_re.captures(text) {
+        let run_id: u64 = caps[1].parse().ok()?;
+        let repo = clean_repo_name(&caps[2]);
+        if !repo.is_empty() {
+            return Some(ParseResult {
+                intent: ParsedIntent::GitHubCommand {
+                    command: GitHubCommand::CancelWorkflow { repo, run_id },
+                },
+                confidence: 0.95,
+                source: "deterministic".to_string(),
+            });
+        }
+    }
+
     None
 }
 
@@ -2599,5 +3101,359 @@ mod tests {
         } else {
             panic!("expected Greeting");
         }
+    }
+
+    // ─── GitHub command parsing tests (Phase 2A-6) ────────────────
+
+    #[test]
+    fn test_parse_merge_pr() {
+        let result = parse_deterministic("merge pr 23 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::MergePr { repo, pr_number, method },
+        } = result.unwrap().intent
+        {
+            assert_eq!(repo, "owner/repo");
+            assert_eq!(pr_number, 23);
+            assert_eq!(method, crate::github_cmd::MergeMethod::Merge);
+        } else {
+            panic!("expected MergePr");
+        }
+    }
+
+    #[test]
+    fn test_parse_squash_merge_pr() {
+        let result = parse_deterministic("squash merge pr 5 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::MergePr { method, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(method, crate::github_cmd::MergeMethod::Squash);
+        } else {
+            panic!("expected MergePr");
+        }
+    }
+
+    #[test]
+    fn test_parse_rebase_merge_pr() {
+        let result = parse_deterministic("rebase merge pr 10 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::MergePr { method, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(method, crate::github_cmd::MergeMethod::Rebase);
+        } else {
+            panic!("expected MergePr");
+        }
+    }
+
+    #[test]
+    fn test_parse_approve_pr() {
+        let result = parse_deterministic("approve pr 5 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::ApprovePr { repo, pr_number },
+        } = result.unwrap().intent
+        {
+            assert_eq!(repo, "owner/repo");
+            assert_eq!(pr_number, 5);
+        } else {
+            panic!("expected ApprovePr");
+        }
+    }
+
+    #[test]
+    fn test_parse_close_pr() {
+        let result = parse_deterministic("close pr 10 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::ClosePr { pr_number, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(pr_number, 10);
+        } else {
+            panic!("expected ClosePr");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_prs() {
+        let result = parse_deterministic("list prs in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::ListPrs { repo, state },
+        } = result.unwrap().intent
+        {
+            assert_eq!(repo, "owner/repo");
+            assert_eq!(state, "open");
+        } else {
+            panic!("expected ListPrs");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_closed_prs() {
+        let result = parse_deterministic("list closed prs in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::ListPrs { state, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(state, "closed");
+        } else {
+            panic!("expected ListPrs");
+        }
+    }
+
+    #[test]
+    fn test_parse_get_pr() {
+        let result = parse_deterministic("show pr 42 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::GetPr { pr_number, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(pr_number, 42);
+        } else {
+            panic!("expected GetPr");
+        }
+    }
+
+    #[test]
+    fn test_parse_revert_pr() {
+        let result = parse_deterministic("revert pr 99 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::RevertPr { pr_number, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(pr_number, 99);
+        } else {
+            panic!("expected RevertPr");
+        }
+    }
+
+    #[test]
+    fn test_parse_add_collaborator() {
+        let result = parse_deterministic("add user1 as admin collaborator to owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::AddCollaborator { username, permission, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(username, "user1");
+            assert_eq!(permission, crate::github_cmd::CollaboratorPermission::Admin);
+        } else {
+            panic!("expected AddCollaborator");
+        }
+    }
+
+    #[test]
+    fn test_parse_add_collaborator_default_permission() {
+        let result = parse_deterministic("add user1 as collaborator to owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::AddCollaborator { permission, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(permission, crate::github_cmd::CollaboratorPermission::Push);
+        } else {
+            panic!("expected AddCollaborator");
+        }
+    }
+
+    #[test]
+    fn test_parse_remove_collaborator() {
+        let result = parse_deterministic("remove user1 as collaborator from owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::RemoveCollaborator { username, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(username, "user1");
+        } else {
+            panic!("expected RemoveCollaborator");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_collaborators() {
+        let result = parse_deterministic("list collaborators in owner/repo");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListCollaborators { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_add_org_member() {
+        let result = parse_deterministic("add user1 to org myorg");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::AddOrgMember { org, username, role },
+        } = result.unwrap().intent
+        {
+            assert_eq!(org, "myorg");
+            assert_eq!(username, "user1");
+            assert_eq!(role, crate::github_cmd::OrgRole::Member);
+        } else {
+            panic!("expected AddOrgMember");
+        }
+    }
+
+    #[test]
+    fn test_parse_add_org_admin() {
+        let result = parse_deterministic("add user1 as admin to org myorg");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::AddOrgMember { role, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(role, crate::github_cmd::OrgRole::Admin);
+        } else {
+            panic!("expected AddOrgMember");
+        }
+    }
+
+    #[test]
+    fn test_parse_remove_org_member() {
+        let result = parse_deterministic("remove user1 from org myorg");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::RemoveOrgMember { org, username },
+        } = result.unwrap().intent
+        {
+            assert_eq!(org, "myorg");
+            assert_eq!(username, "user1");
+        } else {
+            panic!("expected RemoveOrgMember");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_org_members() {
+        let result = parse_deterministic("list members of org myorg");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListOrgMembers { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_list_branches() {
+        let result = parse_deterministic("list branches in owner/repo");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListBranches { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_delete_branch() {
+        let result = parse_deterministic("delete branch feature in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::DeleteBranch { branch, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(branch, "feature");
+        } else {
+            panic!("expected DeleteBranch");
+        }
+    }
+
+    #[test]
+    fn test_parse_list_releases() {
+        let result = parse_deterministic("list releases in owner/repo");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListReleases { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_list_workflows() {
+        let result = parse_deterministic("list workflows in owner/repo");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListWorkflows { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_list_workflow_runs() {
+        let result = parse_deterministic("list workflow runs in owner/repo");
+        assert!(result.is_some());
+        assert!(matches!(
+            result.unwrap().intent,
+            ParsedIntent::GitHubCommand {
+                command: crate::github_cmd::GitHubCommand::ListWorkflowRuns { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn test_parse_rerun_workflow() {
+        let result = parse_deterministic("rerun workflow 123 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::RerunWorkflow { run_id, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(run_id, 123);
+        } else {
+            panic!("expected RerunWorkflow");
+        }
+    }
+
+    #[test]
+    fn test_parse_cancel_workflow() {
+        let result = parse_deterministic("cancel workflow 456 in owner/repo");
+        assert!(result.is_some());
+        if let ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::CancelWorkflow { run_id, .. },
+        } = result.unwrap().intent
+        {
+            assert_eq!(run_id, 456);
+        } else {
+            panic!("expected CancelWorkflow");
+        }
+    }
+
+    #[test]
+    fn test_route_github_command_to_github_subsystem() {
+        use crate::orchestrator::{route_intent, Subsystem};
+        let intent = ParsedIntent::GitHubCommand {
+            command: crate::github_cmd::GitHubCommand::MergePr {
+                repo: "owner/repo".into(),
+                pr_number: 1,
+                method: crate::github_cmd::MergeMethod::Squash,
+            },
+        };
+        assert_eq!(route_intent(&intent), Subsystem::GitHub);
+    }
+
+    #[test]
+    fn test_non_github_not_routed_to_github() {
+        use crate::orchestrator::{route_intent, Subsystem};
+        let intent = ParsedIntent::Search { query: "test".into() };
+        assert_ne!(route_intent(&intent), Subsystem::GitHub);
     }
 }

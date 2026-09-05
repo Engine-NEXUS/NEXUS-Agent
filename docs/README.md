@@ -34,6 +34,7 @@ If you're new to the project, read in this order:
 | 07 | [central-orchestrator.md](./architecture/07-central-orchestrator.md) | Central orchestrator: single owner of request lifecycle, routing, loading state, cancellation, request IDs |
 | 08 | [oauth-github-flow.md](./architecture/08-oauth-github-flow.md) | GitHub OAuth 2.0 PKCE flow: browser redirect, token exchange, deep-link callback, polling detection |
 | 09 | [request-flow-evolution.md](./architecture/09-request-flow-evolution.md) | Evolution of request handling from scattered to centralized (Phase 1 → Phase 4) |
+| 10 | [github-subcommand-system.md](./architecture/10-github-subcommand-system.md) | GitHub sub-command system: 28 typed commands via octocrab, conflict detection, centralized confirmation, token management |
 
 ### Features (What each feature does and how)
 
@@ -57,6 +58,7 @@ If you're new to the project, read in this order:
 | 45 | [central-orchestrator.md](./features/45-central-orchestrator.md) | Central orchestrator: single owner of request lifecycle, routing, loading, cancellation |
 | 46 | [github-oauth-connect.md](./features/46-github-oauth-connect.md) | GitHub OAuth connect button: browser redirect, one-click authorize, auto-detection |
 | 47 | [loading-indicator-ownership.md](./features/47-loading-indicator-ownership.md) | Loading indicator centralized in orchestrator (Rust owns show/hide) |
+| 48 | [github-subcommand-system.md](./features/48-github-subcommand-system.md) | GitHub sub-command system: 28 typed commands, conflict detection with copy-paste, centralized confirmation, natural language parsing |
 
 ### Credentials (How API keys, OAuth, and device tokens work)
 
@@ -106,6 +108,7 @@ If you're new to the project, read in this order:
 | 28 | [hot-mic-preinit-vad.md](./changes/28-hot-mic-preinit-vad.md) | Eliminates 2s wake-to-listen delay: hot mic + pre-init VAD + parallel init |
 | 29 | [central-orchestrator.md](./changes/29-central-orchestrator.md) | Central orchestrator implementation: single owner of request lifecycle, routing, loading, cancellation |
 | 30 | [github-oauth-fix.md](./changes/30-github-oauth-fix.md) | Fixed GitHub Connect button: shell plugin config, capabilities scope, fallback, macOS deep-link |
+| 31 | [github-subcommand-system.md](./changes/31-github-subcommand-system.md) | GitHub sub-command system (Phase 2A): 28 typed commands via octocrab, conflict detection, centralized confirmation, 114 new tests |
 
 ### Wake Word Detection (Detailed Deep Dive)
 

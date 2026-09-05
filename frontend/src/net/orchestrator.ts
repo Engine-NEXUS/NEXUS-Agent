@@ -26,7 +26,16 @@ function isTauri(): boolean {
 
 /** Orchestrator event shape (mirrors Rust OrchestratorEvent enum). */
 interface OrchestratorEvent {
-  type: "state" | "loading" | "ack" | "result" | "done" | "error";
+  type:
+    | "state"
+    | "loading"
+    | "ack"
+    | "result"
+    | "done"
+    | "error"
+    | "confirm"
+    | "conflict_report"
+    | "github_result";
   request_id: string;
   // state
   state?: "idle" | "listening" | "thinking" | "speaking";
@@ -39,6 +48,43 @@ interface OrchestratorEvent {
   dialog_state?: unknown;
   // error
   message?: string;
+  // confirm (GitHub destructive operation)
+  prompt?: string;
+  command?: unknown; // Serialized GitHubCommand
+  // conflict_report (GitHub merge conflict)
+  pr_number?: number;
+  repo?: string;
+  conflict_files?: ConflictFile[];
+  // github_result
+  result?: GitHubResultPayload;
+}
+
+/** A file with merge conflicts (mirrors Rust ConflictFile). */
+interface ConflictFile {
+  filename: string;
+  conflict_count: number;
+  blocks: ConflictBlock[];
+}
+
+/** A single conflict block (mirrors Rust ConflictBlock). */
+interface ConflictBlock {
+  start_line: number;
+  head_content: string;
+  branch_content: string;
+}
+
+/** GitHub result payload (mirrors Rust GitHubResult enum). */
+interface GitHubResultPayload {
+  type: "text" | "needs_confirmation" | "merge_conflict" | "error";
+  text?: string;
+  prompt?: string;
+  command?: unknown;
+  pr_number?: number;
+  repo?: string;
+  conflict_files?: ConflictFile[];
+  message?: string;
+  status?: number;
+  is_auth_error?: boolean;
 }
 
 let initialized = false;
@@ -159,6 +205,63 @@ export async function initOrchestratorListener(): Promise<void> {
           currentRequestId = null;
           setTimeout(() => store.reset(), 550);
         }, 3000);
+        break;
+      }
+
+      case "confirm": {
+        // GitHub destructive operation needs confirmation.
+        // Speak the prompt and wait for the user to say "yes".
+        store.setLoadingVisible(false);
+        store.setVisible(true);
+        store.setState("speaking");
+        if (ev.prompt) {
+          store.addAssistantMessage(ev.prompt);
+          void speak(ev.prompt);
+        }
+        // The frontend can also show a confirmation dialog here.
+        // For voice flow: the user says "yes" → orchestrator_process
+        // with the confirmed command.
+        console.log("[NEXUS] orchestrator: confirm needed for command", ev.command);
+        break;
+      }
+
+      case "conflict_report": {
+        // GitHub merge conflict detected.
+        // Speak the conflict summary and display conflict details.
+        store.setLoadingVisible(false);
+        store.setVisible(true);
+        store.setState("speaking");
+
+        const prNum = ev.pr_number;
+        const repo = ev.repo || "";
+        const files = ev.conflict_files || [];
+        const fileCount = files.length;
+
+        const summary = ev.message || `PR #${prNum} in ${repo} has merge conflicts.`;
+        const spoken = `${summary} ${fileCount} file${fileCount !== 1 ? "s" : ""} have conflicts. Please fix the conflicts and push, then try merging again.`;
+
+        store.addAssistantMessage(spoken);
+        void speak(spoken);
+
+        // Log conflict details for the frontend to display
+        console.log("[NEXUS] orchestrator: merge conflict", {
+          pr_number: prNum,
+          repo,
+          files,
+        });
+
+        // TODO: Show a conflict UI overlay with copy-paste options.
+        // For now, the conflict details are available in the console log
+        // and will be displayed in the sidebar.
+        break;
+      }
+
+      case "github_result": {
+        // Raw GitHub result — used for structured UI display.
+        // The text/conflict/error cases are already handled by the
+        // result/conflict_report/error events above. This event provides
+        // the raw structured data for advanced UI rendering.
+        console.log("[NEXUS] orchestrator: github_result", ev.result);
         break;
       }
     }

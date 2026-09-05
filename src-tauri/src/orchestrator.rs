@@ -61,6 +61,10 @@ pub enum Subsystem {
     WorkerBackend,
     /// Architecture Mapper — repo analysis + graph + AI enrichment.
     Architect,
+    /// GitHub sub-command system — typed GitHub operations via octocrab.
+    /// Handles merge/approve/close PR, collaborators, org members, branches,
+    /// releases, workflows. Token fetched from Worker, execution in Rust.
+    GitHub,
     /// No subsystem — the command was unparseable or empty.
     None,
 }
@@ -103,6 +107,30 @@ pub enum OrchestratorEvent {
     Error {
         message: String,
         request_id: String,
+    },
+    /// GitHub sub-command system: confirmation required for a destructive
+    /// operation. The frontend should ask the user to confirm, then call
+    /// `orchestrator_github_confirm` with the request_id and confirmed=true.
+    Confirm {
+        prompt: String,
+        request_id: String,
+        /// The serialized GitHubCommand that needs confirmation.
+        command: serde_json::Value,
+    },
+    /// GitHub sub-command system: merge conflict detected. The frontend
+    /// should display the conflict details with copy-paste options.
+    ConflictReport {
+        request_id: String,
+        pr_number: u64,
+        repo: String,
+        conflict_files: serde_json::Value,
+        message: String,
+    },
+    /// GitHub sub-command system: operation result. The frontend should
+    /// speak the text and/or display structured data.
+    GitHubResult {
+        request_id: String,
+        result: serde_json::Value,
     },
 }
 
@@ -195,7 +223,7 @@ fn clear_active_request(request_id: &str) {
 ///   1. Local commands (open/close app, media, greeting) → LocalCommand
 ///   2. Architecture mapper → Architect
 ///   3. Everything else (analyse PR, research, GitHub writes, general) → WorkerBackend
-fn route_intent(intent: &ParsedIntent) -> Subsystem {
+pub(crate) fn route_intent(intent: &ParsedIntent) -> Subsystem {
     match intent {
         // Local commands — handled in Rust, no network
         ParsedIntent::OpenApp { .. }
@@ -210,6 +238,9 @@ fn route_intent(intent: &ParsedIntent) -> Subsystem {
 
         // Architecture mapper — Rust + Worker enrichment
         ParsedIntent::OpenArchitect => Subsystem::Architect,
+
+        // GitHub sub-command system — typed operations via octocrab
+        ParsedIntent::GitHubCommand { .. } => Subsystem::GitHub,
 
         // Everything else goes to the Worker
         ParsedIntent::AnalyseRepo { .. }
@@ -227,7 +258,10 @@ fn route_intent(intent: &ParsedIntent) -> Subsystem {
 /// Local commands are instant (<5ms) — no loading indicator.
 /// Worker and Architect are long-running — show loading indicator after ack.
 fn is_long_running(subsystem: &Subsystem) -> bool {
-    matches!(subsystem, Subsystem::WorkerBackend | Subsystem::Architect)
+    matches!(
+        subsystem,
+        Subsystem::WorkerBackend | Subsystem::Architect | Subsystem::GitHub
+    )
 }
 
 // ─── Public API ────────────────────────────────────────────────────────
@@ -437,6 +471,192 @@ pub async fn process_transcript<R: Runtime>(
             })
         }
 
+        Subsystem::GitHub => {
+            // GitHub sub-command system — typed operations via octocrab.
+            // Long-running (network to GitHub API) — emit ack + loading.
+            let ack = pick_ack();
+            emit(
+                &app,
+                &OrchestratorEvent::Ack {
+                    text: ack.to_string(),
+                    request_id: request_id.clone(),
+                },
+            );
+            emit(
+                &app,
+                &OrchestratorEvent::Loading {
+                    visible: true,
+                    request_id: request_id.clone(),
+                },
+            );
+            show_loading(&app);
+
+            // Get session info for token fetch
+            let session_info = network::get_session_info()
+                .ok_or("no session open — call open_session first")?;
+            let (worker_url, user_id, _device_id) = session_info;
+
+            // Extract the GitHubCommand from the parsed intent.
+            // The intent parser (Phase 2A-6) produces ParsedIntent::GitHubCommand
+            // for recognized GitHub operations.
+            let gh_cmd = match &intent {
+                ParsedIntent::GitHubCommand { command } => command.clone(),
+                _ => {
+                    // If we somehow got here without a GitHubCommand, fall back
+                    // to the Worker (backward compatibility).
+                    let result = dispatch_to_worker(
+                        app.clone(),
+                        transcript.clone(),
+                        dialog_context,
+                        request_id.clone(),
+                        cancel_flag.clone(),
+                    )
+                    .await;
+
+                    emit(
+                        &app,
+                        &OrchestratorEvent::Loading {
+                            visible: false,
+                            request_id: request_id.clone(),
+                        },
+                    );
+                    hide_loading(&app);
+
+                    match result {
+                        Ok((text, analysis, dialog_state)) => {
+                            emit(
+                                &app,
+                                &OrchestratorEvent::Result {
+                                    text,
+                                    request_id: request_id.clone(),
+                                    analysis,
+                                    dialog_state,
+                                },
+                            );
+                            clear_active_request(&request_id);
+                            return Ok(ProcessResult {
+                                request_id,
+                                subsystem,
+                                handled_locally: false,
+                            });
+                        }
+                        Err(e) => {
+                            hide_loading(&app);
+                            emit(
+                                &app,
+                                &OrchestratorEvent::Error {
+                                    message: e.clone(),
+                                    request_id: request_id.clone(),
+                                },
+                            );
+                            emit(
+                                &app,
+                                &OrchestratorEvent::Done {
+                                    request_id: request_id.clone(),
+                                },
+                            );
+                            clear_active_request(&request_id);
+                            return Err(e);
+                        }
+                    }
+                }
+            };
+
+            // Execute the GitHub command via the typed subsystem
+            let gh_result = crate::github_cmd::execute_command(
+                &worker_url,
+                &user_id,
+                &gh_cmd,
+                false, // not confirmed yet — confirmation flow handled by events
+            )
+            .await;
+
+            // Hide loading indicator
+            emit(
+                &app,
+                &OrchestratorEvent::Loading {
+                    visible: false,
+                    request_id: request_id.clone(),
+                },
+            );
+            hide_loading(&app);
+
+            // Emit the appropriate event based on the result type
+            match &gh_result {
+                crate::github_cmd::GitHubResult::NeedsConfirmation { prompt, command } => {
+                    let cmd_json = serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
+                    emit(
+                        &app,
+                        &OrchestratorEvent::Confirm {
+                            prompt: prompt.clone(),
+                            request_id: request_id.clone(),
+                            command: cmd_json,
+                        },
+                    );
+                }
+                crate::github_cmd::GitHubResult::MergeConflict {
+                    pr_number,
+                    repo,
+                    conflict_files,
+                    message,
+                } => {
+                    let files_json = serde_json::to_value(conflict_files).unwrap_or(serde_json::Value::Null);
+                    emit(
+                        &app,
+                        &OrchestratorEvent::ConflictReport {
+                            request_id: request_id.clone(),
+                            pr_number: *pr_number,
+                            repo: repo.clone(),
+                            conflict_files: files_json,
+                            message: message.clone(),
+                        },
+                    );
+                }
+                crate::github_cmd::GitHubResult::Text { text } => {
+                    emit(
+                        &app,
+                        &OrchestratorEvent::Result {
+                            text: text.clone(),
+                            request_id: request_id.clone(),
+                            analysis: None,
+                            dialog_state: None,
+                        },
+                    );
+                }
+                crate::github_cmd::GitHubResult::Error { message, .. } => {
+                    emit(
+                        &app,
+                        &OrchestratorEvent::Error {
+                            message: message.clone(),
+                            request_id: request_id.clone(),
+                        },
+                    );
+                }
+            }
+
+            // Emit the raw GitHubResult for the frontend to use
+            let result_json = serde_json::to_value(&gh_result).unwrap_or(serde_json::Value::Null);
+            emit(
+                &app,
+                &OrchestratorEvent::GitHubResult {
+                    request_id: request_id.clone(),
+                    result: result_json,
+                },
+            );
+            emit(
+                &app,
+                &OrchestratorEvent::Done {
+                    request_id: request_id.clone(),
+                },
+            );
+            clear_active_request(&request_id);
+            Ok(ProcessResult {
+                request_id,
+                subsystem,
+                handled_locally: false,
+            })
+        }
+
         Subsystem::None => {
             emit(
                 &app,
@@ -601,6 +821,134 @@ pub fn orchestrator_status() -> Result<serde_json::Value, String> {
         "request_id": guard.as_ref().map(|r| r.id.clone()),
         "subsystem": guard.as_ref().map(|r| serde_json::to_value(&r.subsystem).unwrap_or(serde_json::Value::Null)),
     }))
+}
+
+// ─── GitHub sub-command Tauri commands ─────────────────────────────────
+
+/// Execute a GitHub command. The frontend calls this with a serialized
+/// `GitHubCommand` object. The orchestrator:
+///   1. Fetches the GitHub token from the Worker
+///   2. Runs pre-checks (conflict detection for merge)
+///   3. If destructive and not confirmed → emits a Confirm event
+///   4. Executes the command via octocrab
+///   5. Emits the result (text, conflict report, or error)
+#[tauri::command]
+pub async fn orchestrator_github_execute<R: Runtime>(
+    app: AppHandle<R>,
+    command: serde_json::Value,
+    confirmed: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let cmd: crate::github_cmd::GitHubCommand =
+        serde_json::from_value(command).map_err(|e| format!("invalid command: {e}"))?;
+
+    let session_info = crate::network::get_session_info()
+        .ok_or("no session open")?;
+    let (worker_url, user_id, _device_id) = session_info;
+
+    let request_id = {
+        let id = new_request_id();
+        let (rid, flag) = install_new_request(Subsystem::GitHub);
+        let _ = id;
+        rid
+    };
+
+    let confirmed = confirmed.unwrap_or(false);
+
+    // Emit thinking state
+    emit(
+        &app,
+        &OrchestratorEvent::State {
+            state: OrchestratorState::Thinking,
+            request_id: request_id.clone(),
+        },
+    );
+
+    let result = crate::github_cmd::execute_command(
+        &worker_url,
+        &user_id,
+        &cmd,
+        confirmed,
+    )
+    .await;
+
+    let result_json = serde_json::to_value(&result).unwrap_or(serde_json::Value::Null);
+
+    // Emit the appropriate event based on the result type
+    match &result {
+        crate::github_cmd::GitHubResult::NeedsConfirmation { prompt, command } => {
+            let cmd_json = serde_json::to_value(command).unwrap_or(serde_json::Value::Null);
+            emit(
+                &app,
+                &OrchestratorEvent::Confirm {
+                    prompt: prompt.clone(),
+                    request_id: request_id.clone(),
+                    command: cmd_json,
+                },
+            );
+        }
+        crate::github_cmd::GitHubResult::MergeConflict {
+            pr_number,
+            repo,
+            conflict_files,
+            message,
+        } => {
+            let files_json = serde_json::to_value(conflict_files).unwrap_or(serde_json::Value::Null);
+            emit(
+                &app,
+                &OrchestratorEvent::ConflictReport {
+                    request_id: request_id.clone(),
+                    pr_number: *pr_number,
+                    repo: repo.clone(),
+                    conflict_files: files_json,
+                    message: message.clone(),
+                },
+            );
+        }
+        crate::github_cmd::GitHubResult::Text { text } => {
+            emit(
+                &app,
+                &OrchestratorEvent::Result {
+                    text: text.clone(),
+                    request_id: request_id.clone(),
+                    analysis: None,
+                    dialog_state: None,
+                },
+            );
+        }
+        crate::github_cmd::GitHubResult::Error { message, .. } => {
+            emit(
+                &app,
+                &OrchestratorEvent::Error {
+                    message: message.clone(),
+                    request_id: request_id.clone(),
+                },
+            );
+        }
+    }
+
+    emit(
+        &app,
+        &OrchestratorEvent::GitHubResult {
+            request_id: request_id.clone(),
+            result: result_json.clone(),
+        },
+    );
+    emit(
+        &app,
+        &OrchestratorEvent::Done {
+            request_id: request_id.clone(),
+        },
+    );
+    clear_active_request(&request_id);
+
+    Ok(result_json)
+}
+
+/// Clear the cached GitHub token (e.g., after disconnecting GitHub).
+#[tauri::command]
+pub async fn orchestrator_github_clear_token() -> Result<(), String> {
+    crate::github_cmd::clear_github_token().await;
+    Ok(())
 }
 
 // ─── Loading indicator control (owned by orchestrator) ─────────────────
