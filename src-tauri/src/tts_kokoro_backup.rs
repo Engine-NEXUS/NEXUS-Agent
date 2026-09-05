@@ -43,13 +43,17 @@ async fn ensure_engine_loaded(
     let start_time = std::time::Instant::now();
 
     // Set espeak-ng data path for kokoro-micro's espeak-rs dependency.
+    // This is also set at startup in lib.rs::setup_espeak_data_path(),
+    // but we keep it here as a fallback.
     let mut custom_model_path: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            let espeak_parent = exe_dir.join("resources");
-            if espeak_parent.join("espeak-ng-data").exists() {
-                std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
-                tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
+            if std::env::var("PIPER_ESPEAKNG_DATA_DIRECTORY").is_err() {
+                let espeak_parent = exe_dir.join("resources");
+                if espeak_parent.join("espeak-ng-data").exists() {
+                    std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
+                    tracing::info!("tts: espeak-ng data path set to {}", espeak_parent.display());
+                }
             }
 
             let res_model = exe_dir.join("resources").join("kokoro").join("0.onnx");

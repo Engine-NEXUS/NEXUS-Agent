@@ -161,12 +161,91 @@ fn cleanup_webview2_profile() {
     }
 }
 
+/// Set the espeak-ng data path environment variables BEFORE any code
+/// triggers espeak initialization. The espeak-rs crate checks
+/// `PIPER_ESPEAKNG_DATA_DIRECTORY` and the C espeak-ng library checks
+/// `ESPEAK_DATA_PATH`. Both must point to the directory that *contains*
+/// the `espeak-ng-data/` folder.
+///
+/// In a bundled app, espeak-ng-data is at `exe_dir/resources/espeak-ng-data/`.
+/// In dev mode, it's at `src-tauri/resources/espeak-ng-data/` (via cwd).
+///
+/// This MUST be called before Kokoro/Piper lazy-init because espeak-rs
+/// uses a `OnceLock` — if initialization fails once, all subsequent
+/// calls return the cached error forever.
+fn setup_espeak_data_path() {
+    // Don't override if the user already set it
+    if std::env::var("PIPER_ESPEAKNG_DATA_DIRECTORY").is_ok() {
+        return;
+    }
+
+    // 1. Check exe_dir/resources/ (bundled app or Tauri dev with resources)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let res_dir = exe_dir.join("resources");
+            if res_dir.join("espeak-ng-data").exists() {
+                std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &res_dir);
+                // Also set ESPEAK_DATA_PATH for the C library's own fallback
+                std::env::set_var("ESPEAK_DATA_PATH", &res_dir);
+                tracing::info!(
+                    "espeak: data path set to {} (from exe_dir/resources)",
+                    res_dir.display()
+                );
+                return;
+            }
+        }
+    }
+
+    // 2. Check cwd/resources/ (dev mode: running from src-tauri/)
+    if let Ok(cwd) = std::env::current_dir() {
+        let res_dir = cwd.join("resources");
+        if res_dir.join("espeak-ng-data").exists() {
+            std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &res_dir);
+            std::env::set_var("ESPEAK_DATA_PATH", &res_dir);
+            tracing::info!(
+                "espeak: data path set to {} (from cwd/resources)",
+                res_dir.display()
+            );
+            return;
+        }
+    }
+
+    // 3. Check cwd/espeak-ng-data/ (running from within the data dir)
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("espeak-ng-data").exists() {
+            std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &cwd);
+            std::env::set_var("ESPEAK_DATA_PATH", &cwd);
+            tracing::info!(
+                "espeak: data path set to {} (from cwd)",
+                cwd.display()
+            );
+            return;
+        }
+    }
+
+    tracing::warn!(
+        "espeak: could not locate espeak-ng-data directory. \
+         Piper/Kokoro TTS fallback may fail with 'phontab: No such file or directory'."
+    );
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,nexus=debug")))
         .with_target(false)
         .init();
+
+    // ─── espeak-ng data path ───────────────────────────────────────────
+    // espeak-rs-sys compiles in a build-time path to espeak-ng-data that
+    // points to target/release/build/espeak-rs-sys-*/out/share/. In a
+    // deployed app that directory doesn't exist. The espeak-rs crate
+    // checks PIPER_ESPEAKNG_DATA_DIRECTORY (and the C library checks
+    // ESPEAK_DATA_PATH) before falling back to the compiled-in path.
+    // We must set these BEFORE any code triggers espeak initialization
+    // (Kokoro/Piper lazy load, ONNX model load, etc.) because espeak-rs
+    // uses a OnceLock — if init fails once, all subsequent calls fail.
+    setup_espeak_data_path();
 
     // ─── WebView2 stale profile cleanup ───────────────────────────────
     //

@@ -64,13 +64,18 @@ pub async fn ensure_engine_loaded(engine: &PiperEngine) -> Result<(), String> {
         "Piper model not found. Place en_US-amy-medium.onnx + .json in resources/piper/".to_string()
     })?;
 
-    // Piper requires espeak-ng data path
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let espeak_parent = exe_dir.join("resources");
-            if espeak_parent.join("espeak-ng-data").exists() {
-                std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
-                tracing::info!("tts-piper: espeak-ng data path set to {}", espeak_parent.display());
+    // Piper requires espeak-ng data path.
+    // This is also set at startup in lib.rs::setup_espeak_data_path(),
+    // but we keep it here as a fallback in case the startup check missed
+    // the resources directory (e.g. different working directory).
+    if std::env::var("PIPER_ESPEAKNG_DATA_DIRECTORY").is_err() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let espeak_parent = exe_dir.join("resources");
+                if espeak_parent.join("espeak-ng-data").exists() {
+                    std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", &espeak_parent);
+                    tracing::info!("tts-piper: espeak-ng data path set to {}", espeak_parent.display());
+                }
             }
         }
     }
